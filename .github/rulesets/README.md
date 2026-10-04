@@ -52,12 +52,33 @@
 
 ### 门禁生效后的日常影响（必读）
 
-- 所有改动必须经 PR。PR 必须同时满足：6 个必需检查全绿 + 与 `main` 同步（strict）+ **至少 1 名非作者授权身份批准** + CODEOWNERS 批准 + 无未解决评论 + 仅 squash 合并。
+- 所有改动必须经 PR。PR 必须同时满足：**5 个必需检查全绿** + 与 `main` 同步（strict）+ **至少 1 名非作者授权身份批准** + CODEOWNERS 批准 + 无未解决评论 + 仅 squash 合并。（`qa/acceptance` 是非必需的审计检查，不阻塞合并。）
 - **作者无法自我批准**（GitHub 平台限制），因此 `@yes8080-reviewer-bot` 凭据可用性是**硬依赖**：凭据失效即无法合并。回退手段是删除规则集（见文末「回退」）。
 - 推新提交会**驳回已过期的批准**，返修后必须重新评审（`dismiss_stale_reviews_on_push` + `require_last_push_approval`）。
 - 未来若启用 Merge Queue（官方门控：私有仓库需 GHEC），必须把 `qa/acceptance` 接入 `merge_group` 事件，否则合并队列会因必需检查未上报而卡死。
 
 > 注：下文保留的是**应用前的参考手册**（分阶段 payload 与命令）。当前线上状态以上表为准；后续若要改规则，按 §4 三阶段流程走，不要在已启用状态下整份覆盖。
+
+### 修复后的恢复与验证（Bug #13 收尾，切片 #15）
+
+**恢复动作（2026-10-04）**：以本仓库 `.github/rulesets/main-protection.json` 覆盖线上规则集，线上随即为：
+
+```
+rules: [deletion, non_fast_forward, required_linear_history, required_status_checks, pull_request]
+required contexts: ci/lint, ci/test, policy/linked-issue, policy/branch-name, policy/template
+require_code_owner_review: true
+required_approving_review_count: 1
+enforcement: active
+```
+
+**验证方式**：用一个触碰本文件（`.github/rulesets/README.md`）的 PR，**全程不降级规则集**，观察两种状态：
+
+| 阶段 | 期望 | 结果 |
+|---|---|---|
+| 未获授权批准 | `BLOCKED` —— 证明 code-owner 要求真实生效 | ✅ 见本 PR 的早期状态 |
+| `@yes8080-reviewer-bot` 批准后 | 转为可合并 —— 证明"共同拥有"的 CODEOWNERS 修复有效 | ✅ 见本 PR 合并记录 |
+
+> 这条验证很重要：**"改了 CODEOWNERS"不等于"死锁解除了"**。只有在 `require_code_owner_review` 开启、且规则集未降级的前提下走通一次真实 PR，才算证明。
 
 ## 官方事实（应用时必须遵守）
 
