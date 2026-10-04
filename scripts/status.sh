@@ -2,11 +2,28 @@
 # scripts/status.sh —— 状态机的**唯一迁移入口**（唯一源 = status/* 标签 + Issue 开关状态）
 #
 # 用法：
-#   scripts/status.sh <issue#> <state>     # 迁移到指定状态
-#   scripts/status.sh <issue#> --show      # 查看当前状态
-#   scripts/status.sh --check              # 扫**全部开放 Issue**：每个恰好 0 或 1 个合法 status/*
+#   scripts/status.sh <issue#> <state> [--force]   # 迁移到指定状态
+#   scripts/status.sh <issue#> --show              # 查看当前状态
+#   scripts/status.sh --check                      # 扫**全部开放 Issue**：每个恰好 0 或 1 个合法 status/*
 #
-# 状态：backlog（无标签）| ready | in-progress | in-review | acceptance | rework | done | canceled
+# 状态集（7）：backlog | ready | in-progress | in-review | rework | done | canceled
+#   - backlog = 无任何 status/* 标签且 Issue OPEN
+#   - ready / in-progress / in-review / rework = 对应 status/* 标签，**互斥**
+#   - done / canceled = Issue CLOSED（state_reason=completed / not planned）**且**无任何 status/* 标签
+#   - in-review 的含义 = 「评审中 / 已批准待合并」（没有单独的「验收」状态）
+#
+# 转换表（合法迁移的**唯一**定义；docs/WORKFLOW.md 里的表由 ci/test 断言与本表**逐字一致**）：
+#   backlog     -> ready | in-progress | canceled
+#   ready       -> in-progress | backlog | canceled
+#   in-progress -> in-review | ready | backlog | canceled
+#   in-review   -> rework | done | backlog | canceled
+#   rework      -> in-review | ready | backlog | canceled
+#   done        -> （终态；无出边）
+#   canceled    -> （终态；无出边）
+# 表外的 from -> to 一律**失败**（含 done/canceled 出边、跨级跳跃）。
+# 唯一兜底：显式 `--force` 跳过表校验（日志打印 [WARN] 说明被绕过的边；互斥与迁移后校验仍执行）。
+# 幂等：from == to 且载体齐备时不迁移（终态还要求无残留标签，否则继续清理）。
+#
 # 不变量：开放 Issue 至多一个 status/* 标签；迁移只允许走本脚本。
 # done / canceled 有两个载体：Issue CLOSED **且**无任何 status/* 标签。幂等判断两者都核 ——
 # 「已关闭但仍带残留标签」会继续清理，不短路返回。
@@ -19,14 +36,15 @@ ok()   { printf '[ OK ] %s\n' "$*"; }
 warn() { printf '[WARN] %s\n' "$*" >&2; }
 info() { printf '\n== %s ==\n' "$*"; }
 
-STATUS_LABELS="status/ready status/in-progress status/in-review status/acceptance status/rework"
-VALID_STATES="backlog ready in-progress in-review acceptance rework done canceled"
+STATUS_LABELS="status/ready status/in-progress status/in-review status/rework"
+VALID_STATES="backlog ready in-progress in-review rework done canceled"
+TRANSITIONS="backlog->ready backlog->in-progress backlog->canceled ready->in-progress ready->backlog ready->canceled in-progress->in-review in-progress->ready in-progress->backlog in-progress->canceled in-review->rework in-review->done in-review->backlog in-review->canceled rework->in-review rework->ready rework->backlog rework->canceled"
+
 BASE_LABEL_OF_STATE() {
   case "$1" in
     ready)       printf 'status/ready' ;;
     in-progress) printf 'status/in-progress' ;;
     in-review)   printf 'status/in-review' ;;
-    acceptance)  printf 'status/acceptance' ;;
     rework)      printf 'status/rework' ;;
     *)           printf '' ;;
   esac
@@ -49,6 +67,22 @@ platform_state() { gh issue view "$1" -R "$REPO" --json state --jq .state 2>/dev
 status_labels() {
   gh issue view "$1" -R "$REPO" --json labels \
     --jq '[.labels[].name | select(startswith("status/"))] | join(" ")' 2>/dev/null || true
+}
+
+# ── 转换表判定：合法 0 / 非法非 0 ────────────────────────────
+# 用「空格 + 整边 + 空格」做整词匹配，避免 backlog->read 之类的子串误判。
+# 为什么不用多行 case pattern：macOS 自带 bash 3.2 里「引号包裹的多行 case pattern」不可靠
+# （实测 `case "$v" in *"\n$1->$2\n"*)` 恒不匹配），用 grep -F 更稳且可读。
+# from == to 视为合法：幂等短路会先返回；只有「终态已 CLOSED 但仍有残留标签」会走到这里，
+# 那时需要继续执行清理（done -> done 必须放行，否则 closeout 的自动清理永远失败）。
+is_legal_transition() {
+  [ "$1" = "$2" ] && return 0
+  printf '%s' " ${TRANSITIONS} " | grep -qF " $1->$2 "
+}
+
+# 某个状态的合法出边（人类可读）；终态返回空
+out_edges_of() {
+  printf '%s' "$TRANSITIONS" | tr ' ' '\n' | grep -E "^$1->" | sed 's/->/ → /g' | tr '\n' ' ' | sed -E 's/[[:space:]]+$//'
 }
 
 # ── --check：扫描全部开放 Issue ──────────────────────────────
@@ -96,7 +130,7 @@ EOF
 fi
 
 ISSUE="${1:-}"
-[ -n "$ISSUE" ] || die "用法：scripts/status.sh <issue#> <state> | <issue#> --show | --check" 2
+[ -n "$ISSUE" ] || die "用法：scripts/status.sh <issue#> <state> [--force] | <issue#> --show | --check" 2
 case "$ISSUE" in *[!0-9]*) die "Issue 编号必须是数字：${ISSUE}" 2 ;; esac
 
 state_of() {
@@ -113,7 +147,6 @@ state_of() {
     status/ready)          printf 'ready' ;;
     status/in-progress)    printf 'in-progress' ;;
     status/in-review)      printf 'in-review' ;;
-    status/acceptance)     printf 'acceptance' ;;
     status/rework)         printf 'rework' ;;
     *)                     printf 'unknown(%s)' "$label" ;;
   esac
@@ -125,7 +158,13 @@ if [ "${2:-}" = "--show" ]; then
 fi
 
 STATE="${2:-}"
-[ -n "$STATE" ] || die "用法：scripts/status.sh <issue#> <state> | <issue#> --show | --check" 2
+[ -n "$STATE" ] || die "用法：scripts/status.sh <issue#> <state> [--force] | <issue#> --show | --check" 2
+FORCE=0
+case "${3:-}" in
+  "") : ;;
+  --force) FORCE=1 ;;
+  *) die "未知参数 ${3}（只支持 --force）" 2 ;;
+esac
 case " ${VALID_STATES} " in
   *" ${STATE} "*) : ;;
   *) die "未知状态 ${STATE}（合法值：${VALID_STATES}）" 2 ;;
@@ -153,6 +192,35 @@ fi
 if [ "$short_circuit" -eq 1 ]; then
   ok "已是 ${STATE}（幂等，无需改动）"
   exit 0
+fi
+
+# ── 终态出边保护：CLOSED 的 done/canceled 不能迁到非终态 ────────
+# 为什么要有这一步：终态的载体是「Issue CLOSED + 无标签」，而本脚本不重开 Issue。
+# 若放行，--force 会先删掉残留标签、再在迁移后校验失败 —— 把 Issue 留在「已关闭且无标签」
+# 这种「看着是 done/canceled 但目标是 backlog」的分裂状态。宁可在动手前就拒绝。
+if [ "$cur" != "$STATE" ] && [ "$terminal" -eq 0 ] && [ "$raw_state" = "CLOSED" ]; then
+  die "终态 ${cur} 不能迁出到 ${STATE}：终态的载体是 Issue CLOSED，而本脚本**不重开** Issue。先 gh issue reopen ${ISSUE} 再迁移（--force 也不绕过这一步）"
+fi
+
+# ── 转换表强校验（迁移前；--force 显式兜底）──────────────────
+if is_legal_transition "$cur" "$STATE"; then
+  ok "转换表允许：${cur} → ${STATE}"
+else
+  edges="$(out_edges_of "$cur")"
+  if [ -n "$edges" ]; then
+    edges_hint="出边参考：${edges}"
+  else
+    edges_hint="出边参考：（${cur} 是终态，无出边；确需复活请 gh issue reopen ${ISSUE} 后用 --force）"
+  fi
+  if [ "$FORCE" -eq 1 ]; then
+    warn "转换表外的迁移 ${cur} → ${STATE} —— 因显式 --force 而继续"
+    warn "  ${edges_hint}"
+  else
+    printf '[FAIL] 非法迁移：%s → %s\n' "$cur" "$STATE" >&2
+    printf '       %s\n' "$edges_hint" >&2
+    printf '       转换表见 scripts/status.sh 头部 / docs/WORKFLOW.md §1；确有例外才用 --force（会留 [WARN] 记录）\n' >&2
+    exit 1
+  fi
 fi
 
 # 先移除已有的全部 status/* 标签，保证互斥（含 done/canceled 的残留标签）

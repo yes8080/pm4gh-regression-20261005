@@ -198,7 +198,7 @@ jobs:
       - name: 开放 Issue 恰好 0 或 1 个合法状态标签
         run: |
           set -euo pipefail
-          allowed="status/ready status/in-progress status/in-review status/acceptance status/rework"
+          allowed="status/ready status/in-progress status/in-review status/rework"
           gh issue list -R "$REPO" --state open --limit 200 --json number,labels \
             --jq '.[] | "\(.number)\t\([.labels[].name | select(startswith("status/"))] | join(","))"' > /tmp/status.tsv
           bad=0
@@ -218,6 +218,70 @@ jobs:
           done < /tmp/status.tsv
           if [ "$bad" -ne 0 ]; then exit 1; fi
           echo "✅ 全部开放 Issue 恰好 0 或 1 个合法状态标签"
+      - name: docs 状态机转换表与 scripts/status.sh 逐字一致（防文档漂移）
+        run: |
+          set -euo pipefail
+          # 为什么要有这一步：本仓库曾经「文档画一条主路径、脚本只校验标签互斥」——
+          # 结果任何状态可跳任何状态，PM 的原话是「我现在看不懂你的流转」。
+          # 所以转换表只有一处权威定义（status.sh），文档里的表由本步断言逐字一致：
+          # 状态集（VALID_STATES vs 总表第 1 列）与边集（TRANSITIONS vs ``` 代码块）都逐字比对。
+          sh=scripts/status.sh
+          md=docs/WORKFLOW.md
+          sh_states="$(grep -m1 '^VALID_STATES=' "$sh" | sed -E 's/^VALID_STATES="//; s/"$//' | tr ' ' '\n' | sort -u)"
+          sh_edges="$(sed -nE 's/^TRANSITIONS="(.*)"$/\1/p' "$sh" | tr ' ' '\n' \
+            | grep -E '^[a-z-]+->[a-z-]+$' | sort -u)"
+          md_states="$(awk -F'|' '/^\| (backlog|ready|in-progress|in-review|rework|done|canceled) / { gsub(/ /,"",$2); print $2 }' "$md" | sort -u)"
+          # 转换表 = 文档里 <!-- TRANSITIONS:BEGIN --> 与 END 之间的表；每行形如
+          #   `from` | `to1` `to2` ...（行首是 `from`，其余反引号里的都是出边）
+          md_edges="$(sed -n '/TRANSITIONS:BEGIN/,/TRANSITIONS:END/p' "$md" \
+            | grep -E '^`' \
+            | while IFS= read -r line; do
+                from="$(printf '%s' "$line" | sed -E 's/^`([a-z-]+)`.*/\1/')"
+                rest="$(printf '%s' "$line" | sed -E 's/^`[a-z-]+`[[:space:]]*\|[[:space:]]*//')"
+                for to in $(printf '%s\n' "$rest" | tr '`' '\n' | grep -E '^[a-z-]+$'); do
+                  [ "$to" = "$from" ] && continue
+                  printf '%s->%s\n' "$from" "$to"
+                done
+              done | sort -u)"
+          bad=0
+          # 自检：表里每条边的 from/to 都必须是状态集里的状态（防手写笔误，例如 backlog->redy）
+          for e in $(printf '%s\n' "$sh_edges"); do
+            f="${e%%->*}"; t="${e##*->}"
+            printf '%s\n' "$sh_states" | grep -qxF "$f" || { echo "::error file=$sh::转换表里的状态 ${f} 不在 VALID_STATES 内"; bad=1; }
+            printf '%s\n' "$sh_states" | grep -qxF "$t" || { echo "::error file=$sh::转换表里的状态 ${t} 不在 VALID_STATES 内"; bad=1; }
+          done
+          [ -n "$sh_states" ] || { echo "::error file=$sh::未能解析出 VALID_STATES"; bad=1; }
+          [ -n "$sh_edges" ]  || { echo "::error file=$sh::未能解析出 TRANSITIONS"; bad=1; }
+          [ -n "$md_states" ] || { echo "::error file=$md::未能解析出状态总表"; bad=1; }
+          [ -n "$md_edges" ]  || { echo "::error file=$md::未能解析出转换表（第一个代码块）"; bad=1; }
+          if [ "$sh_states" != "$md_states" ]; then
+            echo "::error file=$md::状态集与 scripts/status.sh 不一致"
+            echo "--- status.sh ---"; printf '%s\n' "$sh_states"
+            echo "--- WORKFLOW.md ---"; printf '%s\n' "$md_states"
+            bad=1
+          fi
+          if [ "$sh_edges" != "$md_edges" ]; then
+            echo "::error file=$md::转换表与 scripts/status.sh 不一致（文档漂移）"
+            echo "--- status.sh 独有 ---"; comm -23 <(printf '%s\n' "$sh_edges") <(printf '%s\n' "$md_edges")
+            echo "--- WORKFLOW.md 独有 ---"; comm -13 <(printf '%s\n' "$sh_edges") <(printf '%s\n' "$md_edges")
+            bad=1
+          fi
+          # 自检：终态不得有出边（done/canceled 是终态；迁出只能靠 gh issue reopen + --force）
+          for t in done canceled; do
+            if printf '%s\n' "$sh_edges" | grep -qE "^${t}->"; then
+              echo "::error file=$sh::终态 ${t} 不应有出边"; bad=1
+            fi
+          done
+          # 自检：每个状态都必须有到 canceled 的出口（「不做」的通用终止边），done/canceled 除外
+          for st in $(printf '%s\n' "$sh_states"); do
+            case "$st" in done|canceled) continue ;; esac
+            printf '%s\n' "$sh_edges" | grep -qxF "${st}->canceled" || {
+              echo "::error file=$sh::状态 ${st} 缺少 -> canceled 终止边"; bad=1; }
+          done
+          if [ "$bad" -ne 0 ]; then exit 1; fi
+          echo "✅ 状态集与转换表逐字一致（$(printf '%s\n' "$sh_edges" | grep -c .) 条边，$(printf '%s\n' "$sh_states" | grep -c .) 个状态）"
+          printf '%s\n' "$sh_edges"
+
       - name: 未提交任何凭据
         run: |
           set -euo pipefail

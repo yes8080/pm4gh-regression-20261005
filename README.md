@@ -37,11 +37,11 @@ scripts/closeout.sh 12                                 # 6. 五项核验 + 写�
 ## 状态机（唯一源 = `status/*` 标签）
 
 ```
-Backlog(无标签) → ready → in-progress → in-review → acceptance → Done(PR 合并自动关单)
+Backlog(无标签) → ready → in-progress → in-review → Done(PR 合并自动关单)
                                   ↘ rework（被打回，在同一分支继续提交）
 ```
 
-- 迁移**只能**走 `scripts/status.sh <issue#> <state>`（`backlog|ready|in-progress|in-review|acceptance|rework|done|canceled`）
+- 迁移**只能**走 `scripts/status.sh <issue#> <state>`（`backlog|ready|in-progress|in-review|rework|done|canceled`）
 - `scripts/status.sh --check` 扫描**全部开放 Issue**：每个必须恰好 0 或 1 个 `status/*` 标签（0 = Backlog）
 - 关闭 Issue = 状态 Done/Canceled 的载体（`Closes #N` 由 squash 合并自动关单并清空标签）
 

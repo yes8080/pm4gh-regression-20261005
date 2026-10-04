@@ -7,7 +7,10 @@
 # require_code_owner_review + require_last_push_approval）。官方限制：必需检查不能"先失败后通过"，
 # 所以不把验收做成自定义检查，也不用 /accept 评论（issue_comment 触发的检查不算必需检查）。
 #
-# 副作用：approve → Issue status/acceptance；request-changes → Issue status/rework（同分支返修）。
+# 副作用：approve **不迁移状态** —— 批准后 Issue 停在 status/in-review（含义即「评审中 / 已批准待合并」）；
+# request-changes → status/rework（同分支返修）。所以状态迁移走 status.sh 的合法边：
+# in-review --(request-changes)--> rework，rework --(deliver.sh)--> in-review，
+# in-review --(合并关单 + closeout 清理)--> done。
 
 set -eu
 
@@ -98,8 +101,10 @@ if [ -n "$target" ]; then
     --jq "[.closingIssuesReferences[].number] | index(${target}) != null" 2>/dev/null || echo false)"
   if [ "$is_linked" = "true" ]; then
     case "$ACTION" in
-      approve)                "$(dirname "$0")/status.sh" "$target" acceptance ;;
-      request-changes)        "$(dirname "$0")/status.sh" "$target" rework ;;
+      approve)
+        ok "approve 不迁移状态：Issue #${target} 停在 in-review（= 已批准待合并；done 由合并关单 + closeout 清理）" ;;
+      request-changes)
+        "$(dirname "$0")/status.sh" "$target" rework ;;
       *) : ;;
     esac
   else

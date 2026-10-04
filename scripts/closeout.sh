@@ -6,7 +6,9 @@
 #   ② 关联 Issue 已自动关闭
 #   ③ 远程不存在头分支
 #   ④ 本地头分支已清理（**先**把可恢复锚点写进 Issue，**再** git branch -D）
-#   ⑤ 关闭后无残留 status/* 标签
+#   ⑤ 关联 Issue 无残留 status/* 标签 —— 本脚本**自己清理**（内部调用 status.sh <n> done），
+#      不再要求人先手动跑一遍 status.sh；判定的是「清理之后」的结果。
+#      Issue 本身必须已由平台合并关单：closeout 绝不允许把 OPEN 的 Issue 关掉（那是掩盖错误）。
 #
 # 为什么第 ④ 项这么绕：squash 合并后分支上的原始提交不在 main 上，`git branch -d` 基于祖先关系
 # 必然拒绝；而无条件 `-D` 会掩盖"PR 尚未合并就删本地分支"这类真实错误。所以顺序是
@@ -45,12 +47,50 @@ problems=0
 check_ok()   { ok "$1"; }
 check_fail() { warn "$1"; problems=$((problems + 1)); }
 
-info "① PR #${PR} 是否已合并"
 state="$(gh pr view "$PR" -R "$REPO" --json state --jq .state 2>/dev/null || true)"
 [ -n "$state" ] || die "PR #${PR} 不存在或无法访问"
 branch="$(gh pr view "$PR" -R "$REPO" --json headRefName --jq .headRefName 2>/dev/null || true)"
 head_sha="$(gh pr view "$PR" -R "$REPO" --json headRefOid --jq .headRefOid 2>/dev/null || true)"
 merge_sha="$(gh pr view "$PR" -R "$REPO" --json mergeCommit --jq '.mergeCommit.oid // ""' 2>/dev/null || true)"
+issues="$(gh pr view "$PR" -R "$REPO" --json closingIssuesReferences \
+  --jq '[.closingIssuesReferences[].number] | join(" ")' 2>/dev/null || true)"
+
+# ── 残留状态标签：**先清理，再判定** ─────────────────────────
+# 顺序很重要：第 ④ 项只在「其余项全过」时才删本地分支，所以第 ⑤ 项（无残留标签）必须在
+# 进入第 ④ 项之前就有结论。清理是幂等的：无残留时不产生任何写操作。
+# 只在 Issue **已由平台关闭**时才清；OPEN 的 Issue 绝不代关（那会掩盖「合并没关单」的真实错误）。
+info "①-前置 自动清理残留状态标签（status.sh <n> done；仅对已关闭的 Issue）"
+for n in $issues; do
+  st="$(gh issue view "$n" -R "$REPO" --json state --jq .state 2>/dev/null || echo UNKNOWN)"
+  leftover="$(gh issue view "$n" -R "$REPO" --json labels \
+    --jq '[.labels[].name | select(startswith("status/"))] | join(",")' 2>/dev/null || true)"
+  if [ -z "$leftover" ]; then
+    ok "Issue #${n} 无残留状态标签（done 由 Issue 开关状态承载）"
+    continue
+  fi
+  if [ "$st" != "CLOSED" ]; then
+    check_fail "Issue #${n} 仍为 ${st} 却带着状态标签 ${leftover} —— 本脚本**不**替平台关单（那会掩盖真实错误），请人工核查"
+    continue
+  fi
+  if [ "$DRY" -eq 1 ]; then
+    check_fail "[dry-run] Issue #${n} 有残留状态标签 ${leftover} —— 真实运行会调用 scripts/status.sh ${n} done 清理"
+    continue
+  fi
+  info "  清理 Issue #${n} 的残留状态标签：${leftover}"
+  if "$(dirname "$0")/status.sh" "$n" done; then
+    after="$(gh issue view "$n" -R "$REPO" --json labels \
+      --jq '[.labels[].name | select(startswith("status/"))] | join(",")' 2>/dev/null || true)"
+    if [ -z "$after" ]; then
+      check_ok "Issue #${n} 残留状态标签已自动清理（${leftover} → 无）"
+    else
+      check_fail "Issue #${n} 清理后仍有状态标签 ${after}"
+    fi
+  else
+    check_fail "Issue #${n} 自动清理失败 —— 手动跑 scripts/status.sh ${n} done 后重试"
+  fi
+done
+
+info "① PR #${PR} 是否已合并"
 if [ "$state" = "MERGED" ]; then
   check_ok "已合并（squash 提交 ${merge_sha:-未知}）"
 else
@@ -58,8 +98,6 @@ else
 fi
 
 info "② 关联 Issue 是否已自动关闭"
-issues="$(gh pr view "$PR" -R "$REPO" --json closingIssuesReferences \
-  --jq '[.closingIssuesReferences[].number] | join(" ")' 2>/dev/null || true)"
 if [ -z "$issues" ]; then
   check_fail "PR 未关联任何 Issue —— 检查关闭关键字是否因目标不是默认分支被忽略（官方限制）"
 else
@@ -137,17 +175,17 @@ REC
   fi
 fi
 
-info "⑤ 关联 Issue 是否已清理状态标签"
+info "⑤ 关联 Issue 无残留状态标签（结论来自上面的①-前置清理）"
 if [ -z "$issues" ]; then
-  check_fail "无关联 Issue，无法核验状态标签"
+  check_ok "无关联 Issue 需要核验（见 ② 的失败项）"
 else
   for n in $issues; do
-    leftover="$(gh issue view "$n" -R "$REPO" --json labels \
+    after="$(gh issue view "$n" -R "$REPO" --json labels \
       --jq '[.labels[].name | select(startswith("status/"))] | join(",")' 2>/dev/null || true)"
-    if [ -z "$leftover" ]; then
-      check_ok "Issue #${n} 无残留状态标签（Done 由 Issue 开关状态承载）"
+    if [ -z "$after" ]; then
+      check_ok "Issue #${n} 无残留状态标签（已确认清理后为空）"
     else
-      check_fail "Issue #${n} 关闭后仍带状态标签 ${leftover} —— 运行 scripts/status.sh ${n} done 清理（它会在不重开 Issue 的前提下移除残留标签）"
+      check_fail "Issue #${n} 仍有残留状态标签 ${after} —— 跑 scripts/status.sh ${n} done 清理后重跑本脚本"
     fi
   done
 fi
