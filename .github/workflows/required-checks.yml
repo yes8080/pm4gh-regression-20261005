@@ -16,7 +16,8 @@
 #
 # 分工：本工作流只在 pull_request / merge_group 上跑"静态门禁"（ci/* 与 policy/*）。
 # 需要在评审后复检的 `qa/acceptance` **拆到 acceptance-check.yml**，避免每次提交评审
-# 都把 6 个 job 全部重跑（Actions 分钟数浪费，见方案 §13 风险表）。
+# 都把 5 个必需检查 job 全部重跑（Actions 分钟数浪费，见方案 §13 风险表）。
+# 注：D5 后 qa/acceptance 已降级为非必需审计检查并拆到 acceptance-check.yml，故本文件为 5 个 job。
 
 name: required-checks
 
