@@ -1,0 +1,139 @@
+# 标签即代码（唯一事实源，由 scripts/sync-labels.sh 幂等同步）
+#
+# 设计原则（依据 docs/项目管理方案.md §2.3 / §2.4）：
+#   · 标签只表达「正交维度」，绝不表达状态 —— 状态只存在于 Projects 的 Status 单选项
+#     （官方明确：labels 不能驱动 Projects 字段，也不能作为视图的分组维度）
+#   · 官方限制：个人 Pro 无组织级 Issue Types / Issue Fields → 用 type/* 标签 + Projects 字段承载
+#   · 同步脚本只做 upsert（gh label create --force），**永不删除存量标签**
+#
+# 格式（严格，供 awk 解析）：每条 3 行，顺序固定 name → color → description，缩进 2 空格
+# color 为 6 位十六进制（不带 #）；description 必须用双引号包裹，内部不要出现半角冒号
+#
+# 仓库自带的 10 个 GitHub 默认标签（bug / enhancement / documentation …）不在本文件管辖范围，
+# 后续按官方 label archiving 能力归档，不在此处硬删。
+
+# ── 类型（替代组织级 Issue Types）────────────────────────────
+- name: type/feature
+  color: "1F6FEB"
+  description: "能力或需求（Epic 层）"
+- name: type/task
+  color: "0E8A16"
+  description: "切片或任务（一个切片 = 一个 Issue = 一个分支 = 一个 PR）"
+- name: type/bug
+  color: "D73A4A"
+  description: "缺陷（开发期或线上）"
+- name: type/spike
+  color: "8A2BE2"
+  description: "技术验证，产出结论与决策而非生产代码"
+- name: type/chore
+  color: "6E7781"
+  description: "杂务，无用户可感知价值但必须做"
+- name: type/hotfix
+  color: "B60205"
+  description: "线上热修，从 main 拉出并快速回合并"
+
+# ── 角色（谁负责这一步）──────────────────────────────────────
+- name: role/dev
+  color: "1D76DB"
+  description: "开发执行"
+- name: role/review
+  color: "FBCA04"
+  description: "独立评审（不得为作者）"
+- name: role/qa
+  color: "5319E7"
+  description: "验收"
+- name: role/release
+  color: "0052CC"
+  description: "发布与里程碑治理"
+
+# ── 领域（改动落在哪一块）────────────────────────────────────
+- name: area/process
+  color: "C2E0C6"
+  description: "流程与治理"
+- name: area/ci
+  color: "BFD4F2"
+  description: "CI/CD 与必需检查"
+- name: area/project
+  color: "D4C5F9"
+  description: "Projects 字段、视图与自动化"
+- name: area/docs
+  color: "FEF2C0"
+  description: "文档"
+- name: area/scripts
+  color: "F9D0C4"
+  description: "脚本层"
+
+# ── 来源（这项工作从哪来）────────────────────────────────────
+- name: src/rework
+  color: "FFA500"
+  description: "返修（评审或验收未通过）"
+- name: src/bug
+  color: "E99695"
+  description: "缺陷修复"
+- name: src/tech-debt
+  color: "D4A373"
+  description: "技术债"
+
+# ── 优先级（正交维度，可叠加，不互斥）────────────────────────
+# 背景：D9 移除 Projects 后，原先放在 Projects 自定义字段的 Priority 改由标签承载
+- name: prio/P0
+  color: "B60205"
+  description: "优先级：阻塞（线上不可用或数据风险）"
+- name: prio/P1
+  color: "D93F0B"
+  description: "优先级：高（主流程受损，有临时绕过）"
+- name: prio/P2
+  color: "FBCA04"
+  description: "优先级：中（局部受损）"
+- name: prio/P3
+  color: "0E8A16"
+  description: "优先级：低（体验或文案）"
+
+# ── 规模（正交维度，可叠加，不互斥）──────────────────────────
+# 背景：同上。取值沿用方案 §2.4 的序列，用于 WIP 控制与吞吐度量
+- name: size/1
+  color: "C2E0C6"
+  description: "规模：1（约半小时内）"
+- name: size/2
+  color: "BFD4F2"
+  description: "规模：2（约半天）"
+- name: size/3
+  color: "D4C5F9"
+  description: "规模：3（约 1 天）"
+- name: size/5
+  color: "FEF2C0"
+  description: "规模：5（约 2~3 天，建议再拆）"
+- name: size/8
+  color: "F9D0C4"
+  description: "规模：8（超过 3 天，必须拆分）"
+
+# ── 状态（**唯一状态载体**，互斥：开放 Issue 至多一个）──────────
+# 说明：Backlog = 无 status/* 标签；Done / Canceled = Issue 已关闭（state_reason）
+# 迁移只允许通过 scripts/status.sh（避免多处写入导致状态分裂）
+# 背景：Projects 已整体移除（决策 D9），状态改由标签承载，以便 100% 可 API 化
+- name: status/ready
+  color: "0E8A16"
+  description: "状态：DoR 齐全，可被领取"
+- name: status/in-progress
+  color: "FBCA04"
+  description: "状态：分支已建，开发中"
+- name: status/in-review
+  color: "D93F0B"
+  description: "状态：PR 已开，等待独立评审"
+- name: status/acceptance
+  color: "5319E7"
+  description: "状态：已批准，等待验收记录"
+- name: status/rework
+  color: "B60205"
+  description: "状态：被打回，在同一分支继续提交"
+
+# ── 风险（合并前需要更强的证据）──────────────────────────────
+- name: risk/breaking
+  color: "B60205"
+  description: "破坏性变更，必须给出兼容性与回滚方案"
+- name: risk/security
+  color: "8B0000"
+  description: "安全相关，需要额外评审"
+- name: risk/data
+  color: "A020F0"
+  description: "数据或存储变更，必须给出迁移与回滚"

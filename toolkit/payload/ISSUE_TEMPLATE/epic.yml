@@ -1,0 +1,69 @@
+name: Epic（能力/需求）
+description: 一个里程碑下的一个可独立验收的能力单元，下挂若干切片（子 Issue）
+title: "[E<n>] "
+labels: ["type/feature", "area/process"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **一句话**：Epic 是"一个能对外说清楚的价值单元"，不是任务清单。
+        拆解规则见 `docs/PLAYBOOK.md` W2：Epic → 切片（1 个切片 = 1 个 Issue = 1 个分支 = 1 个 PR）。
+
+  - type: input
+    id: milestone
+    attributes:
+      label: 所属里程碑
+      description: 该 Epic 归属的 GitHub Milestone（格式 `M<n> <名称>`）
+      placeholder: "M1 自举流程骨架"
+    validations:
+      required: true
+
+  - type: textarea
+    id: value
+    attributes:
+      label: 价值
+      description: 交付后，谁获得了什么可感知的能力？禁止写"完善/优化一下"这类不可判定描述。
+      placeholder: |
+        让 X 能够 Y，从而 Z。
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: 验收标准（Epic 级 DoD）
+      description: 可判定的条目；每条都能被第三方独立复现。
+      placeholder: |
+        - [ ] 条件一（可复现）
+        - [ ] 条件二（可复现）
+    validations:
+      required: true
+
+  - type: textarea
+    id: out_of_scope
+    attributes:
+      label: 边界（本 Epic 明确不做）
+      description: 防止范围蔓延。写在"不做"清单里的内容，未经变更控制不得进入本 Epic。
+    validations:
+      required: true
+
+  - type: textarea
+    id: risks
+    attributes:
+      label: 依赖、风险与官方限制
+      description: 阻塞项（后续建成 Issue 后用 blocked by 关联）、套餐/平台门控、回滚方式
+      placeholder: |
+        - 依赖 #12 #13
+        - 官方限制：个人 Pro 无 Issue Types → 用 type/* 标签承载
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: dor
+    attributes:
+      label: 立项前自查
+      options:
+        - label: 已确认它无法拆成一个切片（否则应直接建切片）
+          required: true
+        - label: 已确认每个切片都能独立验收、可独立回滚
+          required: true

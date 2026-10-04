@@ -1,0 +1,384 @@
+{
+  "manifest_version": 1,
+  "kit": {
+    "name": "portable-governance-toolkit",
+    "version": "0.1.0",
+    "slice": "E2-S1",
+    "description": "可移植治理套件：manifest.json 是唯一的归属依据。install.sh 以「先读线上实况再决定」的方式规划/校验/安装受管对象；本套件创建的对象记为 owned=true，装机前已存在的对象只报告、不覆盖、不接管。"
+  },
+  "parameters": {
+    "REPO": {
+      "env": "REPO",
+      "flag": "--repo",
+      "detect": "gh repo view --json nameWithOwner",
+      "placeholder": "@@REPO@@",
+      "description": "目标仓库 owner/name（不得硬编码）"
+    },
+    "DEFAULT_BRANCH": {
+      "env": "DEFAULT_BRANCH",
+      "flag": "--default-branch",
+      "detect": "gh repo view --json defaultBranchRef",
+      "placeholder": "@@DEFAULT_BRANCH@@",
+      "description": "默认分支名（不得硬编码）"
+    },
+    "OWNER": {
+      "env": "OWNER",
+      "flag": "--owner",
+      "detect": "REPO 的 owner 部分",
+      "placeholder": "@@OWNER@@",
+      "description": "仓库 owner / 主身份账号（dispatcher）",
+      "placeholders": [
+        "@@OWNER@@（裸登录名）",
+        "@@OWNER_MENTION@@（@登录名）"
+      ]
+    },
+    "AUTHOR_ACCOUNT": {
+      "env": "AUTHOR_ACCOUNT",
+      "flag": "--author-account",
+      "detect": "读取凭据文件对应身份（默认 .secrets/developer.pat）",
+      "placeholder": "@@AUTHOR_ACCOUNT@@",
+      "description": "作者身份账号（建分支/提交/开 PR；不参与评审）"
+    },
+    "REVIEWER_ACCOUNT": {
+      "env": "REVIEWER_ACCOUNT",
+      "flag": "--reviewer-account",
+      "detect": "读取凭据文件对应身份（默认 .secrets/reviewer.pat）",
+      "placeholder": "@@REVIEWER_ACCOUNT@@",
+      "description": "独立评审/验收身份账号",
+      "placeholders": [
+        "@@REVIEWER_ACCOUNT@@（裸登录名）",
+        "@@REVIEWER_MENTION@@（@登录名）"
+      ]
+    }
+  },
+  "objects": {
+    "files": {
+      "description": "写入目标仓库的文件；template=true 时先按 parameters 做占位符替换（@@NAME@@）",
+      "entries": [
+        {
+          "id": "file:.github/labels.yml",
+          "path": ".github/labels.yml",
+          "source": "payload/labels.yml",
+          "template": false
+        },
+        {
+          "id": "file:.github/rulesets/main-protection.json",
+          "path": ".github/rulesets/main-protection.json",
+          "source": "payload/main-protection.json",
+          "template": false
+        },
+        {
+          "id": "file:.github/authorized-identities.txt",
+          "path": ".github/authorized-identities.txt",
+          "source": "payload/authorized-identities.txt",
+          "template": true
+        },
+        {
+          "id": "file:.github/PULL_REQUEST_TEMPLATE.md",
+          "path": ".github/PULL_REQUEST_TEMPLATE.md",
+          "source": "payload/PULL_REQUEST_TEMPLATE.md",
+          "template": false
+        },
+        {
+          "id": "file:.github/ISSUE_TEMPLATE/bug.yml",
+          "path": ".github/ISSUE_TEMPLATE/bug.yml",
+          "source": "payload/ISSUE_TEMPLATE/bug.yml",
+          "template": false
+        },
+        {
+          "id": "file:.github/ISSUE_TEMPLATE/config.yml",
+          "path": ".github/ISSUE_TEMPLATE/config.yml",
+          "source": "payload/ISSUE_TEMPLATE/config.yml",
+          "template": true
+        },
+        {
+          "id": "file:.github/ISSUE_TEMPLATE/epic.yml",
+          "path": ".github/ISSUE_TEMPLATE/epic.yml",
+          "source": "payload/ISSUE_TEMPLATE/epic.yml",
+          "template": false
+        },
+        {
+          "id": "file:.github/ISSUE_TEMPLATE/rework.yml",
+          "path": ".github/ISSUE_TEMPLATE/rework.yml",
+          "source": "payload/ISSUE_TEMPLATE/rework.yml",
+          "template": false
+        },
+        {
+          "id": "file:.github/ISSUE_TEMPLATE/slice.yml",
+          "path": ".github/ISSUE_TEMPLATE/slice.yml",
+          "source": "payload/ISSUE_TEMPLATE/slice.yml",
+          "template": true
+        },
+        {
+          "id": "file:.github/ISSUE_TEMPLATE/spike.yml",
+          "path": ".github/ISSUE_TEMPLATE/spike.yml",
+          "source": "payload/ISSUE_TEMPLATE/spike.yml",
+          "template": false
+        }
+      ]
+    },
+    "labels": {
+      "description": "标签（值取自 source 的严格 name/color/description 三行格式）",
+      "source": "payload/labels.yml",
+      "entries": [
+        {
+          "id": "label:type/feature",
+          "name": "type/feature"
+        },
+        {
+          "id": "label:type/task",
+          "name": "type/task"
+        },
+        {
+          "id": "label:type/bug",
+          "name": "type/bug"
+        },
+        {
+          "id": "label:type/spike",
+          "name": "type/spike"
+        },
+        {
+          "id": "label:type/chore",
+          "name": "type/chore"
+        },
+        {
+          "id": "label:type/hotfix",
+          "name": "type/hotfix"
+        },
+        {
+          "id": "label:role/dev",
+          "name": "role/dev"
+        },
+        {
+          "id": "label:role/review",
+          "name": "role/review"
+        },
+        {
+          "id": "label:role/qa",
+          "name": "role/qa"
+        },
+        {
+          "id": "label:role/release",
+          "name": "role/release"
+        },
+        {
+          "id": "label:area/process",
+          "name": "area/process"
+        },
+        {
+          "id": "label:area/ci",
+          "name": "area/ci"
+        },
+        {
+          "id": "label:area/project",
+          "name": "area/project"
+        },
+        {
+          "id": "label:area/docs",
+          "name": "area/docs"
+        },
+        {
+          "id": "label:area/scripts",
+          "name": "area/scripts"
+        },
+        {
+          "id": "label:src/rework",
+          "name": "src/rework"
+        },
+        {
+          "id": "label:src/bug",
+          "name": "src/bug"
+        },
+        {
+          "id": "label:src/tech-debt",
+          "name": "src/tech-debt"
+        },
+        {
+          "id": "label:prio/P0",
+          "name": "prio/P0"
+        },
+        {
+          "id": "label:prio/P1",
+          "name": "prio/P1"
+        },
+        {
+          "id": "label:prio/P2",
+          "name": "prio/P2"
+        },
+        {
+          "id": "label:prio/P3",
+          "name": "prio/P3"
+        },
+        {
+          "id": "label:size/1",
+          "name": "size/1"
+        },
+        {
+          "id": "label:size/2",
+          "name": "size/2"
+        },
+        {
+          "id": "label:size/3",
+          "name": "size/3"
+        },
+        {
+          "id": "label:size/5",
+          "name": "size/5"
+        },
+        {
+          "id": "label:size/8",
+          "name": "size/8"
+        },
+        {
+          "id": "label:status/ready",
+          "name": "status/ready"
+        },
+        {
+          "id": "label:status/in-progress",
+          "name": "status/in-progress"
+        },
+        {
+          "id": "label:status/in-review",
+          "name": "status/in-review"
+        },
+        {
+          "id": "label:status/acceptance",
+          "name": "status/acceptance"
+        },
+        {
+          "id": "label:status/rework",
+          "name": "status/rework"
+        },
+        {
+          "id": "label:risk/breaking",
+          "name": "risk/breaking"
+        },
+        {
+          "id": "label:risk/security",
+          "name": "risk/security"
+        },
+        {
+          "id": "label:risk/data",
+          "name": "risk/data"
+        }
+      ]
+    },
+    "rulesets": {
+      "description": "仓库规则集（值取自 source；期望参数为 source 的子集，线上多出的平台默认字段只报告）",
+      "entries": [
+        {
+          "id": "ruleset:main-protection",
+          "name": "main-protection",
+          "source": "payload/main-protection.json"
+        }
+      ]
+    },
+    "workflows": {
+      "description": "工作流文件与其产生的检查名（checks 必须能在文件中找到同名 job，否则该必需检查会永久 pending）",
+      "entries": [
+        {
+          "id": "workflow:.github/workflows/required-checks.yml",
+          "path": ".github/workflows/required-checks.yml",
+          "source": "payload/workflows/required-checks.yml",
+          "template": true,
+          "checks": [
+            "ci/lint",
+            "ci/test",
+            "policy/branch-name",
+            "policy/linked-issue",
+            "policy/template"
+          ]
+        },
+        {
+          "id": "workflow:.github/workflows/acceptance-check.yml",
+          "path": ".github/workflows/acceptance-check.yml",
+          "source": "payload/workflows/acceptance-check.yml",
+          "template": false,
+          "checks": [
+            "qa/acceptance"
+          ]
+        }
+      ]
+    },
+    "codeowners": {
+      "description": "CODEOWNERS 必需行（只追加，不重写用户既有内容）",
+      "path": ".github/CODEOWNERS",
+      "entries": [
+        {
+          "id": "codeowners:*",
+          "path": ".github/CODEOWNERS",
+          "pattern": "*",
+          "owners": [
+            "@@OWNER_MENTION@@",
+            "@@REVIEWER_MENTION@@"
+          ]
+        },
+        {
+          "id": "codeowners:/.github/",
+          "path": ".github/CODEOWNERS",
+          "pattern": "/.github/",
+          "owners": [
+            "@@OWNER_MENTION@@",
+            "@@REVIEWER_MENTION@@"
+          ]
+        },
+        {
+          "id": "codeowners:/scripts/",
+          "path": ".github/CODEOWNERS",
+          "pattern": "/scripts/",
+          "owners": [
+            "@@OWNER_MENTION@@",
+            "@@REVIEWER_MENTION@@"
+          ]
+        },
+        {
+          "id": "codeowners:/docs/",
+          "path": ".github/CODEOWNERS",
+          "pattern": "/docs/",
+          "owners": [
+            "@@OWNER_MENTION@@",
+            "@@REVIEWER_MENTION@@"
+          ]
+        },
+        {
+          "id": "codeowners:/TOOLING.md",
+          "path": ".github/CODEOWNERS",
+          "pattern": "/TOOLING.md",
+          "owners": [
+            "@@OWNER_MENTION@@",
+            "@@REVIEWER_MENTION@@"
+          ]
+        },
+        {
+          "id": "codeowners:/AGENTS.md",
+          "path": ".github/CODEOWNERS",
+          "pattern": "/AGENTS.md",
+          "owners": [
+            "@@OWNER_MENTION@@",
+            "@@REVIEWER_MENTION@@"
+          ]
+        }
+      ]
+    },
+    "collaborators": {
+      "description": "协作者与权限（持久权限：卸载时须询问式处理，见 S2）",
+      "entries": [
+        {
+          "id": "collaborator:@@AUTHOR_ACCOUNT@@",
+          "account": "@@AUTHOR_ACCOUNT@@",
+          "permission": "push",
+          "role": "作者（建分支/提交/开 PR）"
+        },
+        {
+          "id": "collaborator:@@REVIEWER_ACCOUNT@@",
+          "account": "@@REVIEWER_ACCOUNT@@",
+          "permission": "push",
+          "role": "独立评审/验收"
+        }
+      ]
+    }
+  },
+  "ledger": {
+    "_description": "归属记账：install.sh --apply 写入。planned=已登记创建意图（写前落账，用于崩溃/报错后仍能归属）；owned=true 表示本套件创建或明确接管；pre_existing=true 表示装机前已存在（不覆盖、不接管）。--check/--dry-run 不使用本记账判定存在性，一律重新读线上实况。"
+  }
+}
