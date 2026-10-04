@@ -54,11 +54,36 @@
 | D5 | `qa/acceptance` **降级为非必需审计检查** | 2026-10-04 | Bug #13 实测：必需检查不能"先失败后通过"，否则每个 PR 永久 BLOCKED | 验收的机器门禁回归原生审批规则；`/accept` 为审计证据 |
 | D6 | CODEOWNERS 所有路径**必须含非作者 owner** | 2026-10-04 | Bug #13 第二死锁：仅作者 owner + `require_code_owner_review` = 永久不可合并 | 治理目录不再"仅主账号"，治理保护改由 CI 不变量 + 评审共同承担 |
 | D7 | Projects 一律走 **GraphQL + 配置即代码**（`.github/project/*.json` + `scripts/bootstrap-project.sh`），不用 `gh project` CLI | 2026-10-04 | `gh project` 需额外 `read:org` + `read:discussion` scope，且 CLI 不支持 iteration 字段；GraphQL 覆盖完整 | 凭据只需 `project`+`repo`；字段/视图可幂等重建；但**视图分组与内置自动化仍需 UI**（官方无 API） |
+| **D9** | **整体移除 Projects**，状态改由 `status/*` 标签 + Issue 开关状态 + Milestone 承载 | 2026-10-04 | Projects 的"视图分组 / 自动化开关"**无官方 API**，无法纳入可重建的代码资产；其字段/视图/API 能力已实测（曾短暂落地后又移除） | 状态迁移 100% 脚本化（`scripts/status.sh` 为唯一入口）；不再需要 `project` scope 的凭据；视图改为搜索等价物；度量改为 `report.sh`。作废 #20/#21 |
+| ~~D7/D8~~ | ~~Projects 相关决策~~ | 2026-10-04 | 已被 D9 取代 | 仅作历史记录保留 |
 | D8 | 更新 Projects 单选字段时**必须保留选项 id、只改名称** | 2026-10-04 | 内置工作流（加入→Todo、关闭→Done、合并→Done）指向的是**选项 id**；重建选项会让工作流指向已删除的值 | `fields.json` 用 `legacyRename` 把 `Todo` 改名为 `Backlog` 并保留 `f75ad846` 等原 id |
 
 ---
 
-## 4. 状态机（唯一状态源：Projects `Status`）
+## 4. 状态机（唯一状态源：`status/*` 标签 + Issue 开关状态）
+
+> **决策 D9（2026-10-04）**：Projects（v2）已**整体移除** —— 其"视图分组 / 自动化开关"没有官方 API，
+> 无法纳入可重建的代码资产。状态改由**全部可 API 化**的三件套承载：
+>
+> **Issue 开关状态 + `status/*` 标签 + Milestone**
+
+| 状态 | 载体（唯一判定依据） |
+|---|---|
+| `Backlog` | Issue `OPEN` 且**无** `status/*` 标签 |
+| `Ready` | `status/ready` |
+| `In Progress` | `status/in-progress` |
+| `In Review` | `status/in-review` |
+| `Acceptance` | `status/acceptance` |
+| `Rework` | `status/rework` |
+| `Done` | Issue `CLOSED` + `state_reason = completed`（`Closes #N` 自动达成） |
+| `Canceled` | Issue `CLOSED` + `state_reason = not planned` |
+
+**不变量（CI 强制）**：任何开放 Issue **至多一个** `status/*` 标签，且取值必须在允许集合内。
+`ci/test` 的「状态标签合法且互斥」步骤会扫描全部开放 Issue 并在违规时直接失败。
+
+**唯一迁移入口**：`scripts/status.sh <issue#> <state>`（它负责设置目标标签并清理其余状态标签）；
+集成点：`start.sh`→`in-progress`、`deliver.sh`→`in-review`、`review.sh approve`→`acceptance`、
+`review.sh request-changes|reject`→`rework`、`closeout.sh` 核验"关闭后无遗留状态标签"。
 
 | 状态 | 进入条件 | 离开条件 |
 |---|---|---|
@@ -68,11 +93,8 @@
 | `In Review` | PR 已开、检查全绿、正文含 `Closes #N` | 非作者批准 → `Acceptance`；打回 → `Rework` |
 | `Acceptance` | 已批准 | `/accept` 记录 + 合并 → `Done`；`/reject` → `Rework` |
 | `Rework` | 评审/验收打回且已给可核对清单 | 同分支继续提交 → `In Progress` |
-| `Done` | PR 已合并、Issue 自动关闭、双端分支已删（`scripts/closeout.sh` 四项全过） | — |
+| `Done` | PR 已合并、Issue 自动关闭、双端分支已删、`closeout.sh` **五项**全过 | — |
 | `Canceled` | PM 决策并记录原因 | — |
-
-**注意**：父 Issue **不会**因子 Issue 全部关闭而自动关闭（官方无此联动）→ Epic 的关闭必须人工执行。
-`Blocked` **不是状态**，由官方 `blockedBy` 关系表达；且该关系**不会因对方关闭而自动清除**，判断时只看 blocker 的 `state`。
 
 ---
 
@@ -122,7 +144,10 @@
 
 ---
 
-## 8. 度量定义（口径固定，避免各视图口径不一）
+## 8. 度量定义（口径固定）
+
+> **D9 后**：Projects 的 Insights 图表已随项目一起移除。度量改由 `scripts/report.sh` 用 **Issue 搜索 API** 产出
+> （吞吐 / 在途 / 返修率），口径仍以下表为准；Milestone 进度继续用原生页面。
 
 | 指标 | 定义 |
 |---|---|

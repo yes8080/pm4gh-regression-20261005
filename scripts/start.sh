@@ -85,6 +85,9 @@ EOF
 )" >/dev/null
 ok "开工声明已提交"
 
+info "状态迁移：backlog/ready → in-progress"
+"$(dirname "$0")/status.sh" "$ISSUE" in-progress
+
 echo
 log "下一步："
 log "  1) 实现并用 scripts/selfcheck 或本地测试自检"

@@ -74,6 +74,26 @@
   color: "D4A373"
   description: "技术债"
 
+# ── 状态（**唯一状态载体**，互斥：开放 Issue 至多一个）──────────
+# 说明：Backlog = 无 status/* 标签；Done / Canceled = Issue 已关闭（state_reason）
+# 迁移只允许通过 scripts/status.sh（避免多处写入导致状态分裂）
+# 背景：Projects 已整体移除（决策 D9），状态改由标签承载，以便 100% 可 API 化
+- name: status/ready
+  color: "0E8A16"
+  description: "状态：DoR 齐全，可被领取"
+- name: status/in-progress
+  color: "FBCA04"
+  description: "状态：分支已建，开发中"
+- name: status/in-review
+  color: "D93F0B"
+  description: "状态：PR 已开，等待独立评审"
+- name: status/acceptance
+  color: "5319E7"
+  description: "状态：已批准，等待验收记录"
+- name: status/rework
+  color: "B60205"
+  description: "状态：被打回，在同一分支继续提交"
+
 # ── 风险（合并前需要更强的证据）──────────────────────────────
 - name: risk/breaking
   color: "B60205"

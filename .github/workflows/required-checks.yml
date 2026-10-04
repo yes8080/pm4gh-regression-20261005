@@ -154,6 +154,36 @@ jobs:
             exit 1
           fi
           echo "✅ 授权身份清单有效：$(grep -vE '^[[:space:]]*(#|$)' "$f" | tr '\n' ' ')"
+      - name: 状态标签合法且互斥（开放 Issue 至多一个 status/*）
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          REPO='${{ github.repository }}'
+          # 决策 D9：Projects 已移除，状态由 status/* 标签承载 —— 标签的唯一性就是状态机的完整性
+          allowed="status/ready status/in-progress status/in-review status/acceptance status/rework"
+          gh issue list -R "$REPO" --state open --limit 200 --json number,labels \
+            --jq '.[] | "\(.number)\t\([.labels[].name | select(startswith("status/"))] | join(","))"' > /tmp/status-labels.tsv
+          bad=0
+          while IFS="$(printf '\t')" read -r n labels; do
+            [ -n "$n" ] || continue
+            cnt=0
+            if [ -n "$labels" ]; then cnt="$(printf '%s' "$labels" | tr ',' '\n' | grep -c . || true)"; fi
+            if [ "$cnt" -gt 1 ]; then
+              echo "::error::Issue #${n} 有多个状态标签（${labels}）—— 状态必须唯一，用 scripts/status.sh 修正"
+              bad=1
+              continue
+            fi
+            if [ "$cnt" -eq 1 ]; then
+              case " ${allowed} " in
+                *" ${labels} "*) : ;;
+                *) echo "::error::Issue #${n} 使用了未定义的状态标签 ${labels}"; bad=1 ;;
+              esac
+            fi
+          done < /tmp/status-labels.tsv
+          [ "$bad" = 0 ] || exit 1
+          echo "✅ 状态标签合法且互斥"
+
       - name: 未提交任何凭据
         run: |
           set -euo pipefail
@@ -226,10 +256,18 @@ jobs:
           state="$(gh issue view "$num" -R "$REPO" --json state --jq .state)"
           echo "分支指向 Issue #${num}（state=${state}）"
           if [ "$state" != "OPEN" ]; then
-            echo "::error::Issue #$num 已关闭，不应对它再开新 PR（若是返修，请重开原 Issue 或新建 Bug Issue）"
+            echo "::error::Issue #${num} 已关闭，不应对它再开新 PR（若是返修，请重开原 Issue 或新建 Bug Issue）"
             exit 1
           fi
-          echo "✅ 分支命名合规且 Issue #$num 处于 OPEN"
+          # 状态机闸门（决策 D9，对应方案 §5 第 8 条）：必须已进入状态机（至少一个 status/* 标签），
+          # 不能从 Backlog 直接开 PR —— 否则 DoR 形同虚设
+          slabel="$(gh issue view "$num" -R "$REPO" --json labels \
+            --jq '[.labels[].name | select(startswith("status/"))] | length')"
+          if [ "$slabel" -eq 0 ]; then
+            echo "::error::Issue #${num} 处于 Backlog（无 status/* 标签）。请先进入状态机：scripts/status.sh ${num} ready 或 in-progress，再由 scripts/start.sh 开工"
+            exit 1
+          fi
+          echo "✅ 分支命名合规；Issue #${num} 处于 OPEN 且已进入状态机"
 
   template:
     name: policy/template

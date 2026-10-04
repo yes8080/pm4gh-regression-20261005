@@ -40,7 +40,9 @@ scripts/toolcheck.sh          # 8 项自检：命令/gh 登录/规则集漂移/�
 |---|---|---|---|
 | 主身份 `yes8080` | 实现、治理、合并、发布 | 本机 `gh auth login`（`repo` scope 足够） | 系统钥匙串 |
 | 评审/验收身份 `yes8080-reviewer-bot` | 独立评审、`/accept` 记录 | **classic PAT，只勾 `repo`** | `.secrets/reviewer.pat`（0600，已 gitignore） |
-| 主身份（**仅 Projects 需要**） | `gh project` 与 Actions 改 Projects 字段 | **classic PAT，勾 `repo` + `project`** | `.secrets/main.pat`（同上） |
+
+> **D9 后已不再需要 `project` scope 的凭据**：Projects 已移除，主身份只用 `gh` 登录（`repo` scope）即可。
+> 若你此前签发过带 `project` 的 token（`.secrets/main.pat`），**建议立即在 GitHub 上撤销**（本仓库已删除该文件）。
 
 **为什么必须是 classic 而不是 fine-grained**（官方限制，见 附录 C.3）：
 fine-grained PAT **无法**用于"用户作为 repository collaborator 的仓库"，也**无法**访问"用户账号拥有的 Projects"—— 本项目两条都踩中。
@@ -80,15 +82,15 @@ unset GH_TOKEN                 # 用完立刻切回主身份
 | **squash 合并后 `git branch -d` 拒绝删分支** | 原始提交不在 main 上，git 祖先判定失效 | 先验证 `gh pr view <n> --json state` 为 `MERGED`，再用 `-D`（`scripts/closeout.sh` 已封装） |
 | **`blockedBy` 不因对方关闭而清除** | 阻塞项关闭了，关系仍挂着 | 判断是否被阻塞**只看 blocker 的 `state`**；`scripts/audit.sh` 会报"可解锁" |
 | **GraphQL 输入对象的键必须是裸名** | `{"name":"x"}` → `Expected NAME, actual: STRING ("name")` | 传 GraphQL 字面量 `{name:"x"}`（本项目 `json_to_gql` 已封装） |
-| **Projects 的 Status 选项 id 被内置工作流引用** | 重建选项会让"加入→Todo"指向已删除的值 | 更新选项必须**保留 id、只改名**（`fields.json` 的 `legacyRename`） |
-| **`gh project` CLI 需要额外 scope** | `gh project list --owner @me` 报缺 `read:org` + `read:discussion` | 改用 GraphQL（`scripts/bootstrap-project.sh`），凭据只需 `project`+`repo` |
+| **状态标签必须唯一** | 多个 `status/*` 标签会让状态不可判定 | 只用 `scripts/status.sh` 迁移；`ci/test` 会扫描全部开放 Issue 并在违规时失败 |
+| **同一 workspace 只允许一个执行者** | 两个执行者并发会互相删分支/切 HEAD（本项目已实际发生：演练执行者的分支被我清理时被切走，它靠悬空 commit 恢复） | 交接必须显式"让出"：确认对方工作区干净且已切回 `main` 后再动手；并行应使用独立 clone/worktree |
 
 ---
 
 ## 5. 端到端工作流
 
 > 状态机取值：`Backlog / Ready / In Progress / In Review / Acceptance / Rework / Done / Canceled`
-> （Projects 的 `Status` 字段是**唯一**状态源；标签不表达状态）
+> 状态由 `status/*` 标签 + Issue 开关状态承载（决策 D9）；`scripts/status.sh` 是唯一迁移入口
 
 ### W0 仓库基线（仅建仓时一次）
 ```bash
@@ -98,26 +100,38 @@ scripts/sync-labels.sh                     # 标签即代码（幂等，不删�
 # 规则集：见 §9「规则集分阶段应用」
 ```
 
-### W0.5 Projects 配置即代码（建立时一次，之后幂等）
+### W0.5 状态机与视图（决策 D9：Projects 已移除）
+
+**状态源 = `status/*` 标签 + Issue 开关状态 + Milestone**（全部可 API 化，无手工步骤）。
 
 ```bash
-# 需要 .secrets/main.pat（classic，scope: project + repo）
-# 官方：GITHUB_TOKEN 无 projects 权限，Actions 里也必须用 PAT 或 GitHub App
-scripts/bootstrap-project.sh --dry-run     # 预演
-scripts/bootstrap-project.sh               # 幂等应用（可反复执行）
-scripts/bootstrap-project.sh --check       # 校验漂移，有漂移退出码 1
+scripts/status.sh <issue#> <state>     # 唯一合法迁移入口
+scripts/status.sh <issue#> --show      # 查当前状态
+scripts/status.sh --check              # 扫描全部开放 Issue 的互斥性与合法性
 ```
 
-定义在 `.github/project/*.json`（项目/字段/视图）。脚本会：创建缺失的项目与字段、**保留默认 Status 选项 id 只改名**、创建视图并设置过滤器、把 open Issue 加入项目，并**报告**无法通过 API 完成的项。
+| 状态 | 载体 |
+|---|---|
+| `backlog` | OPEN 且无 `status/*` 标签 |
+| `ready` / `in-progress` / `in-review` / `acceptance` / `rework` | 对应 `status/*` 标签 |
+| `done` | Issue CLOSED（`state_reason=completed`） |
+| `canceled` | Issue CLOSED（`state_reason=not planned`） |
 
-**能力边界（官方 + 实测）**：
+**集成点**（一般不需要手工调用）：`start.sh`→`in-progress`；`deliver.sh`→`in-review`；
+`review.sh approve`→`acceptance`；`review.sh request-changes|reject`→`rework`；`closeout.sh` 核验清理。
 
-| 事项 | 能否 API | 说明 |
-|---|---|---|
-| 项目、字段（含 iteration）、视图、条目 | ✅ | 视图过滤器只能"先 create 再 update"（create 无 filter 参数） |
-| 视图**分组**（Group by） | ❌ | `UpdateProjectV2ViewInput` 无 groupBy → 必须 UI 设置 |
-| 内置自动化（加入→Todo / 关闭→Done / 合并→Done / 状态改变→关单 / 子Issue 入库） | ❌ | GraphQL 只有 `deleteProjectV2Workflow`，**无 create/enable**。**但 2026-10 实测：新建项目默认已开启 6 条**（官方文档称默认 2 条），本项目需要的策略全部在其中 |
-| 自定义 filter 的 auto-add / auto-archive | ❌ | 只能 UI 配置（套餐：Free 1 / Pro 5 条） |
+**原 8 个 Projects 视图的等价搜索**（任一工具都能用）：
+
+```bash
+gh issue list -R yes8080/pm4gh --search 'label:status/in-review'                # Review Desk
+gh issue list -R yes8080/pm4gh --search 'label:status/acceptance'               # Acceptance Desk
+gh issue list -R yes8080/pm4gh --search 'label:status/ready' --assignee @me     # My Queue
+gh issue list -R yes8080/pm4gh --search 'label:status/rework'                   # 返修队列
+gh issue list -R yes8080/pm4gh --search 'is:open -label:status/ready,...'       # 就绪前
+gh issue list -R yes8080/pm4gh --milestone "M1 自举流程骨架"                     # 里程碑进度（原生页面）
+gh api repos/yes8080/pm4gh/milestones --jq '.[] | "\(.title) \(.closed_issues)/\(.open_issues+\(.closed_issues))"'  # 燃尽
+```
+度量表（吞吐/在途/返修率）由 `scripts/report.sh` 产出；GitHub 仓库级"保存视图"（2026-09 GA）可作人工便利层。
 
 ### W1 里程碑立项
 ```bash
@@ -144,6 +158,7 @@ scripts/start.sh <issue#>                      # 推荐
 # 等价手工命令：
 gh issue develop <issue#> --base main --name slice/<issue#>-<slug> --checkout
 gh issue edit <issue#> --add-assignee @me
+scripts/status.sh <issue#> in-progress      # 状态迁移（start.sh 已自动执行）
 ```
 **必须用 `gh issue develop`**：手工 `git checkout -b` 不会建立 Issue ↔ 分支绑定，Issue 的 Development 区块不显示分支。
 
@@ -161,6 +176,7 @@ scripts/deliver.sh <issue#> --prepare    # 生成六段正文骨架到 .git/PR_B
 scripts/deliver.sh <issue#>              # 校验并创建 PR
 ```
 判定：正文含 `Closes #<issue#>`；六段齐备；工作区干净；分支名合规。
+`deliver.sh` 会自动把状态迁到 `in-review`。
 
 ### W6 独立评审
 ```bash
@@ -175,6 +191,8 @@ scripts/review.sh <pr#> request-changes --body-file rework-list.md
 scripts/review.sh <pr#> accept --body-file acceptance.md    # 通过：留 /accept 记录
 scripts/review.sh <pr#> reject --body-file gaps.md          # 不通过：留 /reject + 差距
 ```
+**状态迁移**：`review.sh approve` 自动置 `acceptance`；`request-changes` / `reject` 自动置 `rework`。
+
 **重要（能力边界）**：`/accept` 是**人工审计证据，不是合并阻塞条件**。官方限制导致它无法机器化：
 - `issue_comment` 触发的检查**不满足**必需检查；
 - 必需检查**不能"先失败后通过"**（Bug #13 实测：会让 PR 永久 BLOCKED）。
@@ -184,9 +202,11 @@ scripts/review.sh <pr#> reject --body-file gaps.md          # 不通过：留 /r
 ### W8 合并与收尾
 ```bash
 gh pr merge <pr#> --squash --delete-branch
-scripts/closeout.sh <pr#>       # 四项核验：已合并 / Issue 已关 / 远程分支已删 / 本地已清理
+scripts/status.sh <issue#> done   # GitHub 已用 Closes #N 自动关单；此步清理残留的 status/* 标签（幂等）
+scripts/closeout.sh <pr#>         # 五项核验：已合并 / Issue 已关 / 远程分支已删 / 本地已清理 / 无残留状态标签
 ```
-判定：四项全过。`closeout.sh` 会在未合并时**拒绝**删除本地分支。
+判定：**五项**全过（已合并 / Issue 已关 / 远程分支已删 / 本地已清理 / 关闭后无遗留 `status/*` 标签）。
+`closeout.sh` 会在未合并时**拒绝**删除本地分支。
 
 ### W9 返修（评审/验收未通过）
 1. **不新建分支、不新建 PR**：在原切片分支继续提交。
@@ -266,8 +286,7 @@ gh api repos/{o}/{r}/commits/<head-sha>/check-runs --jq '.check_runs[] | "\(.nam
 | **规则集分阶段应用** | 一把覆盖会让所有 PR 卡死 | 见下 |
 | **规则集应急回退** | 唯一的"开门"手段 | `gh api -X DELETE repos/yes8080/pm4gh/rulesets/24442991` |
 | **必需检查改名** | 改名会让所有 PR 永久 pending | ①规划新名 ②同时改工作流 job 名与规则集 context（先加后删，避免空窗）③合并后立刻验证新检查上报 ④更新本文与 `.github/rulesets/README.md` |
-| 设置视图分组（Group by） | `UpdateProjectV2ViewInput` 无 groupBy 参数 | 在 UI：打开视图 → Group by → (Parent issue / Iteration / Assignee)。本项目需设：Epic Progress 按 `Parent issue`、Delivery Audit 按 `Iteration` |
-| 开启/调整内置自动化 | GraphQL 只有 delete，无 create/enable | 项目 → Workflows → 逐条开启。新建项目默认已开 6 条；如需自定义 filter 的 auto-add/auto-archive 也在此配置 |
+| **删除已废弃的 Projects 对象** | 需要 `project` scope 的凭据，本项目已在 D9 后撤销该凭据 | 浏览器打开 https://github.com/users/yes8080/projects/1 → 右上 `⋯` → **Settings** → 底部 **Delete project**。删除后 `docs/PLAYBOOK.md` 中不再有任何 Projects 依赖 |
 | 签发 Release | 涉及对外发布 | `gh release create v<x.y.z> --generate-notes`，并核对 Milestone |
 
 **规则集分阶段应用**（个人 Pro 无 `evaluate` 灰度态，只能逐步加严）：
@@ -283,4 +302,4 @@ gh api repos/{o}/{r}/commits/<head-sha>/check-runs --jq '.check_runs[] | "\(.nam
 
 仓库建立之初（切片 #2）在规则集生效前直接提交到 `main`，因此**首切片无法自证门禁**。这是**唯一**一次豁免，已记录在 Issue #2 的交付评论中。此后所有改动必须经 PR。
 
-（另：`bootstrap.sh` —— 在空仓库一键重建标签/规则集/Projects 的脚本 —— 尚未实现，依赖 #5 的 Projects 定义，属已登记的缺口。）
+（另：`bootstrap.sh` —— 在空仓库一键重建标签/规则集的脚本 —— 尚未实现；标签由 `scripts/sync-labels.sh`、规则集由 `.github/rulesets/main-protection.json` 覆盖，可手工按 §9「规则集分阶段应用」应用。）

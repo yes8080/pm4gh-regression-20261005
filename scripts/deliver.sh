@@ -142,6 +142,9 @@ url="$(gh pr create -R "$REPO" --base "$BASE_BRANCH" --title "${TITLE} (#${ISSUE
 ok "PR 已创建：${url}"
 
 num="${url##*/}"
+
+info "状态迁移：→ in-review"
+"$(dirname "$0")/status.sh" "$ISSUE" in-review
 echo
 log "下一步："
 log "  1) 等待必需检查：gh pr checks ${num} --required"

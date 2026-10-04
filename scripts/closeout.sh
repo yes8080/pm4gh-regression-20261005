@@ -101,10 +101,24 @@ else
   fi
 fi
 
+info "⑤ 关联 Issue 是否已清理状态标签（Done 的载体必须干净）"
+if [ -z "$issues" ]; then
+  check_fail "无关联 Issue，无法核验状态标签"
+else
+  for n in $issues; do
+    leftover="$(gh issue view "$n" -R "$REPO" --json labels \
+      --jq '[.labels[].name | select(startswith("status/"))] | join(",")' 2>/dev/null || true)"
+    if [ -z "$leftover" ]; then
+      check_ok "Issue #${n} 无遗留状态标签（状态为 Done/Canceled，由 Issue 开关状态承载）"
+    else
+      check_fail "Issue #${n} 关闭后仍带状态标签 ${leftover} —— 用 scripts/status.sh ${n} done 修正"
+    fi
+  done
+fi
+
 echo
 if [ "$problems" -eq 0 ]; then
-  ok "收尾全部通过：① 已合并 ② Issue 已关 ③ 远程分支已删 ④ 本地已清理"
-  log "  （若已接入 Projects，确认状态已自动流转为 Done；#5 完成后本脚本会追加该项核验）"
+  ok "收尾全部通过：① 已合并 ② Issue 已关 ③ 远程分支已删 ④ 本地已清理 ⑤ 状态标签已清理"
   exit 0
 fi
 warn "收尾存在 ${problems} 项未通过 —— 逐条修复后重跑本脚本"

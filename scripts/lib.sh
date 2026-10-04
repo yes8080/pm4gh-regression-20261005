@@ -112,3 +112,41 @@ slug_from_title() {
     | sed -E -e 's/^-+//' -e 's/-+$//' \
     | cut -c1-40
 }
+
+
+# ── 状态机（决策 D9：Projects 已移除，状态由 status/* 标签 + Issue 开关承载）──
+# 唯一状态载体。Backlog = 无 status/* 标签；Done/Canceled = Issue 已关闭。
+STATUS_LABELS="status/ready status/in-progress status/in-review status/acceptance status/rework"
+
+# 读取 Issue 的当前状态（字符串）
+status_of_issue() {
+  local n="$1" st reason labels
+  st="$(gh issue view "$n" -R "$REPO" --json state --jq .state 2>/dev/null || true)"
+  if [ "$st" = "CLOSED" ]; then
+    reason="$(gh issue view "$n" -R "$REPO" --json stateReason --jq '.stateReason // "COMPLETED"' 2>/dev/null || echo COMPLETED)"
+    case "$reason" in
+      NOT_PLANNED|not_planned) printf 'canceled' ;;
+      *) printf 'done' ;;
+    esac
+    return 0
+  fi
+  labels="$(gh issue view "$n" -R "$REPO" --json labels \
+    --jq '[.labels[].name | select(startswith("status/"))] | .[0] // ""' 2>/dev/null || true)"
+  case "$labels" in
+    "") printf 'backlog' ;;
+    "status/ready")        printf 'ready' ;;
+    "status/in-progress")  printf 'in-progress' ;;
+    "status/in-review")    printf 'in-review' ;;
+    "status/acceptance")   printf 'acceptance' ;;
+    "status/rework")       printf 'rework' ;;
+    *) printf 'unknown(%s)' "$labels" ;;
+  esac
+}
+
+# 校验开放 Issue 至多一个 status/* 标签；不合规则非零退出
+assert_single_status() {
+  local n="$1" cnt
+  cnt="$(gh issue view "$n" -R "$REPO" --json labels \
+    --jq '[.labels[].name | select(startswith("status/"))] | length' 2>/dev/null || echo 0)"
+  [ "$cnt" -le 1 ] || die "Issue #${n} 有 ${cnt} 个 status/* 标签（状态必须唯一）—— 用 scripts/status.sh 修正"
+}

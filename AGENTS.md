@@ -18,7 +18,7 @@ scripts/toolcheck.sh        # 8 项自检；任何一项失败就停下来报告
 
 ## 2. 必须遵守
 
-1. **一次只做一个切片。** 先领 `Ready` 的切片（`gh issue list --label role/dev --search "assignee:@me"`），不得同时开多个 `In Progress`。
+1. **一次只做一个切片。** 先领 `Ready` 的切片（`gh issue list --search 'label:status/ready'`），不得同时开多个 `In Progress`。
 2. **一个切片 = 一个 Issue = 一个分支 = 一个 PR。** 用 `scripts/start.sh <issue#>` 建分支（它内部走 `gh issue develop`）。
 3. **所有改动经 PR。** 禁止直推 `main`（会被规则集拒绝）；禁止用 `--admin` 绕过门禁。
 4. **PR 正文必须含 `Closes #<issue#>`**，并填写六段模板（摘要/影响面/回滚/验收证据/DoD 自查/风险）。
@@ -38,7 +38,7 @@ scripts/toolcheck.sh        # 8 项自检；任何一项失败就停下来报告
 | 修改 `.github/**`、`scripts/**`、`docs/PLAYBOOK.md`、`docs/GOVERNANCE.md` 后不走 PR | 这些是流程本身，属于治理变更 |
 | 改写 `.github/rulesets/main-protection.json` 后直接应用到线上 | 规则集写错会让**所有 PR 卡死**；必须按 PLAYBOOK §9 分阶段并实测 |
 | 读取、打印、提交 `.secrets/**` 或任何 token | 凭据泄露；`.gitignore` 已覆盖，`ci/test` 也会扫描 |
-| 把状态写进标签或本地文件 | 状态唯一源是 Projects `Status`；本地状态会与 GitHub 脱节 |
+| 绕过 `scripts/status.sh` 直接改状态标签，或把状态写进本地文件 | 状态唯一源是 `status/*` 标签 + Issue 开关状态；多处写入会造成状态分裂 |
 | 引入自己的流程（自建 TODO 文件、自己的状态机、自己的分支策略） | 违背"流程只在仓库里" |
 
 ---

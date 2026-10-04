@@ -90,6 +90,21 @@ ${MSG}"
     ;;
 esac
 
+# ── 状态迁移（决策 D9：状态由 status/* 标签承载）────────────
+# 说明：approve 方可解锁合并，因此批准后即进入 Acceptance；打回则进入 Rework。
+#       放在脚本最后执行：status.sh 会切回主身份（unset GH_TOKEN），不影响上面的评审动作。
+linked="$(gh pr view "$PR" -R "$REPO" --json closingIssuesReferences \
+  --jq '.closingIssuesReferences[0].number // ""' 2>/dev/null || true)"
+if [ -n "$linked" ]; then
+  case "$ACTION" in
+    approve)         "$(dirname "$0")/status.sh" "$linked" acceptance ;;
+    request-changes|reject) "$(dirname "$0")/status.sh" "$linked" rework ;;
+    *) : ;;
+  esac
+else
+  warn "PR 未关联 Issue，跳过状态迁移"
+fi
+
 echo
 log "当前门禁状态："
 gh pr view "$PR" -R "$REPO" --json reviewDecision,mergeStateStatus \

@@ -11,7 +11,7 @@
 | 能力 | 是否必需 | 说明 |
 |---|---|---|
 | `git` | ✅ 必需 | 克隆、分支、提交、推送 |
-| `gh` CLI | ✅ 必需 | Issue/PR/评审/规则集/Projects 的全部操作入口 |
+| `gh` CLI | ✅ 必需 | Issue/PR/评审/规则集 的全部操作入口 |
 | `jq` | ⚠️ 脚本需要 | `scripts/*` 与部分检查依赖它 |
 | 浏览器 | ⚠️ 偶发 | 接受 collaborator 邀请、签发 token、规则集应急回退 |
 | 具体编辑器 / IDE / Agent | ❌ 不要求 | 任何工具都可以，只要能跑上面两条 |
@@ -51,10 +51,11 @@ scripts/start.sh <issue#>
 
 | 状态 | 唯一来源 | 读取命令 |
 |---|---|---|
-| Issue 阶段 | Projects `Status` 字段（**唯一状态源**） | `gh project item-list <n> --owner yes8080 --format json` |
+| Issue 状态 | **`status/*` 标签 + Issue 开关状态**（唯一状态源，决策 D9） | `scripts/status.sh <issue#> --show`；或 `gh issue view <n> --json state,stateReason,labels` |
 | 阻塞关系 | Issue 的 `blockedBy`（**注意：只看 blocker 的 `state`**） | `gh issue view <n> --json blockedBy` |
 | 分支 ↔ Issue 绑定 | `gh issue develop --list` | `gh issue develop --list <issue#>` |
 | PR 门禁 | `reviewDecision` + `mergeStateStatus` + checks | `gh pr view <pr#> --json reviewDecision,mergeStateStatus` |
+| 状态合法性 | 开放 Issue 至多一个 `status/*` 标签（CI 强制） | `scripts/status.sh --check` |
 | 规则集 | 仓库内 `.github/rulesets/main-protection.json`（线上应一致） | `scripts/toolcheck.sh` 会比对 |
 | 凭据状态 | `.secrets/`（**不读取内容，只检查存在性与可用性**） | `scripts/toolcheck.sh` |
 
@@ -66,7 +67,7 @@ scripts/start.sh <issue#>
 
 ```markdown
 <!-- HANDOFF:v1 -->
-- 当前状态：In Progress（Projects Status）
+- 当前状态：In Progress（`status/in-progress` 标签）
 - 分支：slice/12-xxx（已推送：是/否）
 - 已完成：<可核对条目>
 - 未完成 / 下一步：<可核对条目>
@@ -87,7 +88,7 @@ scripts/start.sh <issue#>
 
 **通过标准（五项缺一不可）**
 1. 全程无需任何口头/聊天补充说明；
-2. 无需手工修补 Projects 状态（自动流转生效）；
+2. 无需手工修补状态（`status/*` 标签合法且互斥，`scripts/status.sh --check` 通过）；
 3. 无孤儿分支（本地与远程均干净，`scripts/closeout.sh` 四项全过）；
 4. Issue ↔ 分支 ↔ PR ↔ 合并记录四者链接完整；
 5. 演练前后度量口径不变（同一套定义，见 GOVERNANCE §8）。
@@ -110,7 +111,7 @@ scripts/start.sh <issue#>
 
 ## 7. 不变量（换工具也不允许变的七件事）
 
-1. 状态只在 Projects `Status`；
+1. 状态只由 `status/*` 标签 + Issue 开关状态承载（唯一迁移入口 `scripts/status.sh`）；
 2. 一个切片 = 一个 Issue = 一个分支 = 一个 PR；
 3. `main` 只能经 PR 进入，且只允许 squash；
 4. 必需检查名不得随意更改；
