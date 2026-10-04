@@ -18,6 +18,9 @@ metadata:
 ln -s /Users/ws/code/pm4gh ~/.claude/skills/pm4gh
 ```
 
+凭据固定放 `$HOME/.config/pm4gh/developer.pat` / `$HOME/.config/pm4gh/reviewer.pat`。
+若把仓库装到别处（克隆副本），**只要不在 `$HOME/.config/pm4gh` 之内**，凭据仍在仓库之外。
+
 ## 1. 身份（平台强制；作者 ≠ 评审 ≠ 合并）
 
 | 角色 | 账号 | 凭据（**必须在工作区之外**） | 干什么 |

@@ -108,12 +108,11 @@ ok "评审凭据在工作区之外：${REVIEWER_PAT_ABS}"
 
 if [ ! -s "$REVIEWER_PAT_FILE" ]; then
   die "缺少评审凭据（或不可读）：${REVIEWER_PAT_ABS}
-       评审凭据必须在工作区之外—— 不要放回 .secrets/：那是作者可读范围
-       开通 / 搬移（由 PM / dispatcher 执行）：
+       评审凭据必须在**工作区之外** —— 工作区内的评审凭据 = 作者可读，独立评审只剩名义
+       开通（由 PM / dispatcher 执行）：
          mkdir -p \"\${HOME}/.config/pm4gh\" && chmod 700 \"\${HOME}/.config/pm4gh\"
-         mv .secrets/reviewer.pat \"\${HOME}/.config/pm4gh/reviewer.pat\"    # 若凭据仍在工作区内
+         # 在 GitHub 生成 classic PAT（scope: repo）后写入该路径：${REVIEWER_PAT_ABS}
          chmod 600 \"\${HOME}/.config/pm4gh/reviewer.pat\"
-         # 该账号尚无 PAT 时：在 GitHub 生成 classic PAT（scope: repo）后写入上面这个路径
        临时指定其它工作区外路径：REVIEWER_PAT_FILE=/绝对路径/reviewer.pat scripts/review.sh <pr#> approve --body-file <文件>"
 fi
 GH_TOKEN="$(cat "$REVIEWER_PAT_FILE")"

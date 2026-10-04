@@ -3,7 +3,6 @@ node_modules/
 *.log
 
 # 凭据：绝不入库（`ci/test` 会扫描）
-.secrets/
 .env
 .env.local
 .env.*

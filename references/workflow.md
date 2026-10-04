@@ -29,8 +29,10 @@
 
 ```bash
 mkdir -p "$HOME/.config/pm4gh" && chmod 700 "$HOME/.config/pm4gh"
-mv .secrets/developer.pat "$HOME/.config/pm4gh/developer.pat"      # 若作者凭据还在工作区里
-mv .secrets/reviewer.pat "$HOME/.config/pm4gh/reviewer.pat"        # 若评审凭据还在工作区里
+# 在 GitHub → Settings → Developer settings 生成 classic PAT：
+#   作者 scope = repo, workflow；评审 scope = repo
+printf '%s\n' '<作者 PAT>' > "$HOME/.config/pm4gh/developer.pat"
+printf '%s\n' '<评审 PAT>' > "$HOME/.config/pm4gh/reviewer.pat"
 chmod 600 "$HOME/.config/pm4gh/developer.pat" "$HOME/.config/pm4gh/reviewer.pat"
 ```
 

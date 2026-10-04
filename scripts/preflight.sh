@@ -230,9 +230,9 @@ else
   ok "评审凭据在工作区之外：${rev_abs}"
   if [ ! -s "$REVIEWER_PAT_FILE" ]; then
     warn "评审凭据缺失或不可读：${rev_abs} —— 不影响作者循环（W0..W5/W7/W8），但 W6 评审不可用"
-    printf '       开通 / 搬移（由 PM / dispatcher 执行）：\n' >&2
+    printf '       开通（由 PM / dispatcher 执行）：\n' >&2
     printf '         mkdir -p "${HOME}/.config/pm4gh" && chmod 700 "${HOME}/.config/pm4gh"\n' >&2
-    printf '         mv .secrets/reviewer.pat "${HOME}/.config/pm4gh/reviewer.pat"    # 若凭据仍在工作区内（先修上一项）\n' >&2
+    printf '         # 在 GitHub 生成 classic PAT（scope: repo）后写入该路径：%s\n' "$rev_abs" >&2
     printf '         chmod 600 "${HOME}/.config/pm4gh/reviewer.pat"\n' >&2
   else
     mode="$(file_mode "$REVIEWER_PAT_FILE")"
