@@ -10,18 +10,19 @@
 # --check-transition 专供「副作用不可逆」的脚本（start.sh / deliver.sh）在动手前调用：
 # 非法时退出码 1 并打印 from 的合法出边与正确命令；合法时退出码 0，且绝不改动任何东西。
 #
-# 状态集（7）：backlog | ready | in-progress | in-review | rework | done | canceled
+# 状态集（6）：backlog | ready | in-progress | in-review | done | canceled
 #   - backlog = 无任何 status/* 标签且 Issue OPEN
-#   - ready / in-progress / in-review / rework = 对应 status/* 标签，**互斥**
+#   - ready / in-progress / in-review = 对应 status/* 标签，**互斥**
 #   - done / canceled = Issue CLOSED（state_reason=completed / not planned）**且**无任何 status/* 标签
 #   - in-review 的含义 = 「评审中 / 已批准待合并」（没有单独的「验收」状态）
+#   - 「被打回」**不设独立状态**：平台已免费提供 reviewDecision=CHANGES_REQUESTED，
+#     打回 = in-review -> in-progress（review.sh request-changes）
 #
 # 转换表（合法迁移的**唯一**定义；docs/WORKFLOW.md 里的表由 ci/test 断言与本表**逐字一致**）：
 #   backlog     -> ready | in-progress | canceled
 #   ready       -> in-progress | backlog | canceled
 #   in-progress -> in-review | ready | backlog | canceled
-#   in-review   -> rework | done | backlog | canceled
-#   rework      -> in-review | ready | backlog | canceled
+#   in-review   -> in-progress | done | backlog | canceled
 #   done        -> （终态；无出边）
 #   canceled    -> （终态；无出边）
 # 表外的 from -> to 一律**失败**（含 done/canceled 出边、跨级跳跃）—— **没有跳过开关**：
@@ -40,16 +41,15 @@ ok()   { printf '[ OK ] %s\n' "$*"; }
 warn() { printf '[WARN] %s\n' "$*" >&2; }
 info() { printf '\n== %s ==\n' "$*"; }
 
-STATUS_LABELS="status/ready status/in-progress status/in-review status/rework"
-VALID_STATES="backlog ready in-progress in-review rework done canceled"
-TRANSITIONS="backlog->ready backlog->in-progress backlog->canceled ready->in-progress ready->backlog ready->canceled in-progress->in-review in-progress->ready in-progress->backlog in-progress->canceled in-review->rework in-review->done in-review->backlog in-review->canceled rework->in-review rework->ready rework->backlog rework->canceled"
+STATUS_LABELS="status/ready status/in-progress status/in-review"
+VALID_STATES="backlog ready in-progress in-review done canceled"
+TRANSITIONS="backlog->ready backlog->in-progress backlog->canceled ready->in-progress ready->backlog ready->canceled in-progress->in-review in-progress->ready in-progress->backlog in-progress->canceled in-review->in-progress in-review->done in-review->backlog in-review->canceled"
 
 BASE_LABEL_OF_STATE() {
   case "$1" in
     ready)       printf 'status/ready' ;;
     in-progress) printf 'status/in-progress' ;;
     in-review)   printf 'status/in-review' ;;
-    rework)      printf 'status/rework' ;;
     *)           printf '' ;;
   esac
 }
@@ -391,7 +391,6 @@ state_of() {
     status/ready)          printf 'ready' ;;
     status/in-progress)    printf 'in-progress' ;;
     status/in-review)      printf 'in-review' ;;
-    status/rework)         printf 'rework' ;;
     *)                     printf 'unknown(%s)' "$label" ;;
   esac
 }

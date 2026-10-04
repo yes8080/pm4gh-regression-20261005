@@ -259,7 +259,7 @@ jobs:
       - name: 开放 Issue 恰好 0 或 1 个合法状态标签
         run: |
           set -euo pipefail
-          allowed="status/ready status/in-progress status/in-review status/rework"
+          allowed="status/ready status/in-progress status/in-review"
           gh issue list -R "$REPO" --state open --limit 200 --json number,labels \
             --jq '.[] | "\(.number)\t\([.labels[].name | select(startswith("status/"))] | join(","))"' > /tmp/status.tsv
           bad=0
@@ -288,7 +288,7 @@ jobs:
           # 判据只有一套：权威副本是下面的 heredoc，scripts/preflight.sh 的副本必须逐字一致；
           # 最后用反向样本（抽掉 type/hotfix）证明判据本身不是空断言。
           cat > /tmp/label-assert.sh <<'EOS'
-          MACHINE_LABELS="status/ready status/in-progress status/in-review status/rework type/bug type/hotfix type/spike type/chore"
+          MACHINE_LABELS="status/ready status/in-progress status/in-review type/bug type/hotfix type/spike type/chore"
           assert_machine_labels() {
             missing=""
             for l in $MACHINE_LABELS; do

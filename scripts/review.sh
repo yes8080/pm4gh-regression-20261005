@@ -8,9 +8,9 @@
 # 所以不把验收做成自定义检查，也不用 /accept 评论（issue_comment 触发的检查不算必需检查）。
 #
 # 副作用：approve **不迁移状态** —— 批准后 Issue 停在 status/in-review（含义即「评审中 / 已批准待合并」）；
-# request-changes → status/rework（同分支返修）。所以状态迁移走 status.sh 的合法边：
-# in-review --(request-changes)--> rework，rework --(deliver.sh)--> in-review，
-# in-review --(合并关单 + closeout 清理)--> done。
+# request-changes → status/in-progress（同分支返修）。「被打回」**不设独立状态** —— 平台已免费提供
+# reviewDecision=CHANGES_REQUESTED；状态迁移只走 status.sh 的合法边：
+# in-review --(request-changes)--> in-progress --(deliver.sh)--> in-review --(合并关单 + closeout)--> done。
 
 set -eu
 
@@ -29,7 +29,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     -m|--message) MSG="${2:?需要取值}"; shift 2 ;;
     --body-file)  BODY_FILE="${2:?需要取值}"; shift 2 ;;
-    -h|--help)    sed -n '2,11p' "$0"; exit 0 ;;
+    -h|--help)    sed -n '2,13p' "$0"; exit 0 ;;
     *) if [ -z "$PR" ]; then PR="$1"; else ACTION="$1"; fi; shift ;;
   esac
 done
@@ -104,7 +104,7 @@ if [ -n "$target" ]; then
       approve)
         ok "approve 不迁移状态：Issue #${target} 停在 in-review（= 已批准待合并；done 由合并关单 + closeout 清理）" ;;
       request-changes)
-        "$(dirname "$0")/status.sh" "$target" rework ;;
+        "$(dirname "$0")/status.sh" "$target" in-progress ;;
       *) : ;;
     esac
   else

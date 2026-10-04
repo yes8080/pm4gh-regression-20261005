@@ -39,7 +39,7 @@ RULESET_CANON_JQ='def canon: with_entries(select(.key|startswith("_comment")|not
 # 同一段文本也出现在 .github/workflows/required-checks.yml 的 ci/test 步骤里，由 ci/test 断言
 # 两处**逐字一致**（并带一个反向样本，证明判据本身不是空断言）—— 判据只有这一套。
 # LABEL_ASSERT:BEGIN
-MACHINE_LABELS="status/ready status/in-progress status/in-review status/rework type/bug type/hotfix type/spike type/chore"
+MACHINE_LABELS="status/ready status/in-progress status/in-review type/bug type/hotfix type/spike type/chore"
 assert_machine_labels() {
   missing=""
   for l in $MACHINE_LABELS; do
@@ -243,7 +243,7 @@ else
   fi
 fi
 
-info "9/10 机器消费的标签存在性（status/* ×4 + start.sh 消费的 type/* ×4）"
+info "9/10 机器消费的标签存在性（status/* ×3 + start.sh 消费的 type/* ×4）"
 if [ -z "$REPO" ]; then
   bad "仓库 slug 未知，跳过标签存在性断言"
 else

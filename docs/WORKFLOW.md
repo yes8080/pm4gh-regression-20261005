@@ -15,9 +15,9 @@
 ## 1. 状态机（唯一源）
 
 > 状态 = `status/*` 标签 + Issue 开关；**没有本地状态文件**。迁移只能走 `scripts/status.sh <issue#> <state>`。
-> 状态集 **7 个**：`backlog | ready | in-progress | in-review | rework | done | canceled`；`in-review` = 「评审中 / 已批准待合并」（没有单独的「验收」状态，批准本身就是验收门禁）。
+> 状态集 **6 个**：`backlog | ready | in-progress | in-review | done | canceled`；`in-review` = 「评审中 / 已批准待合并」（没有单独的「验收」状态，批准本身就是验收门禁）。「被打回」**不设独立状态** —— 平台已免费提供 `reviewDecision=CHANGES_REQUESTED`，打回 = `in-review → in-progress`。
 
-### 状态迁移表（**唯一表权威**：7 个状态、18 条边；与 `scripts/status.sh` 的 `TRANSITIONS` 由 `ci/test` 断言**逐字一致**）
+### 状态迁移表（**唯一表权威**：6 个状态、14 条边；与 `scripts/status.sh` 的 `TRANSITIONS` 由 `ci/test` 断言**逐字一致**）
 
 > 这里**没有图**（Issue #107）：AI 读的是 token 不是像素 —— 表一行一条边、可 grep/awk 校验；图带语法开销、隐式节点易漏，还要额外断言才不漂移。
 > `类型` 取值：`正常` = 主路径推进；`异常` = 回退 / 打回 / 终止；`终态` = 进入 `done`（合并关单）或终态本身（无出边）。
@@ -36,14 +36,10 @@
 `in-progress` | `ready` | 人/PM | 退回补 DoR | 异常
 `in-progress` | `backlog` | 人/PM | 重置 | 异常
 `in-progress` | `canceled` | 人/PM | 不做（W8 abort.sh 清分支） | 异常
-`in-review` | `rework` | reviewer-bot | W6 评审 request-changes | 异常
+`in-review` | `in-progress` | reviewer-bot | W6 评审 request-changes（平台 reviewDecision=CHANGES_REQUESTED；同分支返修） | 异常
 `in-review` | `done` | dispatcher | W7 合并关单 + closeout.sh | 终态
 `in-review` | `backlog` | 人/PM | 重置 | 异常
 `in-review` | `canceled` | 人/PM | 不做 | 异常
-`rework` | `in-review` | dev-bot | W6 同分支再交（deliver.sh） | 正常
-`rework` | `ready` | 人/PM | 退回补 DoR | 异常
-`rework` | `backlog` | 人/PM | 重置 | 异常
-`rework` | `canceled` | 人/PM | 不做（W8 abort.sh 清分支） | 异常
 `done` | （终态；无出边） | — | 只能 gh issue reopen 后走合法边 | 终态
 `canceled` | （终态；无出边） | — | 只能 gh issue reopen 后走合法边 | 终态
 
@@ -54,7 +50,7 @@
 
 ### 状态载体与体检
 
-载体：`ready`/`in-progress`/`in-review`/`rework` = 对应 `status/*` 标签（**互斥**）；`backlog` = Issue OPEN 且无 `status/*`；`done`/`canceled` = Issue `CLOSED`（`state_reason=completed` / `not planned`）**且**无任何 `status/*` 标签。
+载体：`ready`/`in-progress`/`in-review` = 对应 `status/*` 标签（**互斥**）；`backlog` = Issue OPEN 且无 `status/*`；`done`/`canceled` = Issue `CLOSED`（`state_reason=completed` / `not planned`）**且**无任何 `status/*` 标签。
 体检：`scripts/status.sh --check` 扫全部开放 Issue，每个必须 0 或 1 个 `status/*`（0 = backlog）；`ci/test` 每次 PR 跑同一不变量。
 
 **只读预检（副作用之前）**：`scripts/status.sh --check-transition <from> <to>` **零副作用**（不读网络/凭据、不写任何东西；退出码 0 合法 / 1 非法 / 2 用法错），非法时打印该 `from` 的合法出边与正确命令。
@@ -95,8 +91,8 @@
 | 3 | dev-bot | W3 实现 + 提交（作者身份，`commit -F`） | 提交；工作区干净；`bash -n scripts/*.sh` 通过 | 语法 / bash 3.2 兼容性失败 → 先修 |
 | 4 | dev-bot | W4 `deliver.sh <issue#> --as author`：推送并开 PR / 更新正文 | PR 正文含 `Closes #N` + 六段；**状态 `in-review`** | 缺 `Closes #N` / 六段 → 推送前失败 |
 | 5 | CI/规则集 | W5 跑 5 项必需检查（PR 事件触发） | `ci/lint`、`ci/test`、`policy/linked-issue`、`policy/branch-name`、`policy/template` 全 `pass` | 任一失败 → 修后同分支再推（走 #7） |
-| 6 | reviewer-bot | W6 独立评审（评审凭据，**不加** `--as`；禁止自批） | `reviewDecision=APPROVED` → 停在 `in-review`（已批准待合并） | `request-changes` → **状态 `rework`**；旧批准留在原 SHA |
-| 7 | dev-bot | 返修：**同一分支**继续提交（不新建分支/PR）后 `deliver.sh` 再推 | 新 SHA；必需检查在新 SHA **重跑**；**状态 `rework → in-review`** | `require_last_push_approval` **驳回旧批准** → 必须回 #6 重评 |
+| 6 | reviewer-bot | W6 独立评审（评审凭据，**不加** `--as`；禁止自批） | `reviewDecision=APPROVED` → 停在 `in-review`（已批准待合并） | `request-changes` → **状态 `in-progress`**（平台 `reviewDecision=CHANGES_REQUESTED`）；旧批准留在原 SHA |
+| 7 | dev-bot | 返修：**同一分支**继续提交（不新建分支/PR）后 `deliver.sh` 再推 | 新 SHA；必需检查在新 SHA **重跑**；**状态 `in-progress → in-review`** | `require_last_push_approval` **驳回旧批准** → 必须回 #6 重评 |
 | 8 | dispatcher | W7 `gh pr merge <pr#> --squash --delete-branch`（只有 `@yes8080` 能做） | Issue 自动关单 → **状态 `done`** | 缺批准 / 必需检查未过 → 合并被拒 |
 | 9 | dispatcher | `closeout.sh <pr#>` 五项核验 | ① PR MERGED ② 关联 Issue 已关 ③ 远端无头分支 ④ 本地无头分支已清理 ⑤ 无残留 `status/*` 标签 | 任一项不过 → 贴原文报告；⑤ 由脚本自己 `status.sh <n> done` |
 
@@ -139,7 +135,7 @@
 
 ### W6 独立评审 — `scripts/review.sh <pr#> approve --body-file review.md`（或 `request-changes`）
 
-必须由 `@yes8080-reviewer-bot` 发（`review.sh` 用评审凭据，**不加** `--as`）。评审通过 → **不迁移状态**（停在 `in-review`）；打回 → `rework`（在**同一分支**继续提交，不新建分支/PR）。`require_last_push_approval`：返修后新推送会**驳回旧批准**，必须重新评审。
+必须由 `@yes8080-reviewer-bot` 发（`review.sh` 用评审凭据，**不加** `--as`）。评审通过 → **不迁移状态**（停在 `in-review`）；打回 → `in-progress`（平台 `reviewDecision=CHANGES_REQUESTED`；在**同一分支**继续提交，不新建分支/PR）。`require_last_push_approval`：返修后新推送会**驳回旧批准**，必须重新评审。
 
 ### W7 合并与收尾（dispatcher）
 

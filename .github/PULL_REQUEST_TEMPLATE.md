@@ -47,7 +47,7 @@ Closes #
 
 <!--
   评审：scripts/review.sh <pr#> approve --body-file review.md（评审身份，不得合并）
-  打回：scripts/review.sh <pr#> request-changes --body-file review.md → Issue 转 rework，同分支继续提交
+  打回：scripts/review.sh <pr#> request-changes --body-file review.md → Issue 转 in-progress，同分支继续提交
   合并：gh pr merge <pr#> --squash --delete-branch（**只有 dispatcher @yes8080 能做**）
   收尾：scripts/closeout.sh <pr#>
 -->

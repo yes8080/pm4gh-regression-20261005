@@ -13,7 +13,7 @@
 | 想知道 | 读 |
 |---|---|
 | 三身份（谁、凭据、平台怎么强制） | [docs/WORKFLOW.md §0](docs/WORKFLOW.md) |
-| 状态机（7 个状态、18 条边）与状态载体 | [docs/WORKFLOW.md §1](docs/WORKFLOW.md) |
+| 状态机（6 个状态、14 条边）与状态载体 | [docs/WORKFLOW.md §1](docs/WORKFLOW.md) |
 | 闭环 W0..W8（每步的命令、前置条件、判据） | [docs/WORKFLOW.md §2](docs/WORKFLOW.md) |
 | 什么算做完（DoD） | [docs/WORKFLOW.md §3](docs/WORKFLOW.md) |
 | 已知陷阱（均有原始证据） | [docs/WORKFLOW.md §4](docs/WORKFLOW.md) |

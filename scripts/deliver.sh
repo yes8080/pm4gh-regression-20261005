@@ -94,7 +94,6 @@ case "$status_labels" in
   "status/ready")       cur_state="ready" ;;
   "status/in-progress") cur_state="in-progress" ;;
   "status/in-review")   cur_state="in-review" ;;
-  "status/rework")      cur_state="rework" ;;
   *" "*) die "Issue #${ISSUE} 有多个状态标签：${status_labels} —— 状态必须唯一，先 scripts/status.sh ${ISSUE} <state> 修正" ;;
   *)     die "Issue #${ISSUE} 使用了未定义的状态标签：${status_labels} —— 用 scripts/status.sh 修正" ;;
 esac
