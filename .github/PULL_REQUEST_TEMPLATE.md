@@ -1,52 +1,53 @@
 <!--
-  六段结构由 policy/template 必需检查强制（见 #3 与 docs/PLAYBOOK.md W5）。
-  第一行的 Closes 由 policy/linked-issue 必需检查强制：只解析 PR 正文与提交信息，PR 标题无效。
+  六段结构由 policy/template 必需检查强制；第一行的关闭关键字由 policy/linked-issue 强制。
+  注意：关闭关键字只在 PR **正文或提交信息**里生效，**PR 标题无效**。
+  判据与步骤见 docs/WORKFLOW.md。
 -->
 
 Closes #
 
 ## 1. 变更摘要
 
-<!-- 做了什么、为什么这么做。评审人只看这里就应该知道改动意图。 -->
+<!-- 做了什么、为什么这么做。评审人只看这里就该知道改动意图。 -->
 
 ## 2. 影响面
 
-<!-- 受影响的功能/模块/接口/数据/配置；是否影响其他切片或里程碑；兼容性说明 -->
+<!-- 受影响的功能/模块/接口/数据/配置；与其他切片的关系；兼容性说明 -->
 
 - 受影响范围：
-- 是否有破坏性变更：否 / 是（若是，勾选并标 `risk/breaking` 标签）
-- 是否需要数据迁移：否 / 是（若是，说明迁移与回滚脚本）
+- 是否有破坏性变更：否 / 是（若是，加 `risk/breaking` 标签并写迁移与回滚）
+- 是否需要数据迁移：否 / 是
 
 ## 3. 回滚方式
 
-<!-- 必须可执行：squash 合并后 revert 该 PR / 恢复配置 / 反向迁移。不允许写"出问题再说"。 -->
+<!-- 必须可执行：revert 本 PR / 恢复配置 / 反向迁移。不允许写"出问题再说"。 -->
 
 ## 4. 验收证据
 
-<!-- 与切片 Issue 的「验收证据计划」逐条对应。给出确切命令与输出，或测试名与链接。 -->
+<!-- 与 Issue 的验收标准逐条对应。给确切命令与**真实输出**，或检查名与运行链接。 -->
 
-| 验收条目 | 证据（命令 / 测试名 / 截图 / 运行链接） | 结果 |
+| 验收条目 | 证据（命令 / 检查名 / 输出 / 链接） | 结果 |
 |---|---|---|
 |  |  |  |
 
 ## 5. DoD 自查
 
-- [ ] 验收标准逐条有证据（对应第 4 节）
-- [ ] 本地自检通过：`scripts/selfcheck.sh`
-- [ ] 文档/ADR 已更新（涉及接口、数据、运维变更时）
-- [ ] 未越界：没有改切片 Issue「边界」之外的内容
+- [ ] 验收标准逐条有证据（第 4 节）
+- [ ] 5 个必需检查在该 PR 的最新 SHA 上通过（`gh pr checks <pr#> --required`）
+- [ ] 文档已更新（涉及流程、接口、运维变更时）
+- [ ] 未越界：没有改 Issue「边界」之外的内容
 - [ ] 已确认回滚方式可执行（第 3 节）
 - [ ] 提交信息遵循 Conventional Commits 并带 Issue 号
 
 ## 6. 风险与破坏性变更
 
-<!-- 剩余风险、已知限制、需要后续跟进的 TODO（若 TODO 需要跟进，请新建 Issue 并在此链接） -->
+<!-- 剩余风险、已知限制、需要后续跟进的事项（若需跟进请新建 Issue 并在此链接） -->
 
 ---
 
-<!-- 评审人 / 验收人如何使用（依据 docs/GOVERNANCE.md）：
-     · 独立评审：gh pr review <n> --approve | --request-changes --body "返修清单…"
-     · 验收通过：在本 PR 评论 /accept 并附逐条核对结果
-     · 验收不通过：评论 /reject 并列出差距
-     · 合并：gh pr merge <n> --squash --delete-branch（仅验收通过后）
+<!--
+  评审：scripts/review.sh <pr#> approve --body-file review.md（评审身份，不得合并）
+  打回：scripts/review.sh <pr#> request-changes --body-file review.md → Issue 转 rework，同分支继续提交
+  合并：gh pr merge <pr#> --squash --delete-branch（**只有 dispatcher @yes8080 能做**）
+  收尾：scripts/closeout.sh <pr#>
 -->

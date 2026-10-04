@@ -1,0 +1,307 @@
+name: required-checks
+
+# ★ 本文件是仓库全部 **5 个必需状态检查**的唯一来源。硬约束（违反会让所有 PR 永久卡住）：
+#   1. 每个 job 的 `name:` 就是必需检查的 context（官方：context = job 的 name，不是文件名、
+#      不是 workflow 的 name）。一旦被规则集引用就**不得改名**。
+#   2. 本文件**不得**配置 paths / branches 过滤：被跳过的工作流，其检查会永久 pending。
+#   3. 只监听 pull_request —— 官方认可的必需检查事件之一（`issue_comment` 等不算）。
+#   4. 不要在这里加"先失败后通过"的检查：必需检查一旦在某个 SHA 上留下失败结论，
+#      后续同名检查通过也无法解除阻塞（见 docs/WORKFLOW.md §已知陷阱 1）。
+#   5. 若将来启用 Merge Queue，必须同时给这 5 个 job 接上 merge_group 事件。
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: read
+
+concurrency:
+  group: required-checks-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: ci/lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: 脚本语法 + bash 3.2 兼容性（覆盖全部被跟踪脚本）
+        run: |
+          set -euo pipefail
+          # 覆盖面 = **全部被跟踪的 shell 脚本**（*.sh 与带 bash/sh shebang 的文件）。
+          # 用 git ls-files 而不是 glob：新增脚本目录无需改本文件，也不会静默漏检。
+          list=/tmp/tracked-scripts.txt
+          : > "$list"
+          while IFS= read -r f; do
+            [ -n "$f" ] || continue
+            if [ ! -f "$f" ]; then continue; fi
+            case "$f" in
+              *.sh) printf '%s\n' "$f" >> "$list" ;;
+              *)
+                if head -n 1 "$f" 2>/dev/null | grep -qE '^#!.*(bash|/sh)([[:space:]]|$)'; then
+                  printf '%s\n' "$f" >> "$list"
+                fi
+                ;;
+            esac
+          done < <(git ls-files)
+          sort -u "$list" -o "$list"
+          if [ ! -s "$list" ]; then
+            echo "::error::git ls-files 没有产出任何脚本 —— 覆盖面为空，检查形同虚设"
+            exit 1
+          fi
+          printf '覆盖脚本：\n'; cat "$list"
+          fail=0
+          # 1) bash 语法
+          while IFS= read -r f; do
+            [ -n "$f" ] || continue
+            if ! bash -n "$f"; then
+              echo "::error file=$f::bash 语法错误"
+              fail=1
+            fi
+          done < "$list"
+          # 2) bash 3.2 兼容性：只在**代码行**里查（注释里出现这些字样是允许的 —— 脚本注释正是用它们说明为什么禁用）
+          files="$(tr '\n' ' ' < "$list")"
+          code_hits() {
+            grep -nHP "$1" $files 2>/dev/null | awk -F: '{
+              c = $0
+              sub(/^[^:]*:[0-9]+:/, "", c)
+              if (c !~ /^[[:space:]]*#/) print $0
+            }' || true
+          }
+          h1="$(code_hits '\b(mapfile|readarray)\b|declare[[:space:]]+-A|\$\{[A-Za-z_][A-Za-z0-9_]*(,,|\^\^)')"
+          if [ -n "$h1" ]; then
+            printf '%s\n' "$h1"
+            echo "::error::使用了 bash 4 特性（mapfile / readarray / declare -A / 变量大小写改写）。macOS 自带 bash 3.2 会直接失败。"
+            fail=1
+          fi
+          h2="$(code_hits '\$[A-Za-z_][A-Za-z0-9_]*[^\x00-\x7F]')"
+          if [ -n "$h2" ]; then
+            printf '%s\n' "$h2"
+            echo "::error::检测到「\$VAR 紧跟非 ASCII 字符」：bash 3.2 会把多字节序列并入变量名 → unbound variable。请写成 \${VAR}。"
+            fail=1
+          fi
+          if [ "$fail" = 0 ]; then echo "✅ 脚本语法与 bash 3.2 兼容性通过"; fi
+          exit "$fail"
+      - name: JSON 文件有效性
+        run: |
+          set -euo pipefail
+          fail=0
+          while IFS= read -r f; do
+            [ -n "$f" ] || continue
+            if ! jq -e . "$f" >/dev/null; then
+              echo "::error file=$f::非法 JSON"
+              fail=1
+            fi
+          done <<EOF
+          $(git ls-files '*.json')
+          EOF
+          if [ "$fail" = 0 ]; then echo "✅ JSON 全部有效"; fi
+          exit "$fail"
+
+  test:
+    name: ci/test
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: 必需检查的 5 个 context 与工作流 job 名精确一致
+        run: |
+          set -euo pipefail
+          # 官方：必需检查的 context = job 的 name；改名 = 所有 PR 永久 pending。
+          # 所以这里要求三方**集合相等**（不是子集）：工作流产出的检查名 == 规则集引用集 == 这 5 个字面量。
+          rs=.github/rulesets/main-protection.json
+          expected="$(printf '%s\n' ci/lint ci/test policy/linked-issue policy/branch-name policy/template | sort -u)"
+          wf="$(grep -hE '^[[:space:]]+name: (ci|policy)/' .github/workflows/*.yml \
+            | sed -E 's/^[[:space:]]*name:[[:space:]]*//' | sort -u)"
+          got="$(jq -r '.rules[]|select(.type=="required_status_checks")|.parameters.required_status_checks[].context' "$rs" | sort -u)"
+          bad=0
+          if [ "$wf" != "$expected" ]; then
+            echo "::error file=$rs::工作流产出的检查名与 5 个必需 context 不一致"
+            bad=1
+          fi
+          if [ "$got" != "$expected" ]; then
+            echo "::error file=$rs::规则集引用的必需 context 与 5 个必需 context 不一致"
+            bad=1
+          fi
+          if [ "$bad" -ne 0 ]; then
+            echo "--- 期望 ---"; printf '%s\n' "$expected"
+            echo "--- 工作流实际 ---"; printf '%s\n' "$wf"
+            echo "--- 规则集实际 ---"; printf '%s\n' "$got"
+            exit 1
+          fi
+          echo "✅ 5 个必需检查逐字一致：$(printf '%s' "$expected" | tr '\n' ' ')"
+      - name: 规则集结构不变量
+        run: |
+          set -euo pipefail
+          f=.github/rulesets/main-protection.json
+          pr() { jq -r ".rules[]|select(.type==\"pull_request\")|.parameters.$1" "$f"; }
+          bad=0
+          if [ "$(jq -r .enforcement "$f")" != "active" ]; then echo "::error file=$f::enforcement 应为 active"; bad=1; fi
+          if [ "$(jq -r '.bypass_actors|length' "$f")" != "0" ]; then echo "::error file=$f::bypass 名单必须为空（无人可绕过）"; bad=1; fi
+          refs="$(jq -r '.conditions.ref_name.include[]' "$f")"
+          if [ "$refs" != "~DEFAULT_BRANCH" ]; then echo "::error file=$f::目标分支必须只有 ~DEFAULT_BRANCH（当前：${refs}）"; bad=1; fi
+          case "$refs" in *'*'*) echo "::error file=$f::目标含通配符 * —— 官方：会导致合并后无法自动删除头分支"; bad=1 ;; esac
+          if [ "$(pr required_approving_review_count)" != "1" ]; then echo "::error file=$f::required_approving_review_count 应为 1"; bad=1; fi
+          if [ "$(pr require_code_owner_review)" != "true" ]; then echo "::error file=$f::require_code_owner_review 应为 true（三身份隔离靠它）"; bad=1; fi
+          if [ "$(pr require_last_push_approval)" != "true" ]; then echo "::error file=$f::require_last_push_approval 应为 true"; bad=1; fi
+          if [ "$(pr dismiss_stale_reviews_on_push)" != "true" ]; then echo "::error file=$f::dismiss_stale_reviews_on_push 应为 true"; bad=1; fi
+          if [ "$(jq -rc '.rules[]|select(.type=="pull_request")|.parameters.allowed_merge_methods' "$f")" != '["squash"]' ]; then
+            echo "::error file=$f::allowed_merge_methods 只能是 [\"squash\"]"
+            bad=1
+          fi
+          if [ "$(jq -r '.rules[]|select(.type=="required_status_checks")|.parameters.strict_required_status_checks_policy' "$f")" != "true" ]; then
+            echo "::error file=$f::strict_required_status_checks_policy 应为 true"
+            bad=1
+          fi
+          if [ "$bad" -ne 0 ]; then exit 1; fi
+          echo "✅ 规则集结构不变量通过"
+      - name: 脚本有可执行位且自包含（无共享库）
+        run: |
+          set -euo pipefail
+          fail=0
+          for f in scripts/*.sh; do
+            [ -f "$f" ] || continue
+            if ! bash -n "$f"; then
+              echo "::error file=$f::bash 语法错误"
+              fail=1
+            fi
+            if [ ! -x "$f" ]; then
+              echo "::error file=$f::缺少可执行位（chmod +x ${f}）"
+              fail=1
+            fi
+          done
+          if git grep -nE '(^|[^A-Za-z0-9_])lib\.sh' -- scripts >/dev/null 2>&1; then
+            git grep -nE '(^|[^A-Za-z0-9_])lib\.sh' -- scripts
+            echo "::error::scripts/ 引用了共享库 lib.sh —— v2 的脚本必须自包含（见 README）"
+            fail=1
+          fi
+          if [ "$fail" -ne 0 ]; then exit 1; fi
+          echo "✅ scripts/*.sh 语法通过、有可执行位、且不依赖共享库"
+      - name: PR 模板六段齐备 + CODEOWNERS 至少两名 owner
+        run: |
+          set -euo pipefail
+          n="$(grep -cE '^## [1-6]\.' .github/PULL_REQUEST_TEMPLATE.md || true)"
+          if [ "$n" -ne 6 ]; then
+            echo "::error file=.github/PULL_REQUEST_TEMPLATE.md::需要 6 段，当前 ${n}"
+            exit 1
+          fi
+          owners="$(awk '/^\*/ { for (i = 2; i <= NF; i++) print $i }' .github/CODEOWNERS | sort -u | grep -c . || true)"
+          if [ "$owners" -lt 2 ]; then
+            echo "::error file=.github/CODEOWNERS::默认规则必须至少 2 名 owner（否则作者路径会永久无法合并）"
+            exit 1
+          fi
+          echo "✅ PR 模板六段齐备；CODEOWNERS 默认规则有 ${owners} 名 owner"
+      - name: 开放 Issue 恰好 0 或 1 个合法状态标签
+        run: |
+          set -euo pipefail
+          allowed="status/ready status/in-progress status/in-review status/acceptance status/rework"
+          gh issue list -R "$REPO" --state open --limit 200 --json number,labels \
+            --jq '.[] | "\(.number)\t\([.labels[].name | select(startswith("status/"))] | join(","))"' > /tmp/status.tsv
+          bad=0
+          while IFS="$(printf '\t')" read -r n labels; do
+            [ -n "$n" ] || continue
+            [ -n "$labels" ] || continue
+            cnt="$(printf '%s' "$labels" | tr ',' '\n' | grep -c . || true)"
+            if [ "$cnt" -gt 1 ]; then
+              echo "::error::Issue #${n} 有多个状态标签（${labels}）—— 用 scripts/status.sh 修正"
+              bad=1
+              continue
+            fi
+            case " ${allowed} " in
+              *" ${labels} "*) : ;;
+              *) echo "::error::Issue #${n} 使用了未定义的状态标签 ${labels}"; bad=1 ;;
+            esac
+          done < /tmp/status.tsv
+          if [ "$bad" -ne 0 ]; then exit 1; fi
+          echo "✅ 全部开放 Issue 恰好 0 或 1 个合法状态标签"
+      - name: 未提交任何凭据
+        run: |
+          set -euo pipefail
+          if git grep -nE 'ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|gho_[A-Za-z0-9]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY-----' -- . ; then
+            echo "::error::检测到疑似凭据被提交进仓库"
+            exit 1
+          fi
+          echo "✅ 未发现凭据"
+
+  linked-issue:
+    name: policy/linked-issue
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: PR 必须关联同仓库 Issue
+        run: |
+          set -euo pipefail
+          PR='${{ github.event.pull_request.number }}'
+          REPO='${{ github.repository }}'
+          body="$(gh pr view "$PR" -R "$REPO" --json body --jq .body)"
+          if ! printf '%s' "$body" | grep -qiE '(close[sd]?|fix(e[sd])?|resolve[sd]?)[[:space:]]*:?[[:space:]]*#[0-9]+'; then
+            echo "::error::PR 正文缺少关闭关键字（例如 Closes #12）。官方：关键字只在 PR 正文或提交信息中生效，PR 标题无效。"
+            exit 1
+          fi
+          refs="$(gh pr view "$PR" -R "$REPO" --json closingIssuesReferences --jq '[.closingIssuesReferences[].number] | join(",")')"
+          if [ -z "$refs" ]; then
+            echo "::error::GitHub 未解析出关闭关系。官方：关闭关键字只在 PR 目标是仓库默认分支时才被解析。"
+            exit 1
+          fi
+          echo "✅ 关联 Issue：#${refs}"
+
+  branch-name:
+    name: policy/branch-name
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: 分支命名符合规范且指向存在的已进入状态机的 Issue
+        run: |
+          set -euo pipefail
+          REPO='${{ github.repository }}'
+          head='${{ github.event.pull_request.head.ref }}'
+          if [[ ! "$head" =~ ^(slice|fix|hotfix|spike|chore)/[0-9]+-[a-z0-9-]+$ ]]; then
+            echo "::error::分支名 '$head' 不符合 <type>/<issue#>-<slug>；type ∈ {slice,fix,hotfix,spike,chore}，slug 只允许小写字母、数字、连字符"
+            exit 1
+          fi
+          num="${head#*/}"; num="${num%%-*}"
+          state="$(gh issue view "$num" -R "$REPO" --json state --jq .state)"
+          echo "分支指向 Issue #${num}（state=${state}）"
+          if [ "$state" != "OPEN" ]; then
+            echo "::error::Issue #${num} 已关闭，不应对它再开新 PR（返修请重开原 Issue 或新建 Bug Issue）"
+            exit 1
+          fi
+          slabel="$(gh issue view "$num" -R "$REPO" --json labels \
+            --jq '[.labels[].name | select(startswith("status/"))] | length')"
+          if [ "$slabel" -eq 0 ]; then
+            echo "::error::Issue #${num} 处于 Backlog（无 status/* 标签）—— 先 scripts/status.sh ${num} in-progress，再由 scripts/start.sh 开工"
+            exit 1
+          fi
+          if [ "$slabel" -gt 1 ]; then
+            echo "::error::Issue #${num} 有 ${slabel} 个状态标签 —— 状态必须唯一，用 scripts/status.sh 修正"
+            exit 1
+          fi
+          echo "✅ 分支命名合规；Issue #${num} 处于 OPEN 且恰好一个状态标签"
+
+  template:
+    name: policy/template
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: PR 正文按模板六段填写
+        run: |
+          set -euo pipefail
+          PR='${{ github.event.pull_request.number }}'
+          REPO='${{ github.repository }}'
+          gh pr view "$PR" -R "$REPO" --json body --jq .body > /tmp/pr-body.md
+          ok=1
+          for i in 1 2 3 4 5 6; do
+            if ! grep -qE "^## ${i}\." /tmp/pr-body.md; then
+              echo "::error::缺少第 ${i} 节 —— 请用 .github/PULL_REQUEST_TEMPLATE.md 的六段结构（1.变更摘要 2.影响面 3.回滚方式 4.验收证据 5.DoD自查 6.风险与破坏性变更）"
+              ok=0
+            fi
+          done
+          if [ "$ok" -ne 1 ]; then exit 1; fi
+          echo "✅ 六段齐备"

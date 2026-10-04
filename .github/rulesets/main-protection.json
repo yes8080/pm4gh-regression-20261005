@@ -2,8 +2,10 @@
   "name": "main-protection",
   "target": "branch",
   "enforcement": "active",
-  "_comment": "目标分支只用 ~DEFAULT_BRANCH，绝不用 ** —— 官方明确：分支保护/仓库规则可能阻止『自动删除头分支』，写 ** 会导致切片分支合并后删不掉。应用方式与分阶段说明见同目录 README.md，不要直接一把梭。",
-  "_comment_qa_acceptance": "qa/acceptance **故意不在必需清单里**：它是非必需的审计检查。原因（Bug #13 实测）：必需检查一旦在某个 SHA 上留下失败结论，后续同名检查通过也无法解除阻塞；而验收检查在 PR 打开时必然『先失败』（尚无批准），批准后复检才通过 —— 该模式与必需检查机制根本冲突，会导致每个 PR 永久 BLOCKED。验收的机器门禁改由原生规则承担：required_approving_review_count=1 + require_last_push_approval + dismiss_stale_reviews_on_push。",
+  "_comment_target": "目标分支只用 ~DEFAULT_BRANCH，绝不用 **。官方：分支保护/仓库规则可能阻止『自动删除头分支』，写通配符会导致切片分支合并后删不掉。",
+  "_comment_source_of_truth": "本文件是仓库内的目标态声明，真值在线上。线上与它是否一致由 scripts/preflight.sh 比对；ci/test 校验本文的结构不变量。改本文件属 dispatcher 权限（改错会让所有 PR 永久卡住）。",
+  "_comment_required_checks": "这 5 个 context 必须与 .github/workflows/required-checks.yml 里 job 的 name 逐字一致（context = job 的 name）。改名 = 所有 PR 永久 pending。",
+  "_comment_no_acceptance_check": "这里只有 5 个必需检查，没有『验收』检查。原因：必需检查一旦在某个 SHA 上留下失败结论，后续同名检查通过也无法解除阻塞；而验收在 PR 打开时必然先失败（尚无批准）。验收的机器门禁由原生规则承担：required_approving_review_count=1 + require_code_owner_review + require_last_push_approval + dismiss_stale_reviews_on_push。",
   "conditions": {
     "ref_name": {
       "include": ["~DEFAULT_BRANCH"],

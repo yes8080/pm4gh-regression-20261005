@@ -1,114 +1,69 @@
-# AGENTS.md — AI 工具 / Agent 的接手契约
+# AGENTS.md — 任何 agent / 人的接手契约
 
-> 本文件是**任何 AI 编码工具或 Agent 参与本项目时必须遵守的契约**。
-> 人与 AI 使用同一套流程；AI 不享有"为了效率可以绕过"的豁免。
-> 权威流程见 [docs/PLAYBOOK.md](docs/PLAYBOOK.md)，规则见 [docs/GOVERNANCE.md](docs/GOVERNANCE.md)。
+> 本文件只写「必须做什么 / 禁止什么」。**怎么做、什么算做完**见 [docs/WORKFLOW.md](docs/WORKFLOW.md)。
+> 人与 AI 使用同一套流程；AI 不享有「为了效率可以绕过」的豁免。
 
----
-
-## 1. 开工前必须做（缺一不可）
+## 1. 开工前（缺一不可）
 
 ```bash
-scripts/toolcheck.sh        # 10 项自检（含 git 工作区预检）；任何一项失败就停下来报告，不要"先干着看"
+scripts/preflight.sh     # 任何一项失败 → 停下报告，不要"先干着看"
 ```
 
-然后读三份文档：`docs/PLAYBOOK.md`（怎么做）、`docs/GOVERNANCE.md`（什么算做完）、`TOOLING.md`（怎么交接）。
+然后读 `docs/WORKFLOW.md`（它是唯一的流程权威）。
 
----
+## 2. 一次只做一片
 
-## 2. 必须遵守
+**一个切片 = 一个 Issue = 一个分支 = 一个 PR。** 同时只允许一个 `status/in-progress`。
+工作顺序只有 W0..W7（见 `docs/WORKFLOW.md`），不得自创顺序。
 
-1. **一次只做一个切片。** 先领 `Ready` 的切片（`gh issue list --search 'label:status/ready'`），不得同时开多个 `In Progress`。
-2. **一个切片 = 一个 Issue = 一个分支 = 一个 PR。** 用 `scripts/start.sh <issue#> --as author` 建分支（它内部走 `gh issue develop`，并以作者身份完成指派与开工声明）。
-3. **所有改动经 PR。** 禁止直推 `main`（会被规则集拒绝）；禁止用 `--admin` 绕过门禁。
-4. **PR 正文必须含 `Closes #<issue#>`**，并填写六段模板（摘要/影响面/回滚/验收证据/DoD 自查/风险）。
-5. **必须留可核对的验收证据**：命令、测试名、输出、运行链接。禁止"已测试通过"这类无证据断言。
-6. **身份分离（决策 D1）**：作者 = `@yes8080-dev-bot`（建分支/提交/开 PR）、评审与验收 = `@yes8080-reviewer-bot`（`scripts/review.sh`）、**合并权仅 `@yes8080`（dispatcher）**。三者都不得越权，平台也会拒绝自我批准。
-7. **遇到门禁阻塞时报告，不要绕过。** 如果门禁本身有缺陷，按 §5 开 Bug Issue 并附证据。
+## 3. 身份（平台强制，不是自觉）
 
----
+| 角色 | 谁 | 做什么 |
+|---|---|---|
+| 作者 | `@yes8080-dev-bot`（`--as author`） | 分支、提交、推送、开 PR、返修 |
+| 评审 | `@yes8080-reviewer-bot`（**不加** `--as`） | `approve` / `request-changes`，不得合并 |
+| 合并 | `@yes8080`（dispatcher） | 只有它能 `gh pr merge --squash` |
 
-## 3. 禁止做的事
+GitHub 禁止自我批准；规则集另有 `require_last_push_approval`（新推送会驳回旧批准）与
+`require_code_owner_review`。三者都不得越权。
+
+## 4. 必须
+
+1. 所有改动经 PR；PR 正文含 `Closes #<issue#>` 与六段模板（`.github/PULL_REQUEST_TEMPLATE.md`）
+2. 留**可核对**的证据：命令、输出、检查名、运行链接。禁止"已测试通过"这类无证据断言
+3. 状态只通过 `scripts/status.sh` 迁移（唯一源 = `status/*` 标签 + Issue 开关）
+4. 提交身份用作者身份；提交信息用 `-F <文件>`（别把带反引号的多行文本内联进命令行）
+5. 合并后必须跑 `scripts/closeout.sh <pr#>` 并五项全过
+6. 关键节点在 Issue 留**简短**进度评论（分支已建 / 改动完成 / 遇到阻塞）
+
+## 5. 禁止
 
 | 禁止 | 原因 |
 |---|---|
-| 直推 / 强推 `main`，删除 `main` | 规则集拒绝；且会破坏线性历史与审计 |
-| `gh pr merge --admin` 或任何绕过门禁的手段 | bypass 名单为空；绕过即失去审计意义 |
-| 无条件 `git branch -D` | 会掩盖"PR 尚未合并就删分支"的真实错误（Bug #10） |
-| 修改 `.github/**`、`scripts/**`、`docs/PLAYBOOK.md`、`docs/GOVERNANCE.md` 后不走 PR | 这些是流程本身，属于治理变更 |
-| 改写 `.github/rulesets/main-protection.json` 后直接应用到线上 | 规则集写错会让**所有 PR 卡死**；必须按 PLAYBOOK §9 分阶段并实测 |
-| 读取、打印、提交 `.secrets/**` 或任何 token | 凭据泄露；`.gitignore` 已覆盖，`ci/test` 也会扫描 |
-| 绕过 `scripts/status.sh` 直接改状态标签，或把状态写进本地文件 | 状态唯一源是 `status/*` 标签 + Issue 开关状态；多处写入会造成状态分裂 |
-| 引入自己的流程（自建 TODO 文件、自己的状态机、自己的分支策略） | 违背"流程只在仓库里" |
+| 直推 / 强推 `main`，删 `main` | 规则集拒绝 |
+| `gh pr merge --admin` 或任何绕过门禁的手段 | bypass 名单为空，绕过即失去审计意义 |
+| 改 `.github/**`、`scripts/**`、`docs/WORKFLOW.md` 不走 PR | 这些是流程本身 |
+| 改线上规则集或 `main-protection.json` | 写错会让**所有 PR 永久卡住**；属 dispatcher 权限，有疑虑就停下报告 |
+| 改 5 个必需检查的 job `name:` | context 一旦改名/消失，所有 PR 永久 pending |
+| 给必需检查工作流加 `paths`/`branches` 过滤 | 被跳过的检查永久 pending |
+| 读取、打印、提交 `.secrets/**` | 凭据泄露；`ci/test` 会扫描 |
+| 绕过 `status.sh` 直接改状态标签，或把状态写进本地文件 | 状态分裂 |
+| 引入自己的流程（自建 TODO 文件、自己的状态机、自己的分支策略、共享库） | 流程只在仓库里 |
 
----
-
-## 4. 标准工作循环
-
-```bash
-# 1) 自检（10 项；第 10 项包含作者 scope 必须是 repo + workflow，见 W0.4 / Bug #51）
-scripts/toolcheck.sh
-
-# 2) 领切片（找 Ready 且指派给自己的）
-gh issue list -R yes8080/pm4gh --state open --label role/dev --limit 20 \
-  --json number,title,labels
-
-# 3) 开工（建分支 + 指派 + 开工声明，全部记在作者身份名下；默认 --as main 保持向后兼容）
-scripts/start.sh <issue#> --as author
-
-# 4) 实现 + 自检（本地能跑什么就跑什么）
-bash -n scripts/*.sh                      # 若改了脚本（ci/lint 覆盖全部被跟踪的 *.sh）
-bash scripts/audit.sh                     # 漂移审计
-
-# 4b) 以作者身份提交：必须显式 -c（--as 只切 gh 的 API 身份，不改 git 身份）；
-#     提交信息必须用 -F 传文件，不要把带反引号/多行的信息内联到命令行
-printf '%s\n' "feat(scope): 说明 (#<issue#>)" > /tmp/msg.txt
-git -c user.name="yes8080-dev-bot" \
-    -c user.email="317173623+yes8080-dev-bot@users.noreply.github.com" \
-    commit -F /tmp/msg.txt
-
-# 5) 交付（推送 + 开 PR 都用作者身份；推送被拒时脚本会带服务端原文失败退出）
-scripts/deliver.sh <issue#> --prepare --as author   # 生成六段骨架
-#  填写骨架（必须写真实证据；关联 Bug 写 Fixes #NNN）
-scripts/deliver.sh <issue#> --as author
-
-# 6) 等检查 → 由授权身份评审（评审必须用 reviewer 身份，不加 --as）
-gh pr checks <pr#> --required
-scripts/review.sh <pr#> approve --body-file review.md
-
-# 7) 合并 + 收尾（**只有 dispatcher 能做**：AI Agent 不得合并）
-gh pr merge <pr#> --squash --delete-branch
-scripts/closeout.sh <pr#>
-```
-
----
-
-## 5. 失败与异常处理
+## 6. 异常处理
 
 | 情况 | 正确反应 |
 |---|---|
-| `toolcheck.sh` 失败 | 停下，把失败项原文报告给 PM；不要跳过 |
-| 必需检查永久 pending | 检查工作流是否被 `paths` 过滤跳过、检查名是否被改名（PLAYBOOK §8） |
-| `mergeStateStatus: BLOCKED` 但 `reviewDecision: APPROVED` | 疑似"同 SHA 存在失败的必需检查"（PLAYBOOK §7 规则 1）→ 报告，不要绕过 |
-| 发现流程缺陷（门禁写错、脚本有坑） | **开 Bug Issue**（复现/期望/实际/影响版本/缓解），不要顺手改掉 |
-| 发现需求歧义 | 停下并请求澄清；不要自行扩大范围 |
-| 上下文即将耗尽 | 按 TOOLING.md 的交接块写清状态后再退出 |
+| `preflight.sh` 失败 | 停下，把失败项**原文**报告给 dispatcher |
+| 必需检查永久 pending | 核对 job `name` 是否被改名、工作流是否被 `paths` 过滤（WORKFLOW.md §已知陷阱） |
+| `mergeStateStatus=BLOCKED` 但 `reviewDecision=APPROVED` | 同一 SHA 上很可能有**失败过**的必需检查（不可逆）→ 报告，不要绕过 |
+| 发现流程缺陷 | 开 Bug Issue（复现 / 期望 / 实际 / 影响版本 / 缓解），不要顺手改掉 |
+| 发现需求歧义 | 停下请求澄清，不要自行扩大范围 |
 
----
+## 7. 一轮工作的完成标准
 
-## 6. 一轮工作的完成标准（Definition of Done for an Agent turn）
-
-- [ ] 对应 Issue 已更新（开工声明、进度、证据）
-- [ ] 分支已推送，PR 已开且正文含 `Closes #N` 与六段内容
-- [ ] 必需检查状态已核对并记录
+- [ ] Issue 有开工声明与进度评论
+- [ ] 分支已推送，PR 已开，正文含 `Closes #N` 与六段
+- [ ] 5 个必需检查状态已核对并记录
 - [ ] 若已合并：`scripts/closeout.sh` 五项全过（含「无残留状态标签」）
-- [ ] 新增/变更的坑已写进 `docs/PLAYBOOK.md` §4 或对应脚本注释
-- [ ] 交接块（若需交接）已写入 Issue 评论
-
----
-
-## 7. 与本契约冲突时的处理
-
-本契约、`docs/PLAYBOOK.md`、GitHub 平台实际行为三者冲突时，优先级为：
-**GitHub 平台实际行为 > PLAYBOOK > 本契约**。
-发现后必须提 Issue 修正文档，而不是按"更方便"的方式执行。
+- [ ] 踩到的新坑已写进 `docs/WORKFLOW.md` §已知陷阱
