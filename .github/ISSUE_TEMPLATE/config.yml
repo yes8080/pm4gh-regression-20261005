@@ -1,0 +1,10 @@
+# Issue 模板选择器配置
+# 关闭空白 Issue，强制一切工作从模板进入流程（对应方案 §4 W2、§5 DoR）
+blank_issues_enabled: false
+contact_links:
+  - name: 操作手册 / PLAYBOOK
+    url: https://github.com/yes8080/pm4gh/blob/main/docs/PLAYBOOK.md
+    about: 每个流程步骤的确切命令与判定条件（人机双读）
+  - name: 治理规则 / GOVERNANCE
+    url: https://github.com/yes8080/pm4gh/blob/main/docs/GOVERNANCE.md
+    about: 角色、权限、DoR/DoD、返修与变更控制

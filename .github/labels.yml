@@ -1,0 +1,86 @@
+# 标签即代码（唯一事实源，由 scripts/sync-labels.sh 幂等同步）
+#
+# 设计原则（依据 docs/项目管理方案.md §2.3 / §2.4）：
+#   · 标签只表达「正交维度」，绝不表达状态 —— 状态只存在于 Projects 的 Status 单选项
+#     （官方明确：labels 不能驱动 Projects 字段，也不能作为视图的分组维度）
+#   · 官方限制：个人 Pro 无组织级 Issue Types / Issue Fields → 用 type/* 标签 + Projects 字段承载
+#   · 同步脚本只做 upsert（gh label create --force），**永不删除存量标签**
+#
+# 格式（严格，供 awk 解析）：每条 3 行，顺序固定 name → color → description，缩进 2 空格
+# color 为 6 位十六进制（不带 #）；description 必须用双引号包裹，内部不要出现半角冒号
+#
+# 仓库自带的 10 个 GitHub 默认标签（bug / enhancement / documentation …）不在本文件管辖范围，
+# 后续按官方 label archiving 能力归档，不在此处硬删。
+
+# ── 类型（替代组织级 Issue Types）────────────────────────────
+- name: type/feature
+  color: "1F6FEB"
+  description: "能力或需求（Epic 层）"
+- name: type/task
+  color: "0E8A16"
+  description: "切片或任务（一个切片 = 一个 Issue = 一个分支 = 一个 PR）"
+- name: type/bug
+  color: "D73A4A"
+  description: "缺陷（开发期或线上）"
+- name: type/spike
+  color: "8A2BE2"
+  description: "技术验证，产出结论与决策而非生产代码"
+- name: type/chore
+  color: "6E7781"
+  description: "杂务，无用户可感知价值但必须做"
+- name: type/hotfix
+  color: "B60205"
+  description: "线上热修，从 main 拉出并快速回合并"
+
+# ── 角色（谁负责这一步）──────────────────────────────────────
+- name: role/dev
+  color: "1D76DB"
+  description: "开发执行"
+- name: role/review
+  color: "FBCA04"
+  description: "独立评审（不得为作者）"
+- name: role/qa
+  color: "5319E7"
+  description: "验收"
+- name: role/release
+  color: "0052CC"
+  description: "发布与里程碑治理"
+
+# ── 领域（改动落在哪一块）────────────────────────────────────
+- name: area/process
+  color: "C2E0C6"
+  description: "流程与治理"
+- name: area/ci
+  color: "BFD4F2"
+  description: "CI/CD 与必需检查"
+- name: area/project
+  color: "D4C5F9"
+  description: "Projects 字段、视图与自动化"
+- name: area/docs
+  color: "FEF2C0"
+  description: "文档"
+- name: area/scripts
+  color: "F9D0C4"
+  description: "脚本层"
+
+# ── 来源（这项工作从哪来）────────────────────────────────────
+- name: src/rework
+  color: "FFA500"
+  description: "返修（评审或验收未通过）"
+- name: src/bug
+  color: "E99695"
+  description: "缺陷修复"
+- name: src/tech-debt
+  color: "D4A373"
+  description: "技术债"
+
+# ── 风险（合并前需要更强的证据）──────────────────────────────
+- name: risk/breaking
+  color: "B60205"
+  description: "破坏性变更，必须给出兼容性与回滚方案"
+- name: risk/security
+  color: "8B0000"
+  description: "安全相关，需要额外评审"
+- name: risk/data
+  color: "A020F0"
+  description: "数据或存储变更，必须给出迁移与回滚"

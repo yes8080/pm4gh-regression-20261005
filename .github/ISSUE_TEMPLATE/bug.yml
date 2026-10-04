@@ -1,0 +1,80 @@
+name: Bug（缺陷）
+description: 缺陷也走完整流程（Issue → 分支 → PR → 评审 → 验收 → 合并），禁止"口头修一下直接提交"
+title: "[Bug] "
+labels: ["type/bug", "role/dev"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **轨道判定（见 `docs/PLAYBOOK.md` W10）**：
+        - 切片未合并时发现 → 不要建本 Issue，直接在原切片分支上按返修流程处理
+        - 切片已合并后 → 建本 Issue，用 `fix/<issue#>-<slug>` 分支
+        - 线上故障 → 建本 Issue 并标 P0，用 `hotfix/<issue#>-<slug>` 从 main 拉出
+
+  - type: dropdown
+    id: track
+    attributes:
+      label: 轨道
+      options:
+        - 开发期缺陷（已合并后新开 Issue）
+        - 线上故障（Hotfix）
+        - 依赖/安全扫描自动发现
+    validations:
+      required: true
+
+  - type: dropdown
+    id: severity
+    attributes:
+      label: 严重级别
+      options:
+        - P0 阻塞（线上不可用/数据风险）
+        - P1 高（主流程受损，有临时绕过）
+        - P2 中（局部受损）
+        - P3 低（体验/文案）
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 从干净状态开始的确定性步骤；给出命令与输入
+      placeholder: |
+        1. …
+        2. …
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected_actual
+    attributes:
+      label: 期望 vs 实际
+      placeholder: |
+        期望：
+        实际：
+    validations:
+      required: true
+
+  - type: input
+    id: affected
+    attributes:
+      label: 影响版本 / 提交
+      description: 首次出现的版本或 commit SHA，用于界定回归范围
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: 证据
+      description: 日志、截图、失败测试名、CI 运行链接
+    validations:
+      required: true
+
+  - type: textarea
+    id: rollback
+    attributes:
+      label: 回滚/临时缓解
+      description: 线上故障必填：立即可用的缓解手段
+    validations:
+      required: false

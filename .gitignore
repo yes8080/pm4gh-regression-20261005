@@ -1,4 +1,9 @@
 .DS_Store
 node_modules/
 *.log
+
+# 凭据：绝不入库（Projects 自动化必须用 PAT —— GITHUB_TOKEN 无 projects 权限）
+.secrets/
 .env
+.env.local
+.env.*

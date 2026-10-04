@@ -1,0 +1,25 @@
+# CODEOWNERS — 代码责任人
+#
+# 生效前提：规则集 main-protection 中启用 require_code_owner_review
+#（见 .github/rulesets/main-protection.json；当前按 #4 渐进加严，第一阶段不启用）。
+#
+# 官方规则要点：
+#   · 多个 owner 时，任意一个 owner 的批准即可满足要求（不是"全部"）
+#   · owner 必须对仓库有写权限
+#   · 用户拥有的仓库没有 team，因此只能写个人账号（决策 D1）
+#
+# 决策 D2：主账号负责实现与治理，第二账号 yes8080-reviewer-bot 作为独立评审/验收身份。
+
+# 默认：任何改动都需要项目负责人评审
+*                           @yes8080 @yes8080-reviewer-bot
+
+# 治理与流程本身：只有主账号可改（防止"改流程绕过门禁"）
+/.github/                   @yes8080
+/scripts/                   @yes8080
+/docs/GOVERNANCE.md         @yes8080
+/docs/项目管理方案.md        @yes8080
+
+# 流程文档需要评审身份一起确认（它决定"换工具能否推进"）
+/docs/PLAYBOOK.md           @yes8080 @yes8080-reviewer-bot
+/TOOLING.md                 @yes8080 @yes8080-reviewer-bot
+/AGENTS.md                  @yes8080 @yes8080-reviewer-bot
