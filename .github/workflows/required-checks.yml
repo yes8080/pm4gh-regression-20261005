@@ -40,7 +40,7 @@ jobs:
             case "$f" in
               *.sh) printf '%s\n' "$f" >> "$list" ;;
               *)
-                if head -n 1 "$f" 2>/dev/null | grep -qE '^#!.*(bash|/sh)([[:space:]]|$)'; then
+                if grep -qE '^#!.*(bash|/sh)([[:space:]]|$)' <<<"$(head -n 1 "$f" 2>/dev/null)"; then
                   printf '%s\n' "$f" >> "$list"
                 fi
                 ;;
@@ -333,7 +333,7 @@ jobs:
           assert_machine_labels() {
             missing=""
             for l in $MACHINE_LABELS; do
-              printf '%s\n' "${1:-}" | grep -qxF "$l" || missing="${missing} ${l}"
+              grep -qxF "$l" <<<"${1:-}" || missing="${missing} ${l}"
             done
             if [ -n "$missing" ]; then
               printf '[FAIL] 机器消费的标签在平台上不存在：%s\n' "$missing" >&2
@@ -404,8 +404,8 @@ jobs:
           # 自检：表里每条边的 from/to 都必须是状态集里的状态（防手写笔误，例如 backlog->redy）
           for e in $(printf '%s\n' "$sh_edges"); do
             f="${e%%->*}"; t="${e##*->}"
-            printf '%s\n' "$sh_states" | grep -qxF "$f" || { echo "::error file=$sh::转换表里的状态 ${f} 不在 VALID_STATES 内"; bad=1; }
-            printf '%s\n' "$sh_states" | grep -qxF "$t" || { echo "::error file=$sh::转换表里的状态 ${t} 不在 VALID_STATES 内"; bad=1; }
+            grep -qxF "$f" <<<"$sh_states" || { echo "::error file=$sh::转换表里的状态 ${f} 不在 VALID_STATES 内"; bad=1; }
+            grep -qxF "$t" <<<"$sh_states" || { echo "::error file=$sh::转换表里的状态 ${t} 不在 VALID_STATES 内"; bad=1; }
           done
           [ -n "$sh_states" ] || { echo "::error file=$sh::未能解析出 VALID_STATES"; bad=1; }
           [ -n "$sh_edges" ]  || { echo "::error file=$sh::未能解析出 TRANSITIONS"; bad=1; }
@@ -425,14 +425,14 @@ jobs:
           fi
           # 自检：终态不得有出边（done/canceled 是终态；迁出只能靠 gh issue reopen 后走合法边）
           for t in done canceled; do
-            if printf '%s\n' "$sh_edges" | grep -qE "^${t}->"; then
+            if grep -qE "^${t}->" <<<"$sh_edges"; then
               echo "::error file=$sh::终态 ${t} 不应有出边"; bad=1
             fi
           done
           # 自检：每个状态都必须有到 canceled 的出口（「不做」的通用终止边），done/canceled 除外
           for st in $(printf '%s\n' "$sh_states"); do
             case "$st" in done|canceled) continue ;; esac
-            printf '%s\n' "$sh_edges" | grep -qxF "${st}->canceled" || {
+            grep -qxF "${st}->canceled" <<<"$sh_edges" || {
               echo "::error file=$sh::状态 ${st} 缺少 -> canceled 终止边"; bad=1; }
           done
           if [ "$bad" -ne 0 ]; then exit 1; fi
@@ -623,7 +623,7 @@ jobs:
             last="$ST/s/put-${writes}.json"; have=""
             [ -f "$last" ] && have="$(jq -r '.[]' "$last")"
             for l in type/bug area/ci role/dev prio/P2; do
-              if printf '%s\n' "$have" | grep -qxF "$l"; then
+              if grep -qxF "$l" <<<"$have"; then
                 printf '  [ OK ] %s：载荷含非 status/ 标签 %s\n' "$name" "$l"
               else
                 printf '  [FAIL] %s：载荷缺少非 status/ 标签 %s（整份替换会静默删掉它）\n' "$name" "$l"
@@ -631,7 +631,7 @@ jobs:
               fi
             done
             sn="$(printf '%s\n' "$have" | grep -c '^status/' || true)"
-            if [ "$sn" = "1" ] && printf '%s\n' "$have" | grep -qxF 'status/in-review'; then
+            if [ "$sn" = "1" ] && grep -qxF 'status/in-review' <<<"$have"; then
               printf '  [ OK ] %s：载荷的 status/* 恰好 1 个 = status/in-review\n' "$name"
             else
               printf '  [FAIL] %s：载荷的 status/* 不是恰好 1 个目标标签（实测 %s 个）\n' "$name" "$sn"
@@ -744,6 +744,66 @@ jobs:
             exit 1
           fi
           echo "✅ 未发现凭据"
+      - name: 关闭关键字判据对大正文不误报（双向反向样本 >40KB + 静态扫描零管道）
+        run: |
+          set -euo pipefail
+          # #131 回归靶子：`printf` 经管道接 `grep -q` 在 pipefail 下 —— grep -q 命中即退出 → printf 收到 EPIPE
+          # → 整条管道被判失败 → `if !` 取反 → 误报「缺少关闭关键字」（正文 >32KB 才稳定触发）。
+          # 判据**只有一处**（linked-issue 步骤的 LINKED_ISSUE_ASSERT 标记区）：本步骤抽出**实现本身**，
+          # **禁止**在这里复写第二份正则（复写 = 两套判据，会漂移）。
+          wf=.github/workflows/required-checks.yml
+          judge=/tmp/linked-issue-assert.sh
+          fail=0
+          awk '/^[[:space:]]*# LINKED_ISSUE_ASSERT:BEGIN/ { on=1; next } /^[[:space:]]*# LINKED_ISSUE_ASSERT:END/ { on=0 } on' "$wf" > "$judge"
+          if ! grep -q 'grep -qiE' "$judge"; then
+            echo "::error file=$wf::未能从 LINKED_ISSUE_ASSERT 标记区解析出判据 —— 抽不到 = 断言无意义"
+            fail=1
+          elif [ "$(grep -c . "$judge" || true)" -lt 3 ]; then
+            echo "::error file=$wf::LINKED_ISSUE_ASSERT 标记区过短（$(grep -c . "$judge" || true) 行）"
+            fail=1
+          fi
+          if [ "$fail" -ne 0 ]; then exit 1; fi
+          . "$judge"
+          command -v linked_issue_ok >/dev/null || { echo "::error file=$wf::标记区未定义 linked_issue_ok"; exit 1; }
+          # ① 静态扫描：本文件禁止再出现「管道接 grep -q」（#131 的唯一触发形态）
+          if grep -nE '\|[[:space:]]*grep -q' "$wf"; then
+            echo "::error file=$wf::出现「管道接 grep -q」—— pipefail 下会 EPIPE（#131），改用 here-string"
+            exit 1
+          fi
+          printf '✅ 静态扫描：%s 零命中「管道接 grep -q」\n' "$wf"
+          # ② 大正文样本：>40KB（Linux runner 上 >32KB 才稳定触发 EPIPE，样本必须跨过该阈值）
+          big_with=/tmp/linked-issue-big-with.md
+          big_without=/tmp/linked-issue-big-without.md
+          {
+            printf 'Closes #1\n\n'
+            awk 'BEGIN { for (i = 1; i <= 800; i++) printf "填充行 %04d：大正文样本，用于跨过 runner 管道缓冲（>32KB），暴露 grep -q 的 EPIPE 误报。\n", i }'
+          } > "$big_with"
+          grep -vxF 'Closes #1' "$big_with" > "$big_without"
+          [ "$(grep -c '^Closes #1$' "$big_with" || true)" = 1 ] || { echo "::error::正向样本未恰好含 1 行 Closes #1"; fail=1; }
+          [ "$(grep -c '^Closes #1$' "$big_without" || true)" = 0 ] || { echo "::error::反向样本仍含 Closes #1（两样本必须只差这一行）"; fail=1; }
+          for f in "$big_with" "$big_without"; do
+            b="$(wc -c < "$f" | tr -d ' ')"
+            printf '  样本 %s：%s 字节\n' "$f" "$b"
+            if [ "$b" -lt 40960 ]; then
+              echo "::error::$f 只有 ${b} 字节（<40KB）—— 靶子样本无效，必须跨过 32KB 阈值"
+              fail=1
+            fi
+          done
+          # ③ 双向断言：同一段判据（linked_issue_ok）在两种大正文上必须给出相反结论
+          if linked_issue_ok "$(cat "$big_with")"; then
+            printf '  [ OK ] 大正文（含关闭关键字）→ 判据通过，不误报\n'
+          else
+            printf '  [FAIL] 大正文（含关闭关键字）→ 判据误报「缺少关闭关键字」—— #131 回归\n'
+            fail=1
+          fi
+          if linked_issue_ok "$(cat "$big_without")"; then
+            printf '  [FAIL] 大正文（不含关闭关键字）→ 判据仍然通过 —— 判据形同虚设（空断言）\n'
+            fail=1
+          else
+            printf '  [ OK ] 大正文（不含关闭关键字）→ 判据按预期失败，仍能识别缺失\n'
+          fi
+          if [ "$fail" -ne 0 ]; then exit 1; fi
+          echo "✅ #131：判据与实现同一段（LINKED_ISSUE_ASSERT 标记区）；大正文双向反向样本通过；工作流零「管道接 grep -q」"
 
   linked-issue:
     name: policy/linked-issue
@@ -757,7 +817,14 @@ jobs:
           PR='${{ github.event.pull_request.number }}'
           REPO='${{ github.repository }}'
           body="$(gh pr view "$PR" -R "$REPO" --json body --jq .body)"
-          if ! printf '%s' "$body" | grep -qiE '(close[sd]?|fix(e[sd])?|resolve[sd]?)[[:space:]]*:?[[:space:]]*#[0-9]+'; then
+          # 判据**只有一处**（本标记区）：ci/test 抽出同一段文本做双向反向样本，
+          # 因此正则不得在测试里复写第二份（复写 = 两套判据、会漂移）。
+          # LINKED_ISSUE_ASSERT:BEGIN —— 判据：正文是否含关闭关键字；here-string 去管道 → 无 EPIPE（#131）
+          linked_issue_ok() {
+            grep -qiE '(close[sd]?|fix(e[sd])?|resolve[sd]?)[[:space:]]*:?[[:space:]]*#[0-9]+' <<<"${1:-}"
+          }
+          # LINKED_ISSUE_ASSERT:END
+          if ! linked_issue_ok "$body"; then
             echo "::error::PR 正文缺少关闭关键字（例如 Closes #12）。官方：关键字只在 PR 正文或提交信息中生效，PR 标题无效。"
             exit 1
           fi

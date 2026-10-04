@@ -49,7 +49,7 @@ MACHINE_LABELS="status/ready status/in-progress status/in-review type/bug type/h
 assert_machine_labels() {
   missing=""
   for l in $MACHINE_LABELS; do
-    printf '%s\n' "${1:-}" | grep -qxF "$l" || missing="${missing} ${l}"
+    grep -qxF "$l" <<<"${1:-}" || missing="${missing} ${l}"
   done
   if [ -n "$missing" ]; then
     printf '[FAIL] 机器消费的标签在平台上不存在：%s\n' "$missing" >&2
