@@ -9,7 +9,7 @@
 ## 1. 开工前必须做（缺一不可）
 
 ```bash
-scripts/toolcheck.sh        # 8 项自检；任何一项失败就停下来报告，不要"先干着看"
+scripts/toolcheck.sh        # 9 项自检（含 git 工作区预检）；任何一项失败就停下来报告，不要"先干着看"
 ```
 
 然后读三份文档：`docs/PLAYBOOK.md`（怎么做）、`docs/GOVERNANCE.md`（什么算做完）、`TOOLING.md`（怎么交接）。
@@ -95,7 +95,7 @@ scripts/closeout.sh <pr#>
 - [ ] 对应 Issue 已更新（开工声明、进度、证据）
 - [ ] 分支已推送，PR 已开且正文含 `Closes #N` 与六段内容
 - [ ] 必需检查状态已核对并记录
-- [ ] 若已合并：`scripts/closeout.sh` 四项全过
+- [ ] 若已合并：`scripts/closeout.sh` 五项全过（含「无残留状态标签」）
 - [ ] 新增/变更的坑已写进 `docs/PLAYBOOK.md` §4 或对应脚本注释
 - [ ] 交接块（若需交接）已写入 Issue 评论
 

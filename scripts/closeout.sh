@@ -40,6 +40,7 @@ state="$(pr_state "$PR" 2>/dev/null || true)"
 [ -n "$state" ] || die "PR #${PR} 不存在或无法访问（检查编号与仓库权限）"
 branch="$(pr_head_ref "$PR" 2>/dev/null || true)"
 merge_sha="$(pr_json "$PR" 'mergeCommit' '.mergeCommit.oid' 2>/dev/null || true)"
+head_sha="$(pr_json "$PR" 'headRefOid' '.headRefOid' 2>/dev/null || true)"
 if [ "$state" = "MERGED" ]; then
   check_ok "已合并（squash 提交 ${merge_sha}）"
 else
@@ -87,11 +88,44 @@ else
     fi
   fi
   if [ "$state" = "MERGED" ]; then
+    tip_sha="$(git rev-parse "refs/heads/${branch}" 2>/dev/null || true)"
     if [ "$DRY" -eq 1 ]; then
+      log "[dry-run] 记录可恢复锚点到 Issue：branch=${branch} tip=${tip_sha:0:12} pr_head=${head_sha:0:12}"
       log "[dry-run] git branch -D ${branch}   # 已确认 PR 为 MERGED，故用 -D（squash 合并下 -d 必然拒绝）"
     else
-      if git branch -D "$branch" >/dev/null 2>&1; then
-        check_ok "本地分支 ${branch} 已删除（先验证了 PR=MERGED，再使用 -D）"
+      # 可恢复保全（工作区规则：不永久不可恢复删除）：
+      # squash 合并后原始提交不在 main 上，-D 会让本地对象只能靠 reflog 捞；
+      # 因此删除前把「分支名 + 本地 tip SHA + PR head SHA + 合并提交」写进关联 Issue 作为可查锚点。
+      if [ -n "$issues" ]; then
+        rec_body="$(cat <<REC
+<!-- CLOSEOUT-RECORD -->
+**收尾记录（可恢复锚点）**
+
+- 分支：\`${branch}\`（已删除）
+- 本地 tip SHA：\`${tip_sha:-未知}\`
+- PR head SHA：\`${head_sha:-未知}\`（**权威锚点**：GitHub 侧保留该提交，PR 页可 "Restore branch"）
+- 合并提交（squash）：\`${merge_sha:-未知}\`
+
+> 记录原因：squash 合并后分支上的原始提交不在 \`main\` 上，直接删除分支会使其只能靠本地 reflog 找回。
+> 按工作区规则"未验收/未合或独有成果先可恢复保全、不永久不可恢复删除"，此处先留锚点再删除。
+REC
+)"
+        rec_ok=0
+        for n in $issues; do
+          if gh issue comment "$n" -R "$REPO" --body "$rec_body" >/dev/null 2>&1; then rec_ok=1; break; fi
+        done
+        if [ "$rec_ok" = "1" ]; then
+          check_ok "已把可恢复锚点写入 Issue（tip ${tip_sha:0:12} / pr_head ${head_sha:0:12}）"
+        else
+          check_fail "无法写入可恢复锚点 —— 按规则**不应**再删除分支（请先修复写入权限）"
+        fi
+      else
+        check_fail "无关联 Issue，无法留可恢复锚点"
+      fi
+      if [ "$problems" -eq 0 ] && git branch -D "$branch" >/dev/null 2>&1; then
+        check_ok "本地分支 ${branch} 已删除（先验证 PR=MERGED 并留锚点，再用 -D）"
+      elif [ "$problems" -ne 0 ]; then
+        check_fail "因存在未通过项，**拒绝**删除本地分支 ${branch}（先保全）"
       else
         check_fail "本地分支 ${branch} 删除失败，请手动检查"
       fi

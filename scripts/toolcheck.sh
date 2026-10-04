@@ -106,7 +106,7 @@ else
   fi
 fi
 
-info "8/8 git 与远端可用性"
+info "8/9 git 与远端可用性"
 if git ls-remote --heads origin >/dev/null 2>&1; then
   ok "可访问远端 origin"
 else
@@ -114,6 +114,73 @@ else
 fi
 current="$(git branch --show-current 2>/dev/null || true)"
 log "  当前分支：${current:-（游离或空）}"
+
+info "9/9 git 工作区预检（工作区规则：/Users/ws/code/AGENTS.md 第 2 条）"
+toplevel="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+if [ -z "$toplevel" ]; then
+  note_fail "当前不在 git 仓库内"
+else
+  cwd_real="$(pwd -P)"
+  case "$cwd_real" in
+    "$toplevel"|"$toplevel"/*) ok "cwd 在仓库内：${cwd_real}" ;;
+    *) note_fail "cwd 不在本仓库内（cwd=${cwd_real}，仓库=${toplevel}）—— 可能开在了错误目录" ;;
+  esac
+
+  common="$(git rev-parse --git-common-dir 2>/dev/null || true)"
+  if [ "$common" = ".git" ]; then
+    ok "git common dir = .git（非 worktree）"
+  else
+    note_fail "git common dir=${common} —— 疑似 worktree/隔离副本，工作区规则明令禁止"
+  fi
+
+  wt_count="$(git worktree list 2>/dev/null | wc -l | tr -d ' ')"
+  if [ "$wt_count" = "1" ]; then
+    ok "worktree 数量 1（符合规则）"
+  else
+    note_fail "检测到 ${wt_count} 个 worktree —— 工作区规则禁止 clone/worktree/隔离实现副本"
+  fi
+
+  head_sha="$(git rev-parse --short HEAD 2>/dev/null || true)"
+  log "  HEAD=${head_sha:-未知}"
+
+  dirty="$(git status --porcelain 2>/dev/null | wc -l | tr -d ' ')"
+  if [ "$dirty" = "0" ]; then
+    ok "工作区干净"
+  else
+    warn "工作区有 ${dirty} 处未提交改动 —— 开工前确认归属（切勿用 reset/checkout 抹掉他人成果）"
+  fi
+
+  gd="$(git rev-parse --git-dir 2>/dev/null || true)"
+  if [ -n "$gd" ] && [ -e "${gd}/index.lock" ]; then
+    note_fail "存在 ${gd}/index.lock —— 可能有另一个 git 进程在运行（同一时间只允许一个执行者）"
+  else
+    ok "无 index.lock（无并发 git 操作迹象）"
+  fi
+  log "  ⚠️ 活动写者无法自动探测：开始工作前请人工确认无其他执行者（同一 workspace 只允许一个执行者）"
+
+  remotes="$(git remote 2>/dev/null | tr '\n' ' ')"
+  if [ "$(printf '%s' "$remotes" | tr -d ' ')" = "origin" ]; then
+    ok "远程唯一：origin"
+    url="$(git remote get-url origin 2>/dev/null || true)"
+    case "$url" in
+      *yes8080/pm4gh*) ok "origin 指向本仓库：${url}" ;;
+      *) note_fail "origin 指向意外仓库：${url}" ;;
+    esac
+    if git fetch -q origin 2>/dev/null; then
+      lm="$(git rev-parse --short main 2>/dev/null || true)"
+      rm="$(git rev-parse --short origin/main 2>/dev/null || true)"
+      if [ -n "$lm" ] && [ "$lm" = "$rm" ]; then
+        ok "本地 main 与 origin/main 一致（${lm}）"
+      else
+        warn "本地 main=${lm:-无} 与 origin/main=${rm:-无} 不一致 —— 推送前请先同步"
+      fi
+    else
+      warn "无法 fetch origin（网络或凭据问题）"
+    fi
+  else
+    note_fail "远程不是唯一的 origin（当前：${remotes:-无}）—— 工作区规则只允许向已授权的唯一 GitHub 远程推送"
+  fi
+fi
 
 echo
 if [ "$fail" -eq 0 ]; then

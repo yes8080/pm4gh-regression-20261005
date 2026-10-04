@@ -20,7 +20,7 @@
 
 ```bash
 git clone https://github.com/yes8080/pm4gh.git && cd pm4gh
-scripts/toolcheck.sh          # 8 项自检：命令/gh 登录/规则集漂移/必需检查/凭据/git 远端
+scripts/toolcheck.sh          # 9 项自检：命令/gh 登录/规则集漂移/必需检查/凭据/git 远端/git 工作区预检
 ```
 
 **任何一项未通过都不要开始干活。** 最常见的两类失败：
@@ -86,7 +86,7 @@ unset GH_TOKEN                 # 用完立刻切回主身份
 | **source 阶段残留失效 `GH_TOKEN`** | `GH_TOKEN=bogus bash scripts/audit.sh` 会在 `source lib.sh` 时直接失败（`[FAIL] 无法确定仓库`），因为 `REPO` 在 source 阶段解析 | 已在 `lib.sh` 修复：解析时临时清空 `GH_TOKEN` 再恢复。**排查时**注意"脚本还没开始跑就失败"通常属这类 source 阶段问题 |
 | **BSD `grep` 不支持 `-P`** | 本机复现 `ci/lint` 的 `grep -nHP` 检查时会报非法选项 | 本地用 Python 等价正则复算，最终以 CI 的 `ci/lint` 结果为准；不要因本地跑不了就跳过 |
 | **陈旧的 remote-tracking ref** | 合并后 `git branch -a` 仍列出已删除的远程分支 | `git fetch --prune`。判定远程分支是否存在**必须用 `git ls-remote`**（`closeout.sh` 即如此），不要看 `git branch -r` |
-| **同一 workspace 只允许一个执行者** | 两个执行者并发会互相删分支/切 HEAD（本项目已实际发生：演练执行者的分支被我清理时被切走，它靠悬空 commit 恢复） | 交接必须显式"让出"：确认对方工作区干净且已切回 `main` 后再动手；并行应使用独立 clone/worktree |
+| **同一 workspace 只允许一个执行者** | 两个执行者并发会互相删分支/切 HEAD（本项目已实际发生：演练执行者的分支被我清理时被切走，它靠悬空 commit 恢复） | 交接必须显式"让出"：确认对方工作区干净且已切回 `main` 后再动手。**默认串行**：`/Users/ws/code/AGENTS.md` 明令禁止 `clone` / `worktree` / 隔离实现副本（走重复依赖与配置漂移），因此**不允许靠开副本并行**；`scripts/toolcheck.sh` 会检测 worktree 数量并拒绝继续 |
 | **环境里残留失效的 `GH_TOKEN` 会让所有脚本在 source 阶段就失败** | `lib.sh` 在 **source 时**（早于 `use_main_identity`）就用 `gh repo view` 解析 `REPO`，失效 token → 报"无法确定仓库" | 要强制主身份的脚本需在 `source lib.sh` **之前** `unset GH_TOKEN`（`scripts/report.sh` 已如此处理）；排查时先 `unset GH_TOKEN` |
 
 ---

@@ -89,7 +89,7 @@ scripts/start.sh <issue#>
 **通过标准（五项缺一不可）**
 1. 全程无需任何口头/聊天补充说明；
 2. 无需手工修补状态（`status/*` 标签合法且互斥，`scripts/status.sh --check` 通过）；
-3. 无孤儿分支（本地与远程均干净，`scripts/closeout.sh` 四项全过）；
+3. 无孤儿分支（本地与远程均干净，`scripts/closeout.sh` 五项全过）；
 4. Issue ↔ 分支 ↔ PR ↔ 合并记录四者链接完整；
 5. 演练前后度量口径不变（同一套定义，见 GOVERNANCE §8）。
 
