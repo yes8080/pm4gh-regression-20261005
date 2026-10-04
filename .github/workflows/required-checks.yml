@@ -191,6 +191,34 @@ jobs:
           [ "$bad" = 0 ] || exit 1
           echo "✅ 状态标签合法且互斥"
 
+      - name: toolkit 自检（install/eject 语义：存在即执行、缺失即失败）
+        run: |
+          set -euo pipefail
+          # 契约（Issue #57）：
+          #   ① 存在即执行 —— 该步骤真实跑 toolkit/tests/self-test.sh，失败即本门禁失败，
+          #      **不得**用 `|| true` / 静默跳过把它吞掉（失败案例库头号主因：
+          #      「全绿测试掩盖缺陷」—— pm4java-v3 S03.01 删掉一条断言后 summary 仍 27/27 PASS）。
+          #   ② 缺失即失败 —— 脚本被删除或改名时**报错退出**，绝不当作"没找到就跳过"；
+          #      否则覆盖面会被静默清零，门禁看起来仍是绿的。
+          # 断言条数会随切片增长，故不写死在步骤名里（避免文档/名称漂移），运行时打印实际值。
+          f=toolkit/tests/self-test.sh
+          if [ ! -f "$f" ]; then
+            echo "::error file=$f::toolkit 自检脚本不存在（被删除或改名？）—— 它属于必需检查 ci/test 的覆盖面，不得为空"
+            exit 1
+          fi
+          out=""; rc=0
+          out="$(bash "$f" 2>&1)" || rc=$?
+          printf '%s\n' "$out"
+          if [ "$rc" -ne 0 ]; then
+            echo "::error file=$f::toolkit 自检失败（退出码 ${rc}）—— 详见上方 [FAIL] 行"
+            exit 1
+          fi
+          # 反"空跑"护栏：退出 0 但连汇总行都没有 → 视为未真正执行（例如脚本被换成 `exit 0`）
+          if ! printf '%s' "$out" | grep -qE 'PASS=[0-9]+ FAIL=[0-9]+'; then
+            echo "::error file=$f::toolkit 自检未输出 PASS=/FAIL= 汇总行 —— 视为未真正执行"
+            exit 1
+          fi
+          printf '✅ toolkit 自检通过：%s\n' "$(printf '%s' "$out" | grep -oE 'PASS=[0-9]+ FAIL=[0-9]+' | tail -1)"
       - name: 未提交任何凭据
         run: |
           set -euo pipefail

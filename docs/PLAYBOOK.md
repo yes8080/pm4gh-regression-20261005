@@ -102,6 +102,8 @@ unset GH_TOKEN                 # 用完立刻切回主身份
 | **把命令输出接给 `tail` 会吞掉失败退出码** | 未开 `pipefail` 时管道退出码取自最后一个命令：旧版 `deliver.sh` 的 `git push … 2>&1` 接 `tail -2`，推送被服务端拒绝后仍继续执行，可能用**远端的旧分支**建出一个 PR | 需要"既看输出又判失败"时先赋值再判：`if ! out="$(cmd 2>&1)"; then …; fi`（`scripts/deliver.sh` 已如此处理） |
 | **作者身份（`repo` + `workflow`）用不了 `gh pr edit`** | `gh pr edit` 走 **GraphQL**，其查询取 `login` / `name` / `slug` 等字段、需要 `read:org`；作者 PAT 只有 `repo` + `workflow` → `GraphQL: Your token has not been granted the required scopes … 'read:org'`，**正文不会被更新**（#54 实测） | PM 裁定（#54）：**不给作者扩权**（`read:org` 与 D1 最小权限冲突），改为用 `scripts/lib.sh` 的 `pr_edit_body <pr#> <正文文件>`（REST `PATCH /repos/{o}/{r}/pulls/{n}` + 回读校验，失败直接暴露；随 #47 交付）。`gh pr create` / `gh pr comment` / `gh pr view` 走 REST，不受影响 |
 | **`printf '%s'` 不带换行 → 循环里逐行输出被拼成一行** | `render_str`（本套件占位符渲染）用 `printf '%s'`，把 `render_str … \| sed …` 放进 `while` 循环直接输出时，多个结果会**首尾相连成一行**，下游 `grep -Fxq` 全部失配（S2 实测：`eject --check` 误报"CODEOWNERS 原有行被动了"，`wc -l` 为 0） | 循环里逐行输出必须自己补换行：`printf '%s\n' "$(render_str … \| sed …)"`。**注意**：这个脚本在 `set -eu` 下不会报错，只会静默给出错误数据 —— 复核判据脚本时优先看"输出行数对不对" |
+| **改 `.github/workflows/**` 忘了同步 `toolkit/payload/workflows/**`** | 只改前者时本仓库门禁变紧，但**装到目标仓库的 CI 静默缺这一步**（两处差异应**只有占位符** `@@OWNER@@` 等）；这是"门禁看起来在、实际没装"的形态 | 改任一处必须同步另一处，并用 `diff .github/workflows/X.yml toolkit/payload/workflows/X.yml` 核对：**除占位符外无差异**。`toolkit/tests/self-test.sh` 会真跑安装流程，步骤缺失即 CI 变红 |
+| **反向样本"故意让门禁变红"怕违反 §7 规则 1** | 规则 1 禁止的是**同一个 commit SHA** 上"先失败后通过"（Bug #13）：那样该 SHA 的必需检查永远无法转绿 | 反向样本可以这样做：在切片分支推一个**故意失败**的临时提交 → 抓取 `ci/test` 的红色日志 → **再推一个新提交**修复。PR 的可合并性只看**头 SHA** 的检查，新 SHA 会得到全新的检查结论（实测 #57：`ci/test` 在临时 SHA 上 `FAIL=1` 变红，修复后头 SHA 全绿）。squash 合并后这些临时提交不会进入 `main` 历史 |
 
 ---
 

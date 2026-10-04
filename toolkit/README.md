@@ -116,13 +116,24 @@ toolkit/eject.sh --apply --revoke-collaborators    # 显式撤销协作者（默
 ## 6. 自检与验证
 
 ```bash
-# 离线自检（不联网、不碰任何真实仓库）：143 条断言
+# 离线自检（不联网、不碰任何真实仓库）：154 条断言
 bash toolkit/tests/self-test.sh
 
 # 在宿主仓库上核对"与现状一致"（只读）
 toolkit/install.sh --check
 toolkit/eject.sh --check
 ```
+
+**这条自检已接入 CI 门禁（Issue #57）**：必需检查 `ci/test` 中有一节
+`toolkit 自检（install/eject 语义：存在即执行、缺失即失败）`，它真实执行本脚本，
+并按契约处理两种边界：
+
+- **失败即失败**：任何 `[FAIL]` → 该步骤非零退出 → `ci/test` 变红（不吞输出、不 `|| true`）；
+- **缺失即失败**：`toolkit/tests/self-test.sh` 被删除或改名时**直接报错退出**，
+  绝不当作"没找到就跳过"——否则覆盖面会被静默清零，门禁看起来仍是绿的。
+
+同一节也同步写进了 `payload/workflows/required-checks.yml`，因此装到目标仓库的 CI 同样包含它
+（两处内容除占位符外必须逐字一致）。
 
 `toolkit/tests/` 下是自检装置：`stub-gh.sh` 是一个 gh 假实现（模拟标签/规则集/协作者，
 含 `label delete` / `ruleset|collaborator DELETE` / `issue comment` 与故障、中断注入），
