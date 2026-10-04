@@ -34,6 +34,10 @@ scripts/closeout.sh 12                                 # 6. 五项核验 + 写�
 
 「六步」= preflight → start → deliver → review → 合并 → closeout。
 
+异常路径（PR 关闭不合并 / 作者放弃 / Issue 取消但分支已建）走 `scripts/abort.sh <issue#>`：
+清理本地+远端分支、状态 → `canceled`（只走 `status.sh`）、在 Issue 留可恢复锚点；
+**不能证明「内容不会丢」就拒绝删除**（fail-closed）。
+
 ## 状态机（唯一源 = `status/*` 标签）
 
 ```
@@ -43,6 +47,7 @@ Backlog(无标签) → ready → in-progress → in-review → Done(PR 合并自
 
 - 迁移**只能**走 `scripts/status.sh <issue#> <state>`（`backlog|ready|in-progress|in-review|rework|done|canceled`）
 - `scripts/status.sh --check` 扫描**全部开放 Issue**：每个必须恰好 0 或 1 个 `status/*` 标签（0 = Backlog）
+- `scripts/status.sh --check-cross` **只读**交叉检查 Issue↔PR（in-review 但 PR 已关闭/无开放 PR、done 但 PR 未合并、有开放 PR 但 Issue 无 `status/*`）；无法确定关联的 PR 不猜测
 - 关闭 Issue = 状态 Done/Canceled 的载体（`Closes #N` 由 squash 合并自动关单并清空标签）
 
 ## 30 秒上手
@@ -61,6 +66,7 @@ Backlog(无标签) → ready → in-progress → in-review → Done(PR 合并自
 | `deliver.sh` | 推送 + 开/更新 PR | 正文含 `Closes #N` + 六段 |
 | `review.sh` | 独立评审 | 评审身份 ≠ 作者身份 |
 | `closeout.sh` | 合并后核验 | 写分支 tip SHA + PR head SHA 到 Issue 再删分支 |
+| `abort.sh` | 异常路径出口（PR 关闭不合并 / 作者放弃 / Issue 已取消） | 不能证明「内容不会丢」就**拒绝删除**；状态只走 `status.sh`；先留可恢复锚点 |
 
 > 每个脚本自带所需的身份/工具函数，不依赖共享库 —— 单文件可读、可独立复制。**不要引入共享库。**
 

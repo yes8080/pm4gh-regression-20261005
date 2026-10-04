@@ -6,6 +6,7 @@
 #   scripts/status.sh <issue#> --show              # 查看当前状态
 #   scripts/status.sh --check                      # 扫**全部开放 Issue**：每个恰好 0 或 1 个合法 status/*
 #   scripts/status.sh --check-transition <from> <to>  # **只读**判定迁移是否合法（零副作用；不读网络）
+#   scripts/status.sh --check-cross                # **只读**交叉状态检查（Issue ↔ PR 四条规则；零副作用）
 #
 # --check-transition 专供「副作用不可逆」的脚本（start.sh / deliver.sh）在动手前调用：
 # 非法时退出码 1 并打印 from 的合法出边与正确命令；合法时退出码 0，且绝不改动任何东西。
@@ -174,8 +175,207 @@ EOF
   exit 1
 fi
 
+# ── --check-cross：**只读**交叉状态检查（Issue ↔ PR）────────────────────
+# 为什么要有它：--check / ci/test / policy/* **都只读 Issue**，因此
+# 「Issue in-review 而关联 PR 已 CLOSED」「Issue done 而 PR 未合并」这类不一致
+# 没有任何门禁能看到（#60 的孤儿分支正是这条盲区的后果）。
+# 规则（只读：只发 GET，不写任何东西）：
+#   R1 Issue 为 in-review，但关联 PR 已 CLOSED（未合并）
+#   R2 Issue 为 done，但关联 PR 未合并（仍开放 / 已关闭未合并）
+#   R3 Issue 为 in-review，但没有任何开放 PR
+#   R4 有开放 PR，但 Issue 无任何 status/*（Backlog）
+# 关联判据（**只检查能确定关联的 PR**）：PR 的 closingIssuesReferences（GitHub 解析出的
+# 关闭关系）或分支名 <type>/<issue#>-<slug>。两者都没有 → 如实标注「无法判定」，**不猜测**。
+# 退出码：0 = 四条规则全未命中；1 = 存在冲突；2 = 查询失败/用法错
+if [ "${1:-}" = "--check-cross" ]; then
+  [ "$#" -eq 1 ] || die "用法：scripts/status.sh --check-cross（不接受额外参数）" 2
+  CROSS_TMP="$(mktemp -d "${TMPDIR:-/tmp}/pm4gh-cross.XXXXXX")" || die "无法创建临时目录"
+  cleanup_cross() { rm -rf "$CROSS_TMP"; }
+  trap cleanup_cross EXIT INT TERM
+
+  info "交叉状态只读检查（仓库 ${REPO}，身份 ${ACTOR}）"
+  issues_file="${CROSS_TMP}/issues.tsv"
+  if ! gh issue list -R "$REPO" --state open --limit 300 --json number,state,stateReason,labels \
+    --jq '.[] | "\(.number)|\(.state)|\(.stateReason // "")|\([.labels[].name | select(startswith("status/"))] | join(","))"' \
+    > "$issues_file" 2>/dev/null; then
+    die "读取开放 Issue 失败（权限/网络）—— 交叉检查未完成" 2
+  fi
+  prs_open="${CROSS_TMP}/prs-open.tsv"
+  if ! gh pr list -R "$REPO" --state open --limit 300 --json number,headRefName,closingIssuesReferences \
+    --jq '.[] | "\(.number)|\(.headRefName)|OPEN|\([.closingIssuesReferences[].number] | join(","))"' \
+    > "$prs_open" 2>/dev/null; then
+    die "读取开放 PR 失败（权限/网络）—— 交叉检查未完成" 2
+  fi
+  prs_closed="${CROSS_TMP}/prs-closed.tsv"
+  if ! gh pr list -R "$REPO" --state closed --limit 300 --json number,headRefName,mergedAt,closingIssuesReferences \
+    --jq '.[] | "\(.number)|\(.headRefName)|\(if .mergedAt then "MERGED" else "CLOSED_UNMERGED" end)|\([.closingIssuesReferences[].number] | join(","))"' \
+    > "$prs_closed" 2>/dev/null; then
+    die "读取已关闭 PR 失败（权限/网络）—— 交叉检查未完成" 2
+  fi
+
+  # PR → Issue 关联（每行：issue | pr | pr_kind | link_kind；用 | 分隔，tab 是 IFS 空白会吞掉空字段）
+  assoc="${CROSS_TMP}/assoc.tsv"; : > "$assoc"
+  undet="${CROSS_TMP}/undetermined.tsv"; : > "$undet"
+  add_assoc() { printf '%s|%s|%s|%s\n' "$1" "$2" "$3" "$4" >> "$assoc"; }
+  branch_issue_of() {
+    printf '%s' "${1:-}" | sed -nE 's#^(slice|fix|hotfix|spike|chore)/([0-9]+)-[a-z0-9-]+$#\2#p'
+  }
+  scan_prs() {
+    while IFS='|' read -r pr head kind refs; do
+      [ -n "$pr" ] || continue
+      seen=""
+      if [ -n "$refs" ]; then
+        for n in $(printf '%s' "$refs" | tr ',' ' '); do
+          add_assoc "$n" "$pr" "$kind" "closingIssuesReferences"
+          seen="${seen} ${n}"
+        done
+      fi
+      bnum="$(branch_issue_of "$head")"
+      if [ -n "$bnum" ]; then
+        case " ${seen} " in
+          *" ${bnum} "*) : ;;
+          *) add_assoc "$bnum" "$pr" "$kind" "branch-name" ;;
+        esac
+      fi
+      if [ -z "$refs" ] && [ -z "$bnum" ]; then
+        printf '%s|%s\n' "$pr" "$head" >> "$undet"
+      fi
+    done < "$1"
+  }
+  scan_prs "$prs_open"
+  scan_prs "$prs_closed"
+
+  n_open_issues="$(grep -c . "$issues_file" 2>/dev/null || true)"
+  n_open_prs="$(grep -c . "$prs_open" 2>/dev/null || true)"
+  n_closed_prs="$(grep -c . "$prs_closed" 2>/dev/null || true)"
+  n_by_body="$(grep -c 'closingIssuesReferences' "$assoc" 2>/dev/null || true)"
+  n_by_branch="$(grep -c 'branch-name' "$assoc" 2>/dev/null || true)"
+  n_undet="$(grep -c . "$undet" 2>/dev/null || true)"
+
+  # 关联到的已关闭 Issue：补读状态（仍然只读）
+  unknown_issue=0
+  for n in $(cut -d'|' -f1 "$assoc" 2>/dev/null | sort -u); do
+    [ -n "$n" ] || continue
+    case "$n" in *[!0-9]*) continue ;; esac
+    if grep -q "^${n}|" "$issues_file" 2>/dev/null; then
+      continue
+    fi
+    meta="$(gh issue view "$n" -R "$REPO" --json state,stateReason,labels \
+      --jq '"\(.state)|\(.stateReason // "")|\([.labels[].name | select(startswith("status/"))] | join(","))"' 2>/dev/null || true)"
+    if [ -n "$meta" ]; then
+      printf '%s|%s\n' "$n" "$meta" >> "$issues_file"
+    else
+      unknown_issue=$((unknown_issue + 1))
+      warn "PR 关联到不存在的 Issue #${n} —— 无法判定，不计入规则"
+    fi
+  done
+
+  class_of() {
+    if [ "$1" = "OPEN" ]; then
+      case "$3" in
+        "")               printf 'backlog' ;;
+        status/in-review) printf 'in-review' ;;
+        *)                printf 'open-other' ;;
+      esac
+    else
+      case "$2" in
+        NOT_PLANNED|not_planned) printf 'canceled' ;;
+        *) if [ -z "$3" ]; then printf 'done'; else printf 'closed-other'; fi ;;
+      esac
+    fi
+  }
+  row_of() { grep -m1 "^${1}|" "$issues_file" 2>/dev/null || true; }
+
+  printf '  数据源：开放 Issue %s 条；开放 PR %s 条；已关闭 PR %s 条（各取最近 300 条）\n' \
+    "$n_open_issues" "$n_open_prs" "$n_closed_prs"
+  printf '  关联方式：closingIssuesReferences %s 条；分支名解析 %s 条；无法判定 PR %s 个\n' \
+    "$n_by_body" "$n_by_branch" "$n_undet"
+
+  r1=0
+  r2=0
+  r3=0
+  r4=0
+
+  info "R1：Issue 为 in-review，但关联 PR 已 CLOSED（未合并）"
+  while IFS='|' read -r n pr kind link; do
+    [ -n "$n" ] || continue
+    [ "$kind" = "CLOSED_UNMERGED" ] || continue
+    row="$(row_of "$n")"
+    [ -n "$row" ] || continue
+    if [ "$(class_of "$(printf '%s' "$row" | cut -d'|' -f2)" "$(printf '%s' "$row" | cut -d'|' -f3)" "$(printf '%s' "$row" | cut -d'|' -f4)")" = "in-review" ]; then
+      printf '[FAIL] R1：Issue #%s 为 in-review，但关联 PR #%s 已 CLOSED（未合并；关联方式：%s）\n' "$n" "$pr" "$link"
+      r1=$((r1 + 1))
+    fi
+  done < "$assoc"
+  if [ "$r1" -eq 0 ]; then ok "R1 未命中"; fi
+
+  info "R2：Issue 为 done，但关联 PR 未合并"
+  while IFS='|' read -r n pr kind link; do
+    [ -n "$n" ] || continue
+    case "$kind" in OPEN|CLOSED_UNMERGED) : ;; *) continue ;; esac
+    row="$(row_of "$n")"
+    [ -n "$row" ] || continue
+    if [ "$(class_of "$(printf '%s' "$row" | cut -d'|' -f2)" "$(printf '%s' "$row" | cut -d'|' -f3)" "$(printf '%s' "$row" | cut -d'|' -f4)")" = "done" ]; then
+      if [ "$kind" = "OPEN" ]; then pstate_txt="仍开放（未合并）"; else pstate_txt="已关闭且未合并"; fi
+      printf '[FAIL] R2：Issue #%s 已 done（CLOSED+无 status/*），但关联 PR #%s %s（关联方式：%s）\n' "$n" "$pr" "$pstate_txt" "$link"
+      r2=$((r2 + 1))
+    fi
+  done < "$assoc"
+  if [ "$r2" -eq 0 ]; then ok "R2 未命中"; fi
+
+  info "R3：Issue 为 in-review，但没有任何开放 PR"
+  while IFS='|' read -r n st rs lb; do
+    [ -n "$n" ] || continue
+    [ "$st" = "OPEN" ] || continue
+    [ "$lb" = "status/in-review" ] || continue
+    open_prs="$(awk -F'|' -v num="$n" '$1 == num && $3 == "OPEN" { print "#" $2 }' "$assoc" | tr '\n' ' ' | sed -E 's/[[:space:]]+$//')"
+    if [ -n "$open_prs" ]; then continue; fi
+    other_prs="$(awk -F'|' -v num="$n" '$1 == num && $3 != "OPEN" { print "#" $2 "(" $3 ")" }' "$assoc" | tr '\n' ' ' | sed -E 's/[[:space:]]+$//')"
+    if [ -n "$other_prs" ]; then detail="关联 PR 均非开放：${other_prs}"; else detail="无任何关联 PR"; fi
+    printf '[FAIL] R3：Issue #%s 为 in-review，但无开放 PR（%s）\n' "$n" "$detail"
+    r3=$((r3 + 1))
+  done < "$issues_file"
+  if [ "$r3" -eq 0 ]; then ok "R3 未命中"; fi
+
+  info "R4：有开放 PR，但 Issue 无任何 status/*（Backlog）"
+  while IFS='|' read -r n pr kind link; do
+    [ -n "$n" ] || continue
+    [ "$kind" = "OPEN" ] || continue
+    row="$(row_of "$n")"
+    [ -n "$row" ] || continue
+    if [ "$(class_of "$(printf '%s' "$row" | cut -d'|' -f2)" "$(printf '%s' "$row" | cut -d'|' -f3)" "$(printf '%s' "$row" | cut -d'|' -f4)")" = "backlog" ]; then
+      printf '[FAIL] R4：Issue #%s 无任何 status/*（Backlog），但有开放 PR #%s（关联方式：%s）\n' "$n" "$pr" "$link"
+      r4=$((r4 + 1))
+    fi
+  done < "$assoc"
+  if [ "$r4" -eq 0 ]; then ok "R4 未命中"; fi
+
+  info "无法判定关联的 PR（只标注，不猜测）"
+  if [ -s "$undet" ]; then
+    while IFS='|' read -r pr head; do
+      [ -n "$pr" ] || continue
+      printf '  [N/A ] PR #%s（head=%s）：正文无 closingIssuesReferences，分支名也不符合 <type>/<issue#>-<slug>\n' "$pr" "$head"
+    done < "$undet"
+  else
+    ok "所有 PR 都能确定关联"
+  fi
+  if [ "$unknown_issue" -gt 0 ]; then
+    warn "另有 ${unknown_issue} 个关联指向不存在的 Issue（无法判定）"
+  fi
+
+  hits=$((r1 + r2 + r3 + r4))
+  printf '\n'
+  if [ "$hits" -eq 0 ]; then
+    ok "交叉状态无冲突：R1/R2/R3/R4 全未命中（只读，零副作用）"
+    exit 0
+  fi
+  warn "交叉状态发现 ${hits} 处冲突：R1=${r1} R2=${r2} R3=${r3} R4=${r4}"
+  warn "修法：Issue 侧走 scripts/status.sh <issue#> <state>；异常路径（PR 关闭不合并 / 作者放弃 / Issue 已取消）走 scripts/abort.sh <issue#>"
+  exit 1
+fi
+
 ISSUE="${1:-}"
-[ -n "$ISSUE" ] || die "用法：scripts/status.sh <issue#> <state> [--force] | <issue#> --show | --check | --check-transition <from> <to>" 2
+[ -n "$ISSUE" ] || die "用法：scripts/status.sh <issue#> <state> [--force] | <issue#> --show | --check | --check-cross | --check-transition <from> <to>" 2
 case "$ISSUE" in *[!0-9]*) die "Issue 编号必须是数字：${ISSUE}" 2 ;; esac
 
 state_of() {
@@ -203,7 +403,7 @@ if [ "${2:-}" = "--show" ]; then
 fi
 
 STATE="${2:-}"
-[ -n "$STATE" ] || die "用法：scripts/status.sh <issue#> <state> [--force] | <issue#> --show | --check | --check-transition <from> <to>" 2
+[ -n "$STATE" ] || die "用法：scripts/status.sh <issue#> <state> [--force] | <issue#> --show | --check | --check-cross | --check-transition <from> <to>" 2
 FORCE=0
 case "${3:-}" in
   "") : ;;

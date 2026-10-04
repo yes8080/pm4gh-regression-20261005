@@ -85,6 +85,22 @@ stateDiagram-v2
 `from` 的合法出边与对应命令。`start.sh`（建分支前）与 `deliver.sh`（推送/建 PR 前）**先读当前
 状态、再调用它**：非法就立即失败，不留半成品。`start.sh` 不再假定 Issue 在 `backlog`。
 
+### 交叉体检（只读，Issue ↔ PR）— `scripts/status.sh --check-cross`
+
+`--check`、`ci/test`、`policy/*` **都只读 Issue**，所以「Issue 已 in-review 而关联 PR 被关闭」
+这类不一致曾经没有任何门禁能看到。本命令同时读 Issue 与 PR、**零副作用**（只发 GET、只写临时目录）：
+
+| 规则 | 判据 |
+|---|---|
+| R1 | Issue 为 `in-review`，但关联 PR 已 `CLOSED`（未合并） |
+| R2 | Issue 为 `done`，但关联 PR 未合并（仍开放 / 已关闭未合并） |
+| R3 | Issue 为 `in-review`，但**没有任何开放 PR** |
+| R4 | 有开放 PR，但 Issue 无任何 `status/*`（Backlog） |
+
+「关联」只认两种**可判定**证据：PR 的 `closingIssuesReferences`（GitHub 解析出的关闭关系）或
+分支名 `<type>/<issue#>-<slug>`。两者都没有的 PR **不得猜测** —— 如实标注为「无法判定」并列出，
+不计入冲突。退出码 0 = 四条规则全未命中；1 = 存在冲突（逐条打印规则、Issue/PR 号与关联方式）。
+
 ## 2. W0..W7 闭环
 
 ### 时序图（谁在什么时候触发）
@@ -169,6 +185,35 @@ sequenceDiagram
 `gh pr merge <pr#> --squash --delete-branch`（只有 `@yes8080` 能做）→ `scripts/closeout.sh <pr#>` 五项：① PR 已 MERGED ② 关联 Issue 已关 ③ 远端无头分支 ④ 本地无头分支已清理 ⑤ 无残留状态标签。
 第 ⑤ 项**由 `closeout.sh` 自己清理**（内部调用 `status.sh <n> done`，仅对已关闭的 Issue；OPEN 的 Issue 绝不代关，否则掩盖「合并没关单」）。第 ④ 项**先**把「分支名 + 本地 tip SHA + PR head SHA + squash 提交」写进 Issue 作为可恢复锚点，**再** `git branch -D`（squash 后原始提交不在 `main` 上，`-d` 必然拒绝；但绝不允许无条件 `-D`）。
 
+### W8 终止/取消（异常路径出口）— `scripts/abort.sh <issue#>`
+
+W0..W7 只覆盖「一路顺风」。`canceled` 是**既有终态**（无出边、不新造状态），但此前它**没有步骤、
+没有执行者、没有判据**，分支实体在异常路径上也没有清理者 —— #60 的孤儿分支就是后果（Issue 已
+`canceled`，远端分支仍留着，**无 PR、无任何门禁能看到**，直到一次独立审查才发现）。
+
+| 项 | 规定 |
+|---|---|
+| 谁可发起 | 作者（PR 关闭不合并 / 中途放弃）或 PM·dispatcher（决定不做）；发起时在 Issue 留一句原因 |
+| 谁确认 | dispatcher（`@yes8080`）确认「确实不做」；清理动作由**作者身份**执行（`--as author`，分支属作者），但状态迁移只走 `status.sh` |
+| 判据（全部成立才终止） | ① 不再计划完成（不做 / 被替代 / 放弃）② 删除分支**不会丢内容**（见下方判据） |
+| 必须同时做 | 清理**本地 + 远端**分支；状态 → `canceled`（**只走 `scripts/status.sh`**，绝不直接改标签）；在 Issue 留**可恢复锚点**（分支 tip SHA / 原因 / 时间 / 判据） |
+
+三条异常路径共用同一命令（脚本按平台事实自动识别路径，并写进锚点）：
+
+| 路径 | 触发事实 | 命令 |
+|---|---|---|
+| ① PR 关闭不合并 | PR 为 `CLOSED` 且未 MERGED | `scripts/abort.sh <issue#>` |
+| ② 作者中途放弃 | 有分支，可能从未有 PR | `scripts/abort.sh <issue#>` |
+| ③ Issue 已取消但分支已建 | Issue `CLOSED(not planned)` + 分支残留 | `scripts/abort.sh <issue#>` |
+
+**删除判据（fail-closed，不得无脑强删）**：只有能证明「内容不会丢」才删 —— ① 分支 tip（本地与远端
+都算）是 `origin/main` 的**祖先**，或 ② 该分支有**已合并** PR（squash 后 tip 不在 `main` 上，但内容
+已合入），或 ③ 显式 `--evidence "<说明>"`（人工声明内容已另有归宿，声明**原文**写进锚点；**没有**
+无记录强删的开关）。三条都不成立（存在独有未合并提交）→ **一个分支都不删、状态也不迁移**，打印
+分支 tip、独有提交与处置选项后退出 1。可恢复锚点写不进去同样不删。**幂等**：连跑两次，第二次
+不产生任何写操作。`done` 是终态且属合并收尾 → 走 `closeout.sh`，`abort.sh` 拒绝处理（除分支外的
+内容会丢，需先 `gh issue reopen`）。
+
 ## 3. DoD（什么算做完）
 
 - [ ] Issue 的验收标准**逐条**有可核对证据（命令 + 输出 / 检查名 / 运行链接）
@@ -195,6 +240,7 @@ sequenceDiagram
 12. **流程只在仓库里。** `docs/WORKFLOW.md` + `AGENTS.md` + `.github/**` + `scripts/**` 就是全部权威流程描述；不引入第二套规范文档，也不发布"可移植治理套件"。元工具自身的代码量超过它服务的开发工作，就是失控信号。
 13. **规则集声明必须与线上「整份」一致，不是"挑几个字段"。** `.github/rulesets/main-protection.json` 的比对是**全量键 diff**：唯一判据是 `RULESET_CANON_JQ`（同一段文本同时出现在 `scripts/preflight.sh` 与 `ci/test`，由 `ci/test` 断言逐字一致）。挑字段比对曾让线上多出的 `require_extra_approval_for_unattributed_changes: true` / `required_reviewers: []` 静默漂移很久。语义：`require_extra_approval_for_unattributed_changes` = 含**无法归属到 GitHub 身份**的提交时需**额外批准**（本项目历史提交的作者邮箱 `wsmsn@msn.com`/`10019@outlook.com` 不可归属 → 这类 PR **可能要求多于 1 个批准**）。改这个文件属 dispatcher 权限；改键集时 `ci/test` 的全量键清单要同步改（有意的摩擦）。
 14. **状态迁移不是原子的（`status.sh` 先 remove 再 add），中间有「零 `status/*` 标签」窗口。** `deliver.sh` 的次序是「推送 → 建 PR → 迁 `in-review`」，而 PR 事件会**立刻**触发必需检查 —— `policy/branch-name` 若在窗口内读标签，会把 Issue 判成 Backlog 并**在该 SHA 上失败**（实测 PR #92 首 SHA `cc9cf14`：`2026-10-04T14:06:13Z` unlabeled → `14:06:16Z` labeled，检查在 `14:06:14.84Z` 读）。临时缓解：**重跑失败的 `policy/branch-name`**（同一 SHA 实测重跑后 5 项全 pass）。根治见 Issue #93。
+15. **脚本里用 tab 当字段分隔符会静默吞掉空字段。** `IFS="$(printf '\t')" read -r a b c` 遇到连续 tab（中间字段为空）时后面的字段会**左移** —— tab 属于 IFS 空白，连续空白只算一个分隔符。`--check-cross` 的早期实现因此在「按行分类」时静默失配（Issue 的 `stateReason` 空字段把标签字段顶位）。脚本内部的记录分隔改用**非空白字符**（本仓库用 `|`）或给空值写占位符；这类差别必须能用反向样本抓到（见 W8 与 §1 交叉体检）。
 
 ## 5. 明确不做（边界）
 
