@@ -19,7 +19,9 @@ log()  { printf '%s\n' "$*"; }
 info() { printf '[INFO] %s\n' "$*"; }
 ok()   { printf '[ OK ] %s\n' "$*"; }
 warn() { printf '[WARN] %s\n' "$*" >&2; }
-die()  { printf '[FAIL] %s\n' "$*" >&2; exit "${2:-1}"; }
+# 注意：退出码必须与消息分离 —— 早期实现写成 exit "${2:-1}" 但消息用 "$*"，
+# 导致 `die "消息" 2` 输出 `[FAIL] 消息 2`（退出码被拼进消息）。第二次工具切换演练实测发现（Bug #29）。
+die()  { local m="${1:-}"; local c="${2:-1}"; printf '[FAIL] %s\n' "$m" >&2; exit "$c"; }
 
 require_cmd() {
   command -v "$1" >/dev/null 2>&1 || die "缺少命令 ${1}，请先安装"
@@ -38,7 +40,15 @@ resolve_repo() {
   printf '%s' "$r"
 }
 
+# 解析仓库时临时清空 GH_TOKEN：source 阶段早于任何 use_*_identity 调用，
+# 若环境里残留一个失效的 GH_TOKEN（例如 GH_TOKEN=bogus 或过期的 PAT），
+# resolve_repo 会直接失败并让**所有**脚本卡在 source 阶段。
+# 第二次工具切换演练实测：`GH_TOKEN=bogus bash scripts/audit.sh` → `[FAIL] 无法确定仓库`（Bug #29）。
+_resolve_saved_token="${GH_TOKEN:-}"
+unset GH_TOKEN || true
 REPO="$(resolve_repo)"
+if [ -n "${_resolve_saved_token}" ]; then export GH_TOKEN="${_resolve_saved_token}"; fi
+unset _resolve_saved_token || true
 SECRETS_DIR="${SECRETS_DIR:-.secrets}"
 REVIEWER_PAT_FILE="${REVIEWER_PAT_FILE:-${SECRETS_DIR}/reviewer.pat}"
 AUTH_IDENTITIES_FILE="${AUTH_IDENTITIES_FILE:-.github/authorized-identities.txt}"

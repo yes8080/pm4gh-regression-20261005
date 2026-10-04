@@ -83,6 +83,9 @@ unset GH_TOKEN                 # 用完立刻切回主身份
 | **`blockedBy` 不因对方关闭而清除** | 阻塞项关闭了，关系仍挂着 | 判断是否被阻塞**只看 blocker 的 `state`**；`scripts/audit.sh` 会报"可解锁" |
 | **GraphQL 输入对象的键必须是裸名** | `{"name":"x"}` → `Expected NAME, actual: STRING ("name")` | 传 GraphQL 字面量 `{name:"x"}`（本项目 `json_to_gql` 已封装） |
 | **状态标签必须唯一** | 多个 `status/*` 标签会让状态不可判定 | 只用 `scripts/status.sh` 迁移；`ci/test` 会扫描全部开放 Issue 并在违规时失败 |
+| **source 阶段残留失效 `GH_TOKEN`** | `GH_TOKEN=bogus bash scripts/audit.sh` 会在 `source lib.sh` 时直接失败（`[FAIL] 无法确定仓库`），因为 `REPO` 在 source 阶段解析 | 已在 `lib.sh` 修复：解析时临时清空 `GH_TOKEN` 再恢复。**排查时**注意"脚本还没开始跑就失败"通常属这类 source 阶段问题 |
+| **BSD `grep` 不支持 `-P`** | 本机复现 `ci/lint` 的 `grep -nHP` 检查时会报非法选项 | 本地用 Python 等价正则复算，最终以 CI 的 `ci/lint` 结果为准；不要因本地跑不了就跳过 |
+| **陈旧的 remote-tracking ref** | 合并后 `git branch -a` 仍列出已删除的远程分支 | `git fetch --prune`。判定远程分支是否存在**必须用 `git ls-remote`**（`closeout.sh` 即如此），不要看 `git branch -r` |
 | **同一 workspace 只允许一个执行者** | 两个执行者并发会互相删分支/切 HEAD（本项目已实际发生：演练执行者的分支被我清理时被切走，它靠悬空 commit 恢复） | 交接必须显式"让出"：确认对方工作区干净且已切回 `main` 后再动手；并行应使用独立 clone/worktree |
 | **环境里残留失效的 `GH_TOKEN` 会让所有脚本在 source 阶段就失败** | `lib.sh` 在 **source 时**（早于 `use_main_identity`）就用 `gh repo view` 解析 `REPO`，失效 token → 报"无法确定仓库" | 要强制主身份的脚本需在 `source lib.sh` **之前** `unset GH_TOKEN`（`scripts/report.sh` 已如此处理）；排查时先 `unset GH_TOKEN` |
 
@@ -337,6 +340,7 @@ gh api repos/{o}/{r}/commits/<head-sha>/check-runs --jq '.check_runs[] | "\(.nam
 | `mergeStateStatus: BLOCKED` + `reviewDecision: APPROVED` | 同 SHA 上有失败的必需检查（规则 1） | 修正该检查设计；应急时从必需清单移除并记录 |
 | `BLOCKED` + `REVIEW_REQUIRED` | 尚无授权身份批准，或缺 code-owner 批准 | `scripts/review.sh <pr#> approve` |
 | 某项必需检查**永久 pending** | 工作流被 `paths`/`branches` 过滤跳过；或检查名被改名 | 去掉过滤；比对 `scripts/toolcheck.sh` 的"必需检查 ↔ 工作流 job"检查 |
+| `mergeStateStatus: UNSTABLE` | **不是卡点**：表示存在非必需的失败/待定检查（本项目即 `qa/acceptance` 这条审计检查）。只要 `reviewDecision=APPROVED` 且必需检查全绿，**可以合并** | 直接 `gh pr merge`；只有 `BLOCKED` 才需要按上表定位 |
 | `gh pr merge` 报 `base branch policy prohibits the merge` | 上述任一未满足 | 按上表定位；**不要**用 `--admin`（bypass 名单为空） |
 | 直推 main 被拒 | 规则集生效，符合预期 | 改建分支走 PR |
 

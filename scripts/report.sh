@@ -5,9 +5,9 @@
 # 产出三张口径固定的表，替代原 Insights：
 #   ① 在途   —— 当前开放 Issue 按 status/* 分组（无 status/* 标签 = backlog）
 #   ② 吞吐   —— 窗口内已关闭且 state_reason=completed 的 Issue 数，按周/日聚合
-#   ③ 返修率 —— 带 src/rework 的 Issue 数 / 窗口内已关闭 Issue 数
+#   ③ 返修率 —— 窗口内曾带 src/rework 的 Issue 数 / 窗口内已关闭的 Issue 数（分母为 0 时 n/a）
 #
-# 口径唯一来源：docs/GOVERNANCE.md §8；状态唯一来源：status/* 标签（决策 D9）。
+# 口径唯一来源：docs/GOVERNANCE.md §8（逐字一致，不得各自定义）；状态唯一来源：status/* 标签（决策 D9）。
 #
 # 纯只读：只调用 gh 的**读**接口，不修改任何 Issue / 标签 / PR；只用主身份的 gh 登录凭据，
 #         不读 .secrets/**，也不依赖 Projects / project scope。
@@ -94,7 +94,7 @@ open_json="$(gh issue list -R "$REPO" --state open --limit "$LIMIT" \
 # ② 吞吐：窗口内关闭的 Issue（state_reason 用 stateReason 字段区分 completed / not planned）
 closed_json="$(gh issue list -R "$REPO" --state closed --search "closed:>=${SINCE}" --limit "$LIMIT" \
   --json number,title,closedAt,stateReason,labels,url)"
-# ③ 返修：全部带 src/rework 的 Issue（§8 分子口径为"挂过该标签的切片"）
+# ③ 返修：全部带 src/rework 的 Issue（↔ GOVERNANCE §8「返修率」分子：窗口内曾带该标签的 Issue）
 rework_json="$(gh issue list -R "$REPO" --state all --label src/rework --limit "$LIMIT" \
   --json number,title,state,url)"
 
@@ -214,7 +214,7 @@ printf '%s' "$report" | jq -r '
      "  \(.bucket)   \(.count) 个   " + (.issues | map("#\(.number)") | join(" "))),
   "  合计 \(.throughput.completed_in_window) 个",
   "",
-  "③ 返修率（分子＝带 src/rework 的 Issue 数；分母＝窗口内已关闭 Issue 数）",
+  "③ 返修率（分子＝窗口内曾带 src/rework 的 Issue 数；分母＝窗口内已关闭的 Issue 数；分母为 0 时 n/a）",
   "  带 src/rework 的 Issue：\(.rework.labeled_total) 个（其中窗口内已关闭：\(.rework.closed_in_window_with_label) 个）",
   "  窗口内已关闭：\(.rework.denominator) 个",
   "  返修率 = \(.rework.labeled_total) / \(.rework.denominator) = "
