@@ -442,6 +442,303 @@ jobs:
           echo "✅ 状态集与转换表逐字一致（$(printf '%s\n' "$sh_edges" | grep -c .) 条边，$(printf '%s\n' "$sh_states" | grep -c .) 个状态）"
           printf '%s\n' "$sh_edges"
 
+      - name: 状态迁移是 HTTP 层单请求：恰好 1 次标签写请求 + 载荷含全部非 status/* 标签（stub gh + 反向样本）
+        run: |
+          set -euo pipefail
+          # ── 状态迁移的判据：「HTTP 层单请求」（Issue #115）────────────────────────────
+          # 为什么要有这一步：#93 把 status.sh 从「remove→add 两次调用」改成「一次 gh issue edit」，
+          # 但 cli/cli 在 **HTTP 层**仍把它拆成 add/remove 两个**并发** mutation —— 中间态可以是
+          # 0 个或 2 个 status/*，policy/branch-name 对两者都判失败（失败 SHA 不可逆）。#115 改为
+          # REST `PUT …/labels` **整份替换**（HTTP 层 1 次请求）。断言必须常驻 ci/test，而不是在 /tmp 跑一次：
+          #   ① 非终态迁移**恰好 1 次**标签写请求（stub gh 记录；`gh issue edit` 一次都不许有）
+          #   ② 替换请求的载荷**包含全部非 status/ 标签** —— 整份替换会静默删掉没带上的标签
+          #   ③ 读回校验：写后再 GET 一次比对非 status/* 集合；被他人改动 → 报告且**不重试覆盖**
+          # 反向样本内置：反例 A（两次写请求）→ 断言必须失败；反例 B（载荷漏带 type/*）→ 断言必须失败。
+          ST=/tmp/status-put-check
+          rm -rf "$ST"; mkdir -p "$ST/bin" "$ST/s"
+
+          # ① 被测逻辑的唯一来源是 scripts/status.sh 的标记区（不复制第二份实现；标记区消失也报错）
+          sed -n '/STATUS_LABELS_PUT:BEGIN/,/STATUS_LABELS_PUT:END/p' scripts/status.sh > "$ST/region.txt"
+          if ! grep -q 'put_status_labels' "$ST/region.txt"; then
+            echo "::error file=scripts/status.sh::未能从 STATUS_LABELS_PUT 标记区解析出「单次 HTTP 写请求」实现"
+            exit 1
+          fi
+          if ! grep -q 'TEST_ANCHOR:PUT' "$ST/region.txt"; then
+            echo "::error file=scripts/status.sh::标记区缺少反向样本锚点 TEST_ANCHOR:PUT —— 反向样本会退化成空断言"
+            exit 1
+          fi
+
+          # ② stub gh：把「平台」状态放进文件，记录每一次调用与每一次写请求的载荷
+          cat > "$ST/bin/gh" <<'EOS'
+          #!/usr/bin/env bash
+          set -eu
+          S="${STUB_STATE:?stub gh 需要 STUB_STATE}"
+          mkdir -p "$S"
+          printf '%s\n' "$*" >> "$S/calls.log"
+
+          issue_json() {
+            st="$(cat "$S/state.txt" 2>/dev/null || printf 'OPEN')"
+            rs="$(cat "$S/reason.txt" 2>/dev/null || printf 'COMPLETED')"
+            printf '{"number":%s,"state":"%s","stateReason":"%s","labels":[' "$1" "$st" "$rs"
+            first=1
+            while IFS= read -r l; do
+              [ -n "$l" ] || continue
+              if [ "$first" = 1 ]; then first=0; else printf ','; fi
+              printf '{"name":"%s"}' "$l"
+            done < "$S/labels.txt"
+            printf ']}'
+          }
+
+          bump() {
+            n=0; [ -f "$1" ] && n="$(cat "$1")"
+            printf '%s\n' "$((n + 1))" > "$1"
+          }
+
+          labels_json() {
+            first=1
+            printf '['
+            while IFS= read -r l; do
+              [ -n "$l" ] || continue
+              if [ "$first" = 1 ]; then first=0; else printf ','; fi
+              printf '{"name":"%s"}' "$l"
+            done < "$S/labels.txt"
+            printf ']'
+          }
+
+          case "${1:-}" in
+            repo)
+              printf 'yes8080/pm4gh\n' ;;
+            api)
+              shift
+              method=GET; path=""; jqexpr=""
+              while [ $# -gt 0 ]; do
+                case "$1" in
+                  -X) method="$2"; shift 2 ;;
+                  --jq) jqexpr="$2"; shift 2 ;;
+                  --input) shift; [ "${1:-}" = "-" ] && shift ;;
+                  --paginate) shift ;;
+                  -*) shift ;;
+                  *) path="$1"; shift ;;
+                esac
+              done
+              case "$path" in
+                user) printf 'yes8080-dev-bot\n' ;;
+                */issues/*/labels)
+                  if [ "$method" = "PUT" ]; then
+                    bump "$S/writes.count"
+                    idx="$(cat "$S/writes.count")"
+                    cat > "$S/put-${idx}.json"
+                    jq -r '.[]' "$S/put-${idx}.json" > "$S/labels.txt"
+                    # 并发窗口模拟：本次 PUT 之后，他人又改了一次非 status/* 标签
+                    [ "${STUB_TAMPER:-0}" = "1" ] && printf 'area/other\n' >> "$S/labels.txt"
+                  else
+                    bump "$S/get-labels.count"
+                    if [ -n "$jqexpr" ]; then
+                      labels_json | jq -r "$jqexpr"
+                    else
+                      labels_json
+                    fi
+                  fi
+                  ;;
+                *) printf 'stub gh: 未实现的 api 路径 %s\n' "$path" >&2; exit 9 ;;
+              esac
+              ;;
+            issue)
+              shift
+              sub="${1:-}"; shift || true
+              num="${1:-0}"; shift || true
+              jqexpr=""; reason=""
+              while [ $# -gt 0 ]; do
+                case "$1" in
+                  --jq) jqexpr="$2"; shift 2 ;;
+                  --reason) reason="$2"; shift 2 ;;
+                  --json) shift 2 ;;
+                  -R) shift 2 ;;
+                  *) shift ;;
+                esac
+              done
+              case "$sub" in
+                view)
+                  obj="$(issue_json "$num")"
+                  if [ -n "$jqexpr" ]; then printf '%s' "$obj" | jq -r "$jqexpr"; else printf '%s\n' "$obj"; fi
+                  ;;
+                close)
+                  printf 'CLOSED\n' > "$S/state.txt"
+                  case "${reason:-}" in
+                    "not planned"|not_planned) printf 'NOT_PLANNED\n' > "$S/reason.txt" ;;
+                    *) printf 'COMPLETED\n' > "$S/reason.txt" ;;
+                  esac
+                  ;;
+                edit)
+                  # 回归护栏：标签迁移**不得**再走 `gh issue edit`（它的 HTTP 层不是单请求）
+                  bump "$S/issue-edit.count"
+                  ;;
+                *) printf 'stub gh: 未实现的 issue 子命令 %s\n' "$sub" >&2; exit 9 ;;
+              esac
+              ;;
+            *) printf 'stub gh: 未实现的子命令 %s\n' "$*" >&2; exit 9 ;;
+          esac
+          exit 0
+          EOS
+          chmod +x "$ST/bin/gh"
+
+          # ③ 反例 A 的插入行：先发一次「只保留非 status/*」的写请求（= #93 的 remove），锚点行使是 add → 两次写
+          cat > "$ST/ins-a.txt" <<'EOS'
+            printf '%s' "$(printf '%s' "$sp_payload" | jq -c '[.[] | select(startswith("status/") | not)]')" | put_status_labels "$sp_repo" "$sp_issue" || return 1
+          EOS
+          INS_A="$(cat "$ST/ins-a.txt")" awk 'index($0, "TEST_ANCHOR:PUT") { print ENVIRON["INS_A"] } { print }' scripts/status.sh > "$ST/impl-2calls.sh"
+
+          # ④ 反例 B：载荷只发目标 status 标签（漏掉全部非 status/* 标签）
+          cat > "$ST/repl-b.txt" <<'EOS'
+            sp_payload="$(printf '%s\n' "$sp_target" | jq -R . | jq -cs .)"   # TEST_ANCHOR:PAYLOAD（反例 B）
+          EOS
+          REPL_B="$(cat "$ST/repl-b.txt")" awk 'index($0, "TEST_ANCHOR:PAYLOAD") { print ENVIRON["REPL_B"]; next } { print }' scripts/status.sh > "$ST/impl-nokeep.sh"
+
+          # ⑤ 把真实 status.sh（或其变异副本）跑在 stub 平台上：in-progress → in-review
+          run_case() { # run_case <实现文件> <tamper 0|1>
+            impl="$1"; tamper="${2:-0}"
+            S="$ST/s"; rm -rf "$S"; mkdir -p "$S"
+            printf 'type/bug\narea/ci\nrole/dev\nprio/P2\nstatus/in-progress\n' > "$S/labels.txt"
+            printf 'OPEN\n' > "$S/state.txt"; printf 'COMPLETED\n' > "$S/reason.txt"
+            : > "$S/calls.log"
+            printf '0\n' > "$S/writes.count"; printf '0\n' > "$S/get-labels.count"; printf '0\n' > "$S/issue-edit.count"
+            rc=0
+            PATH="$ST/bin:$PATH" STUB_STATE="$S" STUB_TAMPER="$tamper" \
+              bash "$impl" 999 in-review > "$S/out.log" 2>&1 || rc=$?
+          }
+
+          assert_transition() { # assert_transition <样本名>
+            name="$1"; bad=0
+            writes="$(cat "$ST/s/writes.count")"
+            if [ "$writes" = "1" ]; then
+              printf '  [ OK ] %s：标签写请求次数 = 1（HTTP 层单请求）\n' "$name"
+            else
+              printf '  [FAIL] %s：标签写请求次数 = %s（必须恰好 1：HTTP 层单请求）\n' "$name" "$writes"
+              bad=1
+            fi
+            edits="$(cat "$ST/s/issue-edit.count")"
+            if [ "$edits" = "0" ]; then
+              printf '  [ OK ] %s：未使用 gh issue edit（HTTP 层非单请求的实现）\n' "$name"
+            else
+              printf '  [FAIL] %s：出现了 %s 次 gh issue edit —— 判据是 HTTP 层单请求，不是「一次 CLI 调用」\n' "$name" "$edits"
+              bad=1
+            fi
+            last="$ST/s/put-${writes}.json"; have=""
+            [ -f "$last" ] && have="$(jq -r '.[]' "$last")"
+            for l in type/bug area/ci role/dev prio/P2; do
+              if printf '%s\n' "$have" | grep -qxF "$l"; then
+                printf '  [ OK ] %s：载荷含非 status/ 标签 %s\n' "$name" "$l"
+              else
+                printf '  [FAIL] %s：载荷缺少非 status/ 标签 %s（整份替换会静默删掉它）\n' "$name" "$l"
+                bad=1
+              fi
+            done
+            sn="$(printf '%s\n' "$have" | grep -c '^status/' || true)"
+            if [ "$sn" = "1" ] && printf '%s\n' "$have" | grep -qxF 'status/in-review'; then
+              printf '  [ OK ] %s：载荷的 status/* 恰好 1 个 = status/in-review\n' "$name"
+            else
+              printf '  [FAIL] %s：载荷的 status/* 不是恰好 1 个目标标签（实测 %s 个）\n' "$name" "$sn"
+              bad=1
+            fi
+            gets="$(cat "$ST/s/get-labels.count")"
+            if [ "$gets" = "2" ]; then
+              printf '  [ OK ] %s：标签端点 GET = 2（写前读 + 写后读回校验）\n' "$name"
+            else
+              printf '  [FAIL] %s：标签端点 GET = %s（应为 2：写前读 + 写后读回校验）\n' "$name" "$gets"
+              bad=1
+            fi
+            [ "$bad" -ne 0 ] && return 1
+            return 0
+          }
+
+          fail=0
+          printf '\n== 正向样本：非终态迁移（in-progress → in-review），恰好 1 次写请求 ==\n'
+          run_case scripts/status.sh 0
+          rc_fwd="$rc"
+          assert_transition 正向 || fail=$((fail + 1))
+          if [ "$rc_fwd" = "0" ] && grep -q '读回校验一致' "$ST/s/out.log"; then
+            printf '  [ OK ] 正向：status.sh 退出码 0 且输出读回校验结论\n'
+          else
+            printf '  [FAIL] 正向：status.sh 退出码 %s（应为 0）或缺少读回校验结论\n' "$rc_fwd"
+            cat "$ST/s/out.log"; fail=$((fail + 1))
+          fi
+          printf '  —— status.sh 原文：\n'
+          sed 's/^/     /' "$ST/s/out.log"
+          printf '  —— 写请求载荷 put-1.json：%s\n' "$(cat "$ST/s/put-1.json")"
+
+          printf '\n== 反向样本 A：两次写请求（remove → add）必须让断言失败 ==\n'
+          run_case "$ST/impl-2calls.sh" 0
+          if assert_transition 反例A; then
+            printf '  [FAIL] 反向样本 A 未失败：两次写请求仍通过了「恰好 1 次」断言 —— 断言形同虚设\n'
+            fail=$((fail + 1))
+          else
+            printf '  [ OK ] 反向样本 A 按预期失败（上方 [FAIL] 行）\n'
+          fi
+
+          printf '\n== 反向样本 B：载荷漏带非 status/ 标签必须让断言失败 ==\n'
+          run_case "$ST/impl-nokeep.sh" 0
+          if assert_transition 反例B; then
+            printf '  [FAIL] 反向样本 B 未失败：漏带 type/* 仍通过了载荷断言 —— 断言形同虚设\n'
+            fail=$((fail + 1))
+          else
+            printf '  [ OK ] 反向样本 B 按预期失败（上方 [FAIL] 行）\n'
+          fi
+
+          printf '\n== 读回校验：写后非 status/ 标签被他人改动 → 报告且不重试覆盖 ==\n'
+          run_case scripts/status.sh 1
+          rb=0
+          if [ "$rc" != "0" ]; then printf '  [ OK ] 读回校验抓到并发改动（status.sh 退出码 %s）\n' "$rc"; else printf '  [FAIL] 读回校验没抓到并发改动（退出码 0）\n'; rb=1; fi
+          if grep -q '读回校验不一致' "$ST/s/out.log"; then printf '  [ OK ] 报告原文含「读回校验不一致」\n'; else printf '  [FAIL] 报告原文缺少「读回校验不一致」\n'; rb=1; fi
+          if [ "$(cat "$ST/s/writes.count")" = "1" ]; then printf '  [ OK ] 未重试覆盖（写请求仍为 1 次）\n'; else printf '  [FAIL] 发生了重试覆盖（写请求 %s 次）\n' "$(cat "$ST/s/writes.count")"; rb=1; fi
+          if grep -q '不重试覆盖' "$ST/s/out.log"; then printf '  [ OK ] 报告原文含「不重试覆盖」的动作说明\n'; else printf '  [FAIL] 报告原文未说明不重试覆盖\n'; rb=1; fi
+          printf '  —— status.sh 原文：\n'
+          sed 's/^/     /' "$ST/s/out.log"
+          [ "$rb" = 0 ] || fail=$((fail + 1))
+
+          printf '\n== 闭环回归：backlog → ready → in-progress → in-review → in-progress → in-review → done ==\n'
+          S="$ST/loop"; rm -rf "$S"; mkdir -p "$S"
+          printf 'type/bug\narea/ci\nrole/dev\n' > "$S/labels.txt"; printf 'OPEN\n' > "$S/state.txt"; printf 'COMPLETED\n' > "$S/reason.txt"
+          : > "$S/calls.log"
+          printf '0\n' > "$S/writes.count"; printf '0\n' > "$S/get-labels.count"; printf '0\n' > "$S/issue-edit.count"
+          loop_bad=0
+          for step in ready in-progress in-review in-progress in-review done; do
+            lrc=0
+            PATH="$ST/bin:$PATH" STUB_STATE="$S" STUB_TAMPER=0 \
+              bash scripts/status.sh 999 "$step" > "$S/out-$step.log" 2>&1 || lrc=$?
+            cnt="$(grep -c '^status/' "$S/labels.txt" || true)"
+            st="$(cat "$S/state.txt")"
+            keep="$(grep -v '^status/' "$S/labels.txt" | grep -c . || true)"
+            if [ "$step" = "done" ]; then
+              if [ "$lrc" = 0 ] && [ "$cnt" = 0 ] && [ "$st" = "CLOSED" ] && [ "$keep" = 3 ]; then
+                printf '  [ OK ] → %-11s 退出码 0；status/* = 0 且 Issue CLOSED（终态载体）；非 status/* 保留 %s 个\n' "$step" "$keep"
+              else
+                printf '  [FAIL] → %-11s 退出码 %s；status/* = %s；state = %s；非 status/* = %s（应 3）\n' "$step" "$lrc" "$cnt" "$st" "$keep"; loop_bad=1
+              fi
+            else
+              if [ "$lrc" = 0 ] && [ "$cnt" = 1 ] && [ "$keep" = 3 ] && grep -qxF "status/$step" "$S/labels.txt"; then
+                printf '  [ OK ] → %-11s 退出码 0；status/* 恰好 1 个 = status/%s；非 status/* 保留 %s 个\n' "$step" "$step" "$keep"
+              else
+                printf '  [FAIL] → %-11s 退出码 %s；status/* = %s（应为恰好 1 个 status/%s）；非 status/* = %s（应 3）\n' "$step" "$lrc" "$cnt" "$step" "$keep"; loop_bad=1
+              fi
+            fi
+          done
+          [ "$loop_bad" = 0 ] || fail=$((fail + 1))
+          if [ "$(cat "$S/issue-edit.count")" = "0" ] && [ "$(cat "$S/writes.count")" = "6" ]; then
+            printf '  [ OK ] 闭环 6 次迁移 = 6 次标签写请求（每次恰好 1 次），gh issue edit 0 次\n'
+          else
+            printf '  [FAIL] 闭环写请求 %s 次 / gh issue edit %s 次（应为 6 / 0）\n' "$(cat "$S/writes.count")" "$(cat "$S/issue-edit.count")"
+            fail=$((fail + 1))
+          fi
+          printf '  —— 每步写请求载荷：\n'
+          for i in 1 2 3 4 5 6; do printf '     put-%s.json = %s\n' "$i" "$(cat "$S/put-${i}.json")"; done
+          printf '  —— 终态标签（应为 3 个非 status/*，无空串标签）：%s\n' "$(tr '\n' ' ' < "$S/labels.txt")"
+
+          printf '\n'
+          if [ "$fail" -ne 0 ]; then
+            printf '❌ 状态迁移单请求断言失败（%s 项）—— 见上方 [FAIL]\n' "$fail"
+            exit 1
+          fi
+          printf '✅ 非终态迁移恰好 1 次标签写请求 + 载荷含全部非 status/ 标签 + 读回校验不重试覆盖；反向样本 A/B 按预期失败；闭环回归 6 步每步 status/* 恰好 1 个\n'
       - name: 未提交任何凭据
         run: |
           set -euo pipefail

@@ -30,6 +30,8 @@
 # 幂等：from == to 且载体齐备时不迁移（终态还要求无残留标签，否则继续清理）。
 #
 # 不变量：开放 Issue 至多一个 status/* 标签；迁移只允许走本脚本。
+# 迁移的**判据是「HTTP 层单请求」**（Issue #115）：标签改动只有一条 REST `PUT …/labels`（整份替换），
+# 不是「一次 `gh issue edit`」—— 后者在 HTTP 层是 add/remove 两个并发 mutation，仍有中间态（#93）。
 # done / canceled 有两个载体：Issue CLOSED **且**无任何 status/* 标签。幂等判断两者都核 ——
 # 「已关闭但仍带残留标签」会继续清理，不短路返回。
 # 退出码：0 成功；1 校验/迁移失败；2 参数错误
@@ -129,6 +131,59 @@ status_labels() {
   gh issue view "$1" -R "$REPO" --json labels \
     --jq '[.labels[].name | select(startswith("status/"))] | join(" ")' 2>/dev/null || true
 }
+
+# ── 单次 HTTP 请求的标签写入（Issue #115）────────────────────────────────
+# 为什么是 REST `PUT /repos/{owner}/{repo}/issues/{n}/labels`（**整份替换**）而不是 `gh issue edit`：
+#   `gh issue edit` 在 **CLI 层**是 1 次调用，但在 **HTTP 层不是** —— cli/cli 把 add 与 remove 发成
+#   两个**并发** GraphQL mutation（`pkg/cmd/pr/shared/editable_http.go:13,17-36,91`，
+#   `addLabelsToLabelable` / `removeLabelsFromLabelable`），中间态可能是 **0 个或 2 个** `status/*`，
+#   而 `policy/branch-name` 对两者都判失败；失败的 SHA **不可逆**（§已知陷阱 1：必需检查不能"先失败后通过"）。
+# 判据因此是「**HTTP 层单请求**」，不是「一次 CLI 调用」。
+# 两条硬约束（缺一即事故）：
+#   ① 载荷**必须**带上读到的**全部非 `status/*` 标签**（`type/*`、`role/*`、`prio/*`、`area/*` …）——
+#      PUT 是整份替换，只发 `status/*` 会**静默删掉**别人的标签。
+#   ② 读-改-写之间有并发覆盖风险（他人此刻的改动会被本次替换抹掉）→ 写完**读回校验**一次：
+#      非 `status/*` 集合必须与读到的集合一致；不一致 → 打印原文并返回 1，**绝不重试覆盖**
+#      （重试只会把对方的改动再抹一次，反而掩盖事实）。
+# 参数：$1=repo slug，$2=Issue 号，$3=目标 status 标签（空串 = 只保留非 status/*）。
+# 退出码：0 = 写成功且读回校验一致；1 = 失败（原文在 stderr，调用方不得重试覆盖）。
+# 本标记区由 ci/test 用 stub `gh` 断言：非终态迁移**恰好 1 次**写请求 + 载荷含全部非 `status/*` 标签。
+# STATUS_LABELS_PUT:BEGIN
+status_put_labels() {
+  sp_repo="${1:?仓库 slug}"; sp_issue="${2:?Issue 号}"; sp_target="${3:-}"
+  # ① 读当前标签（GET，同一条 REST 端点；--paginate 保证标签多于一页时不漏）
+  sp_before="$(gh api "repos/${sp_repo}/issues/${sp_issue}/labels" --paginate --jq '.[].name' 2>/dev/null || true)"
+  # ② 保留全部非 status/* 标签（硬约束 ①：整份替换会删掉没带上的标签）
+  sp_keep="$(printf '%s\n' "$sp_before" | grep -v '^status/' | grep . || true)"
+  # ③ 目标集合 = 非 status/* ∪ {目标 status 标签}
+  sp_want="$(printf '%s\n%s\n' "$sp_keep" "$sp_target" | grep . || true)"
+  sp_payload="$(printf '%s\n' "$sp_want" | grep . | jq -R . | jq -cs .)"   # TEST_ANCHOR:PAYLOAD（ci/test 反向样本 B 改这一行）
+  # ④ **唯一一次写请求**（整份替换；stdin 就是请求体）
+  printf '%s' "$sp_payload" | put_status_labels "$sp_repo" "$sp_issue" || return 1   # TEST_ANCHOR:PUT（反例 A 在它前面插一次写）
+  # ⑤ 读回校验（硬约束 ②）
+  sp_after="$(gh api "repos/${sp_repo}/issues/${sp_issue}/labels" --paginate --jq '.[].name' 2>/dev/null || true)"
+  sp_keep_before="$(printf '%s\n' "$sp_keep" | grep . | sort || true)"
+  sp_keep_after="$(printf '%s\n' "$sp_after" | grep -v '^status/' | grep . | sort || true)"
+  if [ "$sp_keep_before" != "$sp_keep_after" ]; then
+    printf '[FAIL] 读回校验不一致：替换前后的非 status/* 标签集合不同\n' >&2
+    printf '       替换前：%s\n' "$(printf '%s' "$sp_keep_before" | tr '\n' ' ')" >&2
+    printf '       替换后：%s\n' "$(printf '%s' "$sp_keep_after" | tr '\n' ' ')" >&2
+    printf '       疑似并发改动被本次替换覆盖，或平台拒绝了个别标签 —— **不重试覆盖**；请人工核对 Issue 标签后用 scripts/status.sh 重跑\n' >&2
+    return 1
+  fi
+  printf '[ OK ] 读回校验一致：非 status/* 标签 %s 个，与替换前逐字相同\n' "$(printf '%s\n' "$sp_keep_before" | grep -c . || true)"
+  return 0
+}
+
+# **唯一一次 HTTP 写请求**：被 status_put_labels 调用恰好一次（ci/test 反向样本 A 会插成两次）
+put_status_labels() {
+  gh api -X PUT "repos/${1}/issues/${2}/labels" --input - >/dev/null || {
+    printf '[FAIL] PUT repos/%s/issues/%s/labels 失败（整份替换未落地；不重试）\n' "${1}" "${2}" >&2
+    return 1
+  }
+  return 0
+}
+# STATUS_LABELS_PUT:END
 
 # ── --check：扫描全部开放 Issue ──────────────────────────────
 if [ "${1:-}" = "--check" ]; then
@@ -455,54 +510,46 @@ else
   exit 1
 fi
 
-# ── 迁移：**一次** `gh issue edit` 完成「移除旧标签 + 加目标标签」────────────
-# 为什么必须合并成一次调用（Issue #93，v2 重写引入的回归）：两次调用（先 remove、再 add）
-# 之间存在「零 status/* 标签」窗口（实测约 3 秒），而 `policy/branch-name` 要求 OPEN 的
-# Issue **至少 1 个** status/* —— PR 事件在该窗口内触发检查，就会把 Issue 判成 Backlog，
-# 并在这个 SHA 上留下**不可逆**的 FAILURE（§已知陷阱 1：必需检查不能"先失败后通过"）。
-# 三类迁移的判据不同，不要一刀切：
-#   - 带标签 → 带标签（ready / in-progress / in-review）：**必须原子** —— 同一次调用里
-#     同时带上全部 `--remove-label`（旧）与 `--add-label`（新），任何观察者都看不到 0 个标签。
-#   - → backlog：载体就是「无标签」，移除即结果，**不需要**保留标签。
-#   - → done / canceled：载体是 Issue CLOSED **且**无标签，标签移除与关闭之间**没有**
-#     「必须保留标签」的要求（且合并/收尾不触发 `pull_request: opened|synchronize`）。
-remove_args=""
-for l in $leftover; do
-  remove_args="${remove_args} --remove-label ${l}"
-done
-
+# ── 迁移：**单次 HTTP 请求**（REST PUT 整份替换）落地（Issue #115）────────
+# 判据是「**HTTP 层单请求**」，不是「一次 CLI 调用」（后者在 #93 → #115 被证伪）。
+# 三类迁移的载荷不同，不要一刀切（由 status_put_labels 统一落地同一条 PUT 端点）：
+#   - 带标签 → 带标签（ready / in-progress / in-review）：载荷 = 全部非 status/* + 目标标签
+#     —— 任何观察者都看不到 0 个或 2 个 status/* 的中间态。
+#   - → backlog：载荷 = 全部非 status/*（status 被移除即结果，载体就是「无 status/*」）。
+#   - → done / canceled：同上（载体是 Issue CLOSED **且**无 status/*），**先**整份替换、**后**关闭：
+#     关闭不改标签，两者之间没有「必须保留标签」的要求；先替换保证「关闭那一刻标签已正确」，
+#     且 `gh issue close` 不触发 `pull_request: opened|synchronize`（不会产生新的检查机会）。
+# 读-改-写的并发覆盖风险由 status_put_labels 的**读回校验**兜住：不一致就报告并退出，不重试覆盖。
 case "$STATE" in
-  backlog)
-    if [ -n "$remove_args" ]; then
-      # shellcheck disable=SC2086  # 故意分词：拼成一次调用里的多个 --remove-label（标签名不含空白）
-      gh issue edit "$ISSUE" -R "$REPO" $remove_args >/dev/null
-    fi
-    ok "已置为 backlog（无状态标签）" ;;
-  done|canceled)
-    if [ -n "$remove_args" ]; then
-      # shellcheck disable=SC2086  # 同上：残留标签一次清完（终态无「保留标签」要求）
-      gh issue edit "$ISSUE" -R "$REPO" $remove_args >/dev/null
-    fi
-    if [ "$raw_state" = "CLOSED" ]; then
-      ok "Issue 已由平台关闭（保留平台置位的开关状态，只清理残留标签）"
-    elif [ "$STATE" = "done" ]; then
-      gh issue close "$ISSUE" -R "$REPO" --reason completed >/dev/null
-      ok "已关闭（state_reason=completed）→ done"
-    else
-      gh issue close "$ISSUE" -R "$REPO" --reason "not planned" >/dev/null
-      ok "已关闭（state_reason=not_planned）→ canceled"
-    fi
-    ;;
+  backlog|done|canceled) target_label="" ;;
   *)
-    target="$(BASE_LABEL_OF_STATE "$STATE")"
-    [ -n "$target" ] || die "内部错误：${STATE} 没有对应标签"
-    # 原子迁移：**同一次**调用里带上全部旧标签的 --remove-label 与目标标签的 --add-label。
-    # 断言这一点的证据是 stub gh 记录的调用次数与参数（见 PR #93），不是"看起来很原子"。
-    # shellcheck disable=SC2086  # 故意的分词：$remove_args 是多个 --remove-label 的拼接
-    gh issue edit "$ISSUE" -R "$REPO" $remove_args --add-label "$target" >/dev/null
-    ok "已置为 ${STATE}（标签 ${target}，原子迁移：一次 issue edit）"
+    target_label="$(BASE_LABEL_OF_STATE "$STATE")"
+    [ -n "$target_label" ] || die "内部错误：${STATE} 没有对应标签"
     ;;
 esac
+
+if ! status_put_labels "$REPO" "$ISSUE" "$target_label"; then
+  die "Issue #${ISSUE} 的标签迁移失败（原文见上）—— **未重试覆盖**；请人工核对标签后用 scripts/status.sh ${ISSUE} ${STATE} 重跑"
+fi
+if [ "$terminal" -eq 0 ]; then
+  case "$STATE" in
+    backlog) ok "已置为 backlog（无状态标签；单次 HTTP PUT 整份替换）" ;;
+    *)       ok "已置为 ${STATE}（标签 ${target_label}；单次 HTTP PUT 整份替换，无中间态）" ;;
+  esac
+fi
+
+# 终态：整份替换（清掉 status/*、保留非 status/*）**之后**才关闭 —— 顺序理由见上
+if [ "$terminal" -eq 1 ]; then
+  if [ "$raw_state" = "CLOSED" ]; then
+    ok "Issue 已由平台关闭（保留平台置位的开关状态，只清理残留标签）"
+  elif [ "$STATE" = "done" ]; then
+    gh issue close "$ISSUE" -R "$REPO" --reason completed >/dev/null
+    ok "已关闭（state_reason=completed）→ done"
+  else
+    gh issue close "$ISSUE" -R "$REPO" --reason "not planned" >/dev/null
+    ok "已关闭（state_reason=not_planned）→ canceled"
+  fi
+fi
 
 # 迁移后校验：done/canceled 核两个载体（CLOSED + 无标签），其余核标签唯一
 if [ "$terminal" -eq 1 ]; then
