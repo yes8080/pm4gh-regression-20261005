@@ -1,0 +1,65 @@
+# qa/acceptance —— 验收门禁（独立工作流）
+#
+# 为什么必须独立、且判据是"评审"而不是"/accept 评论"（两条官方约束共同决定）：
+#   1. `issue_comment` 触发的 job **不满足必需检查** —— 官方仅认可由 push / pull_request /
+#      pull_request_review / pull_request_target / deployment / deployment_status 触发的 job。
+#      因此 `/accept` 评论无法作为机器判据，只能以「授权非作者身份的 APPROVED 评审」为准；
+#      `/accept` 评论保留为人工审计证据（见方案 §8）。
+#   2. 该判据只有评审提交后才可能成立，所以必须能在 `pull_request_review` 上复检。
+#
+# 为什么拆成独立工作流：若与 ci/*、policy/* 同处一个工作流，则每次评审提交都会把
+# 那 6 个 job 全部重跑一遍（Actions 分钟数浪费，见方案 §13 风险表）。
+#
+# 未来扩项提醒：若启用 Merge Queue（官方门控：私有仓库需 GitHub Enterprise Cloud），
+# 必须把本 job 接入 `merge_group` 事件，否则合并队列会因必需检查未上报而永久卡住。
+
+name: acceptance-check
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  pull_request_review:
+    types: [submitted, dismissed]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: acceptance-check-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  acceptance:
+    name: qa/acceptance
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: 存在授权非作者身份的 APPROVED 评审
+        run: |
+          set -euo pipefail
+          PR='${{ github.event.pull_request.number }}'
+          REPO='${{ github.repository }}'
+          author='${{ github.event.pull_request.user.login }}'
+          gh api "repos/$REPO/pulls/$PR/reviews" --paginate \
+            --jq '.[] | select(.state=="APPROVED") | .user.login' | sort -u > /tmp/approved.txt || true
+          echo "已批准身份："; cat /tmp/approved.txt || true
+          allow="$(grep -vE '^[[:space:]]*(#|$)' .github/authorized-identities.txt || true)"
+          ok=0
+          while IFS= read -r who; do
+            [ -n "$who" ] || continue
+            if [ "$who" = "$author" ]; then
+              echo "跳过：${who} 是 PR 作者本人（自我批准不构成独立验收）"
+              continue
+            fi
+            if grep -qx "$who" /tmp/approved.txt; then
+              echo "✅ 验收人：${who}（作者：${author}，身份独立）"
+              ok=1
+            fi
+          done <<< "$allow"
+          if [ "$ok" != 1 ]; then
+            echo "::error::尚无授权独立身份提交 APPROVED 评审。官方限制：issue_comment 触发的检查不满足必需检查，/accept 评论无法作为机器判据；请由 .github/authorized-identities.txt 中的身份执行 gh pr review <n> --approve。"
+            exit 1
+          fi
