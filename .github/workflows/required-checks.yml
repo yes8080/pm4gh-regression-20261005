@@ -162,20 +162,25 @@ jobs:
             exit 1
           fi
           echo "✅ 未发现凭据"
-      - name: 必需检查名与规则集 context 一一对应
+      - name: 每个必需检查都有对应的工作流 job
         run: |
           set -euo pipefail
           # 官方：必需检查一旦被规则集引用，**改名会让所有 PR 永久 pending**。
-          # 这条比对就是防止那次事故的防线。
-          wf="$(grep -hE '^[[:space:]]+name: (ci|policy|qa)/' .github/workflows/*.yml | sed 's/.*name: //' | sort)"
-          rs="$(jq -r '.rules[] | select(.type=="required_status_checks") | .parameters.required_status_checks[].context' .github/rulesets/main-protection.json | sort)"
-          if [ "$wf" != "$rs" ]; then
-            echo "::error::工作流 job 名与规则集必需检查 context 不一致 —— 改名会导致 PR 永久 pending"
-            echo "--- 工作流中的检查名 ---"; printf '%s\n' "$wf"
-            echo "--- 规则集引用 ---"; printf '%s\n' "$rs"
+          # 因此不变量是：规则集里的每个 required context 都必须在某个工作流里存在同名 job。
+          #
+          # 注意方向是**子集**（必需项 ⊆ 工作流 job 名），不是相等：
+          # qa/acceptance 是有意保留的**非必需审计检查**（见 Bug #13 —— 必需检查不能采用
+          # "先失败后通过"模式），因此它出现在工作流里但不进必需清单。
+          wf="$(grep -hE '^[[:space:]]+name: (ci|policy|qa)/' .github/workflows/*.yml | sed 's/.*name: //' | sort -u)"
+          rs="$(jq -r '.rules[] | select(.type=="required_status_checks") | .parameters.required_status_checks[].context' .github/rulesets/main-protection.json | sort -u)"
+          missing="$(comm -23 <(printf '%s\n' "$rs") <(printf '%s\n' "$wf"))"
+          if [ -n "$missing" ]; then
+            echo "::error::以下必需检查在规则集里被引用，但没有任何工作流 job 会产生它 —— 这会让所有 PR 永久 pending："
+            printf '  %s\n' "$missing"
+            echo "--- 工作流可见的检查名 ---"; printf '%s\n' "$wf"
             exit 1
           fi
-          echo "✅ 检查名与规则集完全一致"
+          printf '✅ 规则集引用的必需检查全部有对应 job：%s\n' "$(printf '%s' "$rs" | tr '\n' ' ')"
 
   linked-issue:
     name: policy/linked-issue

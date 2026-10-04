@@ -1,14 +1,23 @@
-# qa/acceptance —— 验收门禁（独立工作流）
+# qa/acceptance —— 验收**审计**检查（独立工作流，**非必需检查**）
 #
-# 为什么必须独立、且判据是"评审"而不是"/accept 评论"（两条官方约束共同决定）：
-#   1. `issue_comment` 触发的 job **不满足必需检查** —— 官方仅认可由 push / pull_request /
-#      pull_request_review / pull_request_target / deployment / deployment_status 触发的 job。
-#      因此 `/accept` 评论无法作为机器判据，只能以「授权非作者身份的 APPROVED 评审」为准；
-#      `/accept` 评论保留为人工审计证据（见方案 §8）。
-#   2. 该判据只有评审提交后才可能成立，所以必须能在 `pull_request_review` 上复检。
+# ⚠️ 重要定位变更（Bug #13，2026-10-04 实测）：本检查**故意不进入规则集的必需清单**。
 #
-# 为什么拆成独立工作流：若与 ci/*、policy/* 同处一个工作流，则每次评审提交都会把
-# 那 6 个 job 全部重跑一遍（Actions 分钟数浪费，见方案 §13 风险表）。
+#   原因：必需状态检查一旦在某个 SHA 上留下**失败结论**，后续同名检查通过也**无法**解除阻塞
+#   （已用两个决定性实验确认：关闭 require_code_owner_review 仍 BLOCKED；移除本必需项后立刻可合并）。
+#   而验收判据在 PR 打开时**必然先失败**（此时尚无批准），批准后复检才通过 —— 这种
+#   "先失败后通过"模式与必需检查机制根本冲突，会导致**每个 PR 永久 BLOCKED**。
+#
+#   因此验收的机器门禁回归官方原生规则（见 .github/rulesets/main-protection.json 的 pull_request）：
+#     · required_approving_review_count: 1
+#     · require_last_push_approval: true
+#     · dismiss_stale_reviews_on_push: true
+#   本工作流保留为**审计证据**：在 PR 上如实显示"是否已有授权非作者身份的批准"，
+#   失败时不影响合并，但会留下可见记录，供 W7/W8 与工具切换演练核对。
+#
+# 其他两条设计约束（仍然成立）：
+#   1. 判据是"授权非作者身份的 APPROVED 评审"而不是 `/accept` 评论 —— 官方：
+#      `issue_comment` 触发的 job 不满足必需检查，评论无法作为机器判据；`/accept` 保留为人工审计证据。
+#   2. 拆成独立工作流：否则每次评审提交都会把 ci/*、policy/* 全部重跑（Actions 分钟数浪费）。
 #
 # 未来扩项提醒：若启用 Merge Queue（官方门控：私有仓库需 GitHub Enterprise Cloud），
 # 必须把本 job 接入 `merge_group` 事件，否则合并队列会因必需检查未上报而永久卡住。

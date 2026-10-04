@@ -1,25 +1,31 @@
 # CODEOWNERS — 代码责任人
 #
-# 生效前提：规则集 main-protection 中启用 require_code_owner_review
-#（见 .github/rulesets/main-protection.json；当前按 #4 渐进加严，第一阶段不启用）。
+# 生效前提：规则集 main-protection 中启用 require_code_owner_review（见 .github/rulesets/main-protection.json）。
 #
 # 官方规则要点：
-#   · 多个 owner 时，任意一个 owner 的批准即可满足要求（不是"全部"）
+#   · 多个 owner 时，**任意一个** owner 的批准即可满足要求（不是"全部"）
 #   · owner 必须对仓库有写权限
-#   · 用户拥有的仓库没有 team，因此只能写个人账号（决策 D1）
+#   · **CODEOWNERS 取自目标分支** → 在某个 PR 里修改本文件，无法为该 PR 自己解锁
+#   · 用户拥有的仓库没有 team，只能写个人账号（决策 D1）
 #
-# 决策 D2：主账号负责实现与治理，第二账号 yes8080-reviewer-bot 作为独立评审/验收身份。
+# ⚠️ 本文件曾造成 P0 死锁（Bug #13）：
+#   若某路径的 owner **只有作者本人**，而规则集启用了 require_code_owner_review，
+#   则该路径的任何改动都**永久无法合并** —— 因为 GitHub 禁止自我批准。
+#   因此规则：**每个会被改动的路径都必须至少有一个非作者的 owner**。
+#   下面所有规则都让 @yes8080-reviewer-bot 共同拥有，绝不再写"仅 @yes8080"。
+#
+# 决策 D2：主账号负责实现与治理，`@yes8080-reviewer-bot` 作为独立评审/验收身份。
 
-# 默认：任何改动都需要项目负责人评审
+# 默认：任何改动都需要负责人与独立评审身份
 *                           @yes8080 @yes8080-reviewer-bot
 
-# 治理与流程本身：只有主账号可改（防止"改流程绕过门禁"）
-/.github/                   @yes8080
-/scripts/                   @yes8080
-/docs/GOVERNANCE.md         @yes8080
-/docs/项目管理方案.md        @yes8080
+# 治理与流程（含规则集、模板、工作流）
+/.github/                   @yes8080 @yes8080-reviewer-bot
 
-# 流程文档需要评审身份一起确认（它决定"换工具能否推进"）
-/docs/PLAYBOOK.md           @yes8080 @yes8080-reviewer-bot
+# 脚本层
+/scripts/                   @yes8080 @yes8080-reviewer-bot
+
+# 方案与流程文档（决定"换工具能否推进"，必须双身份确认）
+/docs/                      @yes8080 @yes8080-reviewer-bot
 /TOOLING.md                 @yes8080 @yes8080-reviewer-bot
 /AGENTS.md                  @yes8080 @yes8080-reviewer-bot

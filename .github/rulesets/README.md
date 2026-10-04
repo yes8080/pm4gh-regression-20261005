@@ -15,10 +15,29 @@
 | 名称 / 目标 / 状态 | `main-protection` / `branch` / `active` |
 | 目标引用 | `~DEFAULT_BRANCH`（**不是** `**`，否则切片分支合并后无法自动删除） |
 | bypass 名单 | **空** —— 无人可绕过，包括管理员 |
-| 已启用规则 | `deletion`、`non_fast_forward`、`required_linear_history`、`required_status_checks`（strict，6 个 context）、`pull_request`（approvals=1、CODEOWNERS 评审、驳回陈旧批准、最后推送者之外批准、必须解决评论、仅允许 squash） |
+| 已启用规则 | `deletion`、`non_fast_forward`、`required_linear_history`、`required_status_checks`（strict，**5 个 context**：ci/lint、ci/test、policy/linked-issue、policy/branch-name、policy/template）、`pull_request`（approvals=1、CODEOWNERS 评审、驳回陈旧批准、最后推送者之外批准、必须解决评论、仅允许 squash） |
+| **非必需（审计）检查** | `qa/acceptance` —— 有意**不**进入必需清单，原因见下一条 |
 | 线上 vs `main-protection.json` | 一致 |
 
-### 实施过程中被验证的事实（均有原始输出为证）
+> ⚠️ 上表是 **Bug #13 修复后的目标态**。修复过程中曾临时降级（`require_code_owner_review: false` + 移除 `qa/acceptance` 必需项）以脱困，随后按本仓库的 JSON 恢复到修正态。
+
+### 两条硬规则（Bug #13 实测得出，违反会造成 PR 永久 BLOCKED）
+
+**规则 1：必需状态检查绝不能采用「先失败后通过」模式。**
+必需检查一旦在某个 SHA 上留下失败结论，**后续同名检查通过也无法解除阻塞**。决定性实验（PR #12）：
+
+| 实验 | 操作 | `mergeStateStatus` |
+|---|---|---|
+| 基线 | `reviewDecision=APPROVED`，6 项检查"最新一次"均 success，但同 SHA 上存在一次 `qa/acceptance` FAILURE | `BLOCKED` |
+| A | 把 `require_code_owner_review` 置 `false` | 仍 `BLOCKED`（排除 CODEOWNERS 因素） |
+| B | 把 `qa/acceptance` 移出必需清单 | `BLOCKED → UNSTABLE`，**合并立刻成功**（锁定根因） |
+
+→ 因此验收的机器门禁**只能**用官方原生规则承担：`required_approving_review_count: 1` + `require_last_push_approval` + `dismiss_stale_reviews_on_push`。`qa/acceptance` 降级为非必需审计检查。
+
+**规则 2：CODEOWNERS 里任何会被改动的路径，都必须至少有一个"非作者"的 owner。**
+若某路径 owner 只有作者本人，而启用了 `require_code_owner_review`，则**该路径的改动永久无法合并**（GitHub 禁止自我批准）。且 **CODEOWNERS 取自目标分支** —— 在 PR 内修改它无法为该 PR 解锁，只能先降级规则集。因此本仓库所有规则都写成 `@yes8080 @yes8080-reviewer-bot` 共同拥有，不再出现"仅 @yes8080"。
+
+### 实施过程中被验证的其他事实（均有原始输出为证）
 
 1. **`git push --dry-run` 不能用来判断规则集是否生效。**
    阶段 1（仅必需检查 + 禁强推/禁删除/线性历史）时 dry-run 显示"可以推送 `HEAD -> main`"，但 dry-run 并不评估 repository rules —— 这是个**假信号**，差点让我们误判阶段 1 已禁止直推。
