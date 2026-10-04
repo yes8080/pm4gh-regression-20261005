@@ -91,18 +91,42 @@ ${MSG}"
 esac
 
 # ── 状态迁移（决策 D9：状态由 status/* 标签承载）────────────
-# 说明：approve 方可解锁合并，因此批准后即进入 Acceptance；打回则进入 Rework。
-#       放在脚本最后执行：status.sh 会切回主身份（unset GH_TOKEN），不影响上面的评审动作。
-linked="$(gh pr view "$PR" -R "$REPO" --json closingIssuesReferences \
-  --jq '.closingIssuesReferences[0].number // ""' 2>/dev/null || true)"
-if [ -n "$linked" ]; then
-  case "$ACTION" in
-    approve)         "$(dirname "$0")/status.sh" "$linked" acceptance ;;
-    request-changes|reject) "$(dirname "$0")/status.sh" "$linked" rework ;;
-    *) : ;;
-  esac
+# ★ 目标选择规则（Bug #32 修复）：优先取**分支名中的 issue 号**，与 policy/branch-name 同源。
+#   原因："一个切片 = 一个 Issue = 一个分支 = 一个 PR"；而 PR 正文可能同时写 Fixes #N 关闭别的 Issue，
+#   直接取 closingIssuesReferences[0] 会把状态打到错误的 Issue 上（静默错误，且 closeout 第五项才会暴露）。
+#   放在脚本最后执行：status.sh 会切回主身份（unset GH_TOKEN），不影响上面的评审动作。
+target=""
+head_ref="$(gh pr view "$PR" -R "$REPO" --json headRefName --jq .headRefName 2>/dev/null || true)"
+case "$head_ref" in
+  */*)
+    cand="${head_ref#*/}"; cand="${cand%%-*}"
+    case "$cand" in
+      ''|*[!0-9]*) : ;;
+      *) target="$cand" ;;
+    esac
+    ;;
+esac
+if [ -z "$target" ]; then
+  target="$(gh pr view "$PR" -R "$REPO" --json closingIssuesReferences \
+    --jq '.closingIssuesReferences[0].number // ""' 2>/dev/null || true)"
+  [ -n "$target" ] && warn "无法从分支名解析 issue 号，回退到 closingIssuesReferences[0] = #${target}"
+fi
+
+if [ -n "$target" ]; then
+  # 校验：目标必须确实在本 PR 的关联 Issue 中，避免误标
+  is_linked="$(gh pr view "$PR" -R "$REPO" --json closingIssuesReferences \
+    | jq -r --argjson n "$target" 'any(.closingIssuesReferences[]; .number == $n)' 2>/dev/null || echo false)"
+  if [ "$is_linked" = "true" ]; then
+    case "$ACTION" in
+      approve)                "$(dirname "$0")/status.sh" "$target" acceptance ;;
+      request-changes|reject) "$(dirname "$0")/status.sh" "$target" rework ;;
+      *) : ;;
+    esac
+  else
+    warn "分支对应的 Issue #${target} 不在本 PR 的关联 Issue 中，跳过状态迁移（避免误标）"
+  fi
 else
-  warn "PR 未关联 Issue，跳过状态迁移"
+  warn "无法确定状态迁移目标（分支名与关联 Issue 都取不到），跳过"
 fi
 
 echo
