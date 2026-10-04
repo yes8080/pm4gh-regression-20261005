@@ -42,9 +42,26 @@ scripts/preflight.sh     # 任何一项失败 → 停下报告，不要"先干�
 | 改线上规则集或 `main-protection.json` | 写错会让**所有 PR 永久卡住**；属 dispatcher 权限，有疑虑就停下报告 |
 | 改 5 个必需检查的 job `name:` | context 一旦改名/消失，所有 PR 永久 pending |
 | 给必需检查工作流加 `paths`/`branches` 过滤 | 被跳过的检查永久 pending |
-| 读取、打印、提交 `.secrets/**` | 凭据泄露；`ci/test` 会扫描 |
 | 绕过 `status.sh` 直接改状态标签，或把状态写进本地文件 | 状态分裂 |
 | 引入自己的流程（自建 TODO 文件、自己的状态机、自己的分支策略、共享库） | 流程只在仓库里 |
+
+### 5.1 凭据口径（**唯一一处**；路径与 W0 开通见 [docs/WORKFLOW.md §0](docs/WORKFLOW.md)，别处只链接）
+
+| 行为 | 判定 |
+|---|---|
+| 用**本身份**凭据执行**本身份**动作（作者用 `developer.pat` 推送/评论） | ✅ 允许（既有机制） |
+| **读取其他身份**的凭据（作者读 `reviewer.pat` / `main.pat`） | ❌ 禁止 —— 越过身份，即可完成对自己 PR 的批准（`#94`） |
+| **打印 / 提交**任何凭据（含本身份） | ❌ 禁止 —— 凭据泄露；`ci/test` 会扫描 |
+
+**判据是机器判据不是自觉**：其他身份的凭据**必须在工作区之外** —— `scripts/review.sh` 与 `scripts/preflight.sh`
+把凭据路径解析成绝对路径，落在仓库根之内 → `review.sh` 报错退出、`preflight.sh` 记 `[FAIL]` 隔离缺口。
+**作者路径的脚本（`start.sh`/`deliver.sh`/`abort.sh`/`preflight.sh`）不读取评审凭据内容**；
+评审凭据的认证与写权限由 W6 `review.sh` 用凭据自身判定。
+
+**范围声明（这是工作区边界，不是身份隔离）**：判据提供的是**工作区边界**（凭据不得在仓库内，机器可查）与
+**杜绝提交/泄露**（不可能被 `git add`、不会撞 `ci/test` 扫描）；它**不防御同一 OS 用户读取另一身份凭据** ——
+作者本来就要读 `developer.pat`，同一用户能列 `$HOME/.config/pm4gh/` 就读得到 `reviewer.pat`，文件层面**不构成身份隔离**。
+**真正的强制点是平台与契约**：① GitHub 拒绝自我批准 + 规则集 `require_code_owner_review`/`require_last_push_approval`；② 本节契约。**禁止**写成"作者取不到评审凭据"。
 
 ## 6. 异常处理
 

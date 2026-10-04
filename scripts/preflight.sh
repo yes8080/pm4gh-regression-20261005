@@ -2,17 +2,23 @@
 # scripts/preflight.sh —— 开工前预检（任何接手者的第一步）
 #
 # 判定：全部 [ OK ] 才继续；任何 [FAIL] → 把原文报告 dispatcher，不要"先干着看"。
-# 检查项：命令齐备 / gh 登录 / cwd 与仓库形态 / 工作区 / 远端唯一 / 三身份互不相同 /
-#         凭据 scope 与最小权限 / 线上规则集 == 仓库内定义 / 每个必需 context 都有工作流 job /
+# 检查项：命令齐备 / gh 登录 / cwd 与仓库形态 / 工作区 / 远端唯一 / 作者与合并身份互不相同 /
+#         作者凭据 scope 与最小权限 / **工作区内不得存在任何凭据文件**（#94）/
+#         评审凭据在**工作区之外**（#94，不读其内容）/
+#         线上规则集 == 仓库内定义 / 每个必需 context 都有工作流 job /
 #         机器消费的标签存在（判据 LABEL_ASSERT，与 ci/test 同一段文本）。
 #
 # 退出码：0 全部通过；1 存在未通过项（每项都给出可行动的修复提示）
 
 set -eu
 
-SECRETS_DIR="${SECRETS_DIR:-.secrets}"
-DEVELOPER_PAT_FILE="${DEVELOPER_PAT_FILE:-${SECRETS_DIR}/developer.pat}"
-REVIEWER_PAT_FILE="${REVIEWER_PAT_FILE:-${SECRETS_DIR}/reviewer.pat}"
+# 作者凭据默认在**工作区之外**（#94 / PM 裁定 (B)）：默认值必须可用 —— 指向工作区内已不存在的
+# `.secrets/developer.pat` 等于把配置漂移写进默认值。写法与 review.sh 的评审凭据一致。
+DEVELOPER_PAT_FILE="${DEVELOPER_PAT_FILE:-${HOME}/.config/pm4gh/developer.pat}"
+# 评审凭据默认在**工作区之外**（#94）：工作区内的评审凭据 = 作者可读，独立评审只剩名义。
+# 本脚本对它只做**内容无关**的判据（在不在工作区内 / 存在否 / 权限 / 是否入库）——
+# 作者不得读取其他身份的凭据内容（AGENTS §5），评审身份由 W6 `review.sh` 用凭据自身判定。
+REVIEWER_PAT_FILE="${REVIEWER_PAT_FILE:-${HOME}/.config/pm4gh/reviewer.pat}"
 RULESET_FILE="${RULESET_FILE:-.github/rulesets/main-protection.json}"
 BASE_BRANCH="${BASE_BRANCH:-main}"
 # 这 5 个字符串是**必需检查的 context**（= 工作流里 job 的 name），一个字都不能差。
@@ -82,6 +88,50 @@ file_mode() {
   stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1" 2>/dev/null || printf '?'
 }
 
+# ── 工作区判据（#94）────────────────────────────────────────
+# WORKSPACE_ASSERT:BEGIN
+# 凭据路径是否落在**工作区之内**（#94 的机器判据）：工作区内的凭据 = 作者可读，「独立评审」只剩名义。
+# 把路径解析成**绝对路径**：父目录存在时用 `cd … && pwd -P`（解析符号链接，如 /tmp → /private/tmp），
+# 否则退回词法归一化 —— 路径不存在也要能判定（凭据缺失正是要报的场景）。**不读文件内容**。
+# 同一段文本也出现在另一个脚本里（每个脚本自包含，不引共享库），由 ci/test 断言两处**逐字一致**。
+physical() {
+  d="$(dirname "${1:-}")"; b="$(basename "${1:-}")"
+  if [ -d "$d" ]; then
+    d="$(cd "$d" && pwd -P)"
+    case "$d" in /) printf '/%s\n' "$b" ;; *) printf '%s/%s\n' "$d" "$b" ;; esac
+  else
+    abspath "${1:-}"
+  fi
+}
+
+abspath() {
+  p="${1:-}"
+  case "$p" in /*) : ;; *) p="$(pwd -P)/${p}" ;; esac
+  out=""; rest="$p"
+  while [ -n "$rest" ]; do
+    case "$rest" in
+      */*) seg="${rest%%/*}"; rest="${rest#*/}" ;;
+      *)   seg="$rest"; rest="" ;;
+    esac
+    case "$seg" in
+      ''|.) : ;;
+      ..)   out="${out%/*}" ;;
+      *)    out="${out}/${seg}" ;;
+    esac
+  done
+  printf '%s\n' "${out:-/}"
+}
+
+# 命中工作区（含仓库根自身）→ 0；否则 1。仓库根取 `git rev-parse --show-toplevel` 的物理路径。
+pat_in_workspace() {
+  ws_root="$(cd "$(git rev-parse --show-toplevel 2>/dev/null || pwd -P)" && pwd -P)"
+  case "$(physical "${1:-}")" in
+    "$ws_root"|"$ws_root"/*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+# WORKSPACE_ASSERT:END
+
 info "1/10 基础命令"
 for c in git gh jq awk grep sed curl diff; do
   if command -v "$c" >/dev/null 2>&1; then ok "${c} 可用"; else bad "缺少命令 ${c}，请先安装"; fi
@@ -100,13 +150,16 @@ fi
 info "3/10 仓库形态与 cwd"
 toplevel="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 REPO=""
+# §5 隔离判据的基准：仓库根的**绝对路径**（解析符号链接）
+REPO_ROOT="$(pwd -P)"
 if [ -z "$toplevel" ]; then
   bad "当前不在 git 仓库内"
 else
+  REPO_ROOT="$(cd "$toplevel" && pwd -P)"
   cwd_real="$(pwd -P)"
   case "$cwd_real" in
-    "$toplevel"|"$toplevel"/*) ok "cwd 在仓库内：${cwd_real}" ;;
-    *) bad "cwd 不在本仓库内（cwd=${cwd_real}，仓库=${toplevel}）" ;;
+    "$REPO_ROOT"|"$REPO_ROOT"/*) ok "cwd 在仓库内：${cwd_real}" ;;
+    *) bad "cwd 不在本仓库内（cwd=${cwd_real}，仓库=${REPO_ROOT}）" ;;
   esac
   common="$(git rev-parse --git-common-dir 2>/dev/null || true)"
   case "$common" in
@@ -147,38 +200,78 @@ else
 fi
 
 info "5/10 三身份凭据（作者 / 评审 / 合并）"
+# ① 作者凭据 = **本身份**凭据 → 允许读取内容（用它做本身份动作）
 dev_login="$(login_via_pat "$DEVELOPER_PAT_FILE")"
-rev_login="$(login_via_pat "$REVIEWER_PAT_FILE")"
-for pair in "${DEVELOPER_PAT_FILE}:作者" "${REVIEWER_PAT_FILE}:评审"; do
-  f="${pair%%:*}"; label="${pair#*:}"
-  if [ ! -s "$f" ]; then
-    bad "${label}凭据缺失或为空：${f}（见 docs/WORKFLOW.md §0）"
-    continue
-  fi
-  mode="$(file_mode "$f")"
-  [ "$mode" = "600" ] && ok "${label}凭据权限 600" || bad "${label}凭据权限为 ${mode}，应为 600：chmod 600 ${f}"
-  if git ls-files --error-unmatch "$f" >/dev/null 2>&1; then
-    bad "${label}凭据**已被 git 跟踪** —— 立即 git rm --cached 并轮换该 token"
+if [ ! -s "$DEVELOPER_PAT_FILE" ]; then
+  bad "作者凭据缺失或为空：${DEVELOPER_PAT_FILE}（见 docs/WORKFLOW.md §0）"
+else
+  mode="$(file_mode "$DEVELOPER_PAT_FILE")"
+  [ "$mode" = "600" ] && ok "作者凭据权限 600" || bad "作者凭据权限为 ${mode}，应为 600：chmod 600 ${DEVELOPER_PAT_FILE}"
+  if git ls-files --error-unmatch "$DEVELOPER_PAT_FILE" >/dev/null 2>&1; then
+    bad "作者凭据**已被 git 跟踪** —— 立即 git rm --cached 并轮换该 token"
   else
-    ok "${label}凭据未进入版本库"
+    ok "作者凭据未进入版本库"
   fi
-done
+fi
 [ -n "$dev_login" ] && ok "作者身份：${dev_login}" || bad "作者凭据无法认证（已过期/被撤销/不是 classic PAT）"
-[ -n "$rev_login" ] && ok "评审身份：${rev_login}" || bad "评审凭据无法认证（凭据失效会让 .github/**、scripts/** 永久无法合并）"
+
+# ② 评审凭据：**不读取内容**（AGENTS §5：作者不得读取其他身份的凭据）——
+#    这里只做内容无关的判据；评审身份/权限由 W6 `review.sh` 用凭据自身判定。
+rev_abs="$(physical "$REVIEWER_PAT_FILE")"
+rev_dev_abs="$(physical "$DEVELOPER_PAT_FILE")"
+if pat_in_workspace "$REVIEWER_PAT_FILE"; then
+  bad "评审凭据落在**工作区内**：${rev_abs}（仓库根 ${REPO_ROOT}）—— 这是 #94 的隔离缺口（作者可读 = 独立评审只剩名义）"
+  printf '       搬移（由 PM / dispatcher 在**工作区外**执行）：\n' >&2
+  printf '         mkdir -p "${HOME}/.config/pm4gh" && chmod 700 "${HOME}/.config/pm4gh"\n' >&2
+  printf '         mv "%s" "${HOME}/.config/pm4gh/reviewer.pat"\n' "$rev_abs" >&2
+  printf '         chmod 600 "${HOME}/.config/pm4gh/reviewer.pat"\n' >&2
+  printf '       默认路径即此（scripts/review.sh 也拒绝工作区内的路径）；凭据缺失只报警告（见下一项）\n' >&2
+else
+  ok "评审凭据在工作区之外：${rev_abs}"
+  if [ ! -s "$REVIEWER_PAT_FILE" ]; then
+    warn "评审凭据缺失或不可读：${rev_abs} —— 不影响作者循环（W0..W5/W7/W8），但 W6 评审不可用"
+    printf '       开通 / 搬移（由 PM / dispatcher 执行）：\n' >&2
+    printf '         mkdir -p "${HOME}/.config/pm4gh" && chmod 700 "${HOME}/.config/pm4gh"\n' >&2
+    printf '         mv .secrets/reviewer.pat "${HOME}/.config/pm4gh/reviewer.pat"    # 若凭据仍在工作区内（先修上一项）\n' >&2
+    printf '         chmod 600 "${HOME}/.config/pm4gh/reviewer.pat"\n' >&2
+  else
+    mode="$(file_mode "$REVIEWER_PAT_FILE")"
+    [ "$mode" = "600" ] && ok "评审凭据权限 600" || bad "评审凭据权限为 ${mode}，应为 600：chmod 600 ${REVIEWER_PAT_FILE}"
+    if git ls-files --error-unmatch "$REVIEWER_PAT_FILE" >/dev/null 2>&1; then
+      bad "评审凭据**已被 git 跟踪** —— 立即 git rm --cached 并轮换该 token"
+    else
+      ok "评审凭据未进入版本库"
+    fi
+    if [ "$rev_abs" = "$rev_dev_abs" ]; then
+      bad "作者与评审凭据指向**同一个文件**：${rev_abs} —— 三身份分离不成立"
+    else
+      ok "作者与评审凭据是两个不同文件"
+    fi
+  fi
+fi
+
+# ③ 工作区内不得存在**任何**凭据文件（#94 / PM 裁定 (B) 第 3 条）：搬出仓库是默认值，一旦有人把
+#    凭据拷回来，隔离会被**静默**破坏 —— 这里让它可见（判据是文件系统事实，与文档怎么写无关）。
+stray_pat="$(find . -path ./.git -prune -o -type f -name '*.pat' -print 2>/dev/null | sed -E 's#^\./##' | sort || true)"
+if [ -n "$stray_pat" ]; then
+  bad "工作区内存在凭据文件（#94 的隔离缺口，且可能被 git add 误提交）：$(printf '%s' "$stray_pat" | tr '\n' ' ')"
+  printf '       搬移（由 PM / dispatcher 在**工作区外**执行）：\n' >&2
+  printf '         mkdir -p "$HOME/.config/pm4gh" && chmod 700 "$HOME/.config/pm4gh"\n' >&2
+  printf '         mv <上面列出的每个文件> "$HOME/.config/pm4gh/" && chmod 600 "$HOME/.config/pm4gh/"*.pat\n' >&2
+else
+  ok "工作区内没有任何凭据文件（*.pat）"
+fi
+
+# ④ 合并身份 = 本机 gh 登录态（不需要凭据文件）
 if [ -n "$main_login" ] && [ -n "$dev_login" ] && [ "$main_login" != "$dev_login" ]; then
   ok "身份分离：合并 ${main_login} ≠ 作者 ${dev_login}"
 elif [ -n "$main_login" ] && [ "$main_login" = "$dev_login" ]; then
   bad "身份分离失败：作者身份 = gh 登录身份（${main_login}）—— 检查 ${DEVELOPER_PAT_FILE} 是否放错"
 fi
-if [ -n "$dev_login" ] && [ -n "$rev_login" ] && [ "$dev_login" != "$rev_login" ]; then
-  ok "身份分离：作者 ${dev_login} ≠ 评审 ${rev_login}"
-elif [ -n "$dev_login" ] && [ "$dev_login" = "$rev_login" ]; then
-  bad "身份分离失败：作者身份 = 评审身份（${dev_login}）—— 两个凭据拿错了"
-fi
+printf '  评审身份 ≠ 作者身份：由 W6 `review.sh` 用**评审凭据自身**判定（作者路径不读它）\n'
 
-info "6/10 凭据 scope 与最小权限"
+info "6/10 凭据 scope 与最小权限（只对作者凭据 —— 本身份）"
 dev_scopes="$(scopes_via_pat "$DEVELOPER_PAT_FILE" | tr '\n' ' ' | sed -E 's/[[:space:]]+$//')"
-rev_scopes="$(scopes_via_pat "$REVIEWER_PAT_FILE" | tr '\n' ' ' | sed -E 's/[[:space:]]+$//')"
 if [ -z "$dev_scopes" ]; then
   bad "作者凭据读不到 OAuth scope 头 —— 无法证明 scope 合规（需要 repo + workflow）"
 else
@@ -188,11 +281,7 @@ else
     *) bad "作者 scope 缺 workflow —— 推送 .github/workflows/** 会被服务端整体拒绝（实测：${dev_scopes}）" ;;
   esac
 fi
-if [ -z "$rev_scopes" ]; then
-  bad "评审凭据读不到 OAuth scope 头 —— 无法证明 scope 合规（需要 repo）"
-else
-  case " ${rev_scopes} " in *" repo "*) ok "评审 scope 含 repo（实测：${rev_scopes}）" ;; *) bad "评审 scope 不含 repo（实测：${rev_scopes}）" ;; esac
-fi
+printf '  评审凭据的认证与写权限由 W6 `review.sh` 自检（认证失败 → 报错退出；无写权限 → 其评审不计入门禁）\n'
 if [ -n "$REPO" ] && [ -n "$dev_login" ]; then
   perms="$(GH_TOKEN="$(cat "$DEVELOPER_PAT_FILE")" gh api "repos/${REPO}" --jq '"\(.permissions.push)/\(.permissions.admin)"' 2>/dev/null || true)"
   case "$perms" in

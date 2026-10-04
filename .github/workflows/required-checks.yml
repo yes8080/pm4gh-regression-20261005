@@ -220,6 +220,48 @@ jobs:
           fi
           if [ "$bad" -ne 0 ]; then exit 1; fi
           echo "✅ 规则集判据唯一（与 preflight.sh 逐字一致）且文件全量键齐备"
+      - name: 凭据隔离判据在 review.sh 与 preflight.sh 逐字一致（同一实现 + 反向样本）
+        run: |
+          set -euo pipefail
+          # 为什么要有这一步：隔离判据「凭据落在工作区内 → 拒绝」必须在 review.sh 与 preflight.sh
+          # 两处都成立，而脚本必须**自包含**（不引共享库）→ 两处文本必须逐字一致：只改一处就是
+          # 两套实现、口径分裂（同 #105 引入的 RULESET_CANON_JQ / LABEL_ASSERT 先例）。
+          # 断言本身也带反向样本 —— 否则「两处都空」也算"一致"。
+          a="$(sed -n '/WORKSPACE_ASSERT:BEGIN/,/WORKSPACE_ASSERT:END/p' scripts/review.sh | sed -e '1d' -e '$d')"
+          b="$(sed -n '/WORKSPACE_ASSERT:BEGIN/,/WORKSPACE_ASSERT:END/p' scripts/preflight.sh | sed -e '1d' -e '$d')"
+          bad=0
+          if [ -z "$a" ]; then echo "::error file=scripts/review.sh::未能从 WORKSPACE_ASSERT 标记区解析出隔离判据"; bad=1; fi
+          if [ -z "$b" ]; then echo "::error file=scripts/preflight.sh::未能从 WORKSPACE_ASSERT 标记区解析出隔离判据"; bad=1; fi
+          if [ "$a" != "$b" ]; then
+            echo "::error::review.sh 与 preflight.sh 的凭据隔离判据不一致（必须逐字相同 —— 同一判据，不是两套实现）"
+            echo "--- review.sh ---"; printf '%s\n' "$a"
+            echo "--- preflight.sh ---"; printf '%s\n' "$b"
+            bad=1
+          fi
+          if [ -z "$a" ] || [ -z "$b" ]; then exit 1; fi
+          # ① 功能样本：判据必须真的能分出「工作区内」与「工作区外」（防「逐字一致但一致地坏」）
+          mkdir -p /tmp/ws-assert
+          printf '%s\n' "$a" > /tmp/ws-assert/judge.sh
+          printf 'pat_in_workspace "$1"\n' >> /tmp/ws-assert/judge.sh
+          if ! bash /tmp/ws-assert/judge.sh "$(pwd -P)/scripts/review.sh"; then
+            echo "::error::隔离判据没有把仓库内路径判为「工作区内」"; bad=1
+          fi
+          if bash /tmp/ws-assert/judge.sh "${HOME}/.config/pm4gh/reviewer.pat"; then
+            echo "::error::隔离判据把工作区外路径判成了「工作区内」"; bad=1
+          fi
+          # ② 反向样本 A：模拟「改一处、漏一处」（把 preflight.sh 侧文本改一个字符）→ 逐字比对必须失败
+          mutated="$(printf '%s\n' "$b" | sed 's/pat_in_workspace/pat_in_workspace_x/')"
+          if [ "$a" = "$mutated" ]; then
+            echo "::error::反向样本 A 未失败：判据文本被改动后两处仍然相等 —— 逐字断言形同虚设"; bad=1
+          fi
+          # ③ 反向样本 B：把判据改成永不命中（= 各自为政的空判据）→ 功能样本必须抓得住
+          printf '%s\n' "$b" | sed 's#"\$ws_root"|"\$ws_root"/\*#/__never__|/__never__/*#' > /tmp/ws-assert/judge-broken.sh
+          printf 'pat_in_workspace "$1"\n' >> /tmp/ws-assert/judge-broken.sh
+          if bash /tmp/ws-assert/judge-broken.sh "$(pwd -P)/scripts/review.sh"; then
+            echo "::error::反向样本 B 未失败：判据被改成永不命中后，仓库内路径仍被判为「工作区内」"; bad=1
+          fi
+          if [ "$bad" -ne 0 ]; then exit 1; fi
+          echo "✅ review.sh 与 preflight.sh 的凭据隔离判据逐字一致；功能样本通过；反向样本 A/B 按预期失败"
       - name: 脚本有可执行位且自包含（无共享库）
         run: |
           set -euo pipefail

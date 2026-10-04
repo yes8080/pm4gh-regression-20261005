@@ -6,11 +6,24 @@
 
 | 角色 | 账号 | 凭据 | 职责 |
 |---|---|---|---|
-| 作者 | `@yes8080-dev-bot` | `.secrets/developer.pat`（`repo, workflow`） | 建分支、提交、推送、开 PR、返修（`--as author`） |
-| 评审 | `@yes8080-reviewer-bot` | `.secrets/reviewer.pat`（`repo`） | `approve` / `request-changes`（不得合并；**不加** `--as`） |
+| 作者 | `@yes8080-dev-bot` | **`$HOME/.config/pm4gh/developer.pat`**（`repo, workflow`）—— **必须在工作区之外** | 建分支、提交、推送、开 PR、返修（`--as author`） |
+| 评审 | `@yes8080-reviewer-bot` | **`$HOME/.config/pm4gh/reviewer.pat`**（`repo`）—— **必须在工作区之外** | `approve` / `request-changes`（不得合并；**不加** `--as`） |
 | 合并 | `@yes8080` | 本机 `gh auth login` 登录态 | 合并、改仓库设置、跑 `closeout.sh` |
 
-身份由**平台**强制（GitHub 禁止自我批准）：作者凭据缺 `workflow` scope → 推送 `.github/workflows/**` 被服务端整体拒绝；评审凭据失效 → `.github/**`、`scripts/**`、`docs/**` 永久无法合并（`require_code_owner_review`）。两者由 `preflight.sh`（W0）拦截。**`--as` 只接受 `author`**（未知值报错）—— 没有任何脚本能把作者"切换"成 dispatcher。
+身份由**平台**强制（GitHub 禁止自我批准）：作者凭据缺 `workflow` scope → 推送 `.github/workflows/**` 被服务端整体拒绝；评审凭据失效 → `.github/**`、`scripts/**`、`docs/**` 永久无法合并（`require_code_owner_review`）。作者凭据的 scope/最小权限、以及**评审凭据在不在工作区之外**由 `preflight.sh`（W0）断言；评审凭据**自身**的认证与写权限由 W6 `review.sh` 自检（`preflight.sh` 不读其他身份的凭据内容 —— 口径见 [AGENTS.md §5.1](../AGENTS.md)）。**`--as` 只接受 `author`**（未知值报错）—— 没有任何脚本能把作者"切换"成 dispatcher。
+
+### W0 身份开通：凭据放哪（**机器判据，不是口号**）
+
+评审凭据**必须在工作区之外**（`#94`）：作者 agent 与你在同一工作区里运行 —— 工作区内的评审凭据 = 作者可读，「独立评审」只剩名义。作者凭据同理（`#94` PM 裁定 (B)：默认路径指向工作区内已不存在的位置 = 把配置漂移写进默认值，默认值必须可用）。
+
+```bash
+mkdir -p "$HOME/.config/pm4gh" && chmod 700 "$HOME/.config/pm4gh"   # 两个身份凭据的存放目录（工作区外）
+mv .secrets/developer.pat "$HOME/.config/pm4gh/developer.pat"      # 作者凭据，若它还在工作区里
+mv .secrets/reviewer.pat "$HOME/.config/pm4gh/reviewer.pat"        # 评审凭据，若它还在工作区里
+chmod 600 "$HOME/.config/pm4gh/developer.pat" "$HOME/.config/pm4gh/reviewer.pat"
+```
+
+判据：`scripts/review.sh`（默认 `REVIEWER_PAT_FILE=$HOME/.config/pm4gh/reviewer.pat`）与 `scripts/preflight.sh`（作者侧默认 `DEVELOPER_PAT_FILE=$HOME/.config/pm4gh/developer.pat`）都把给定路径解析成**绝对路径**（`cd … && pwd -P`）；落在**仓库根之内** → `review.sh` 报错退出、`preflight.sh` 记 `[FAIL] 隔离缺口`，两者都打印上面这几条确切命令；`preflight.sh` 另断言**工作区内不得存在任何凭据文件**（`.secrets/` 下残留 `*.pat` → `[FAIL]`）。换别的工作区外路径：`REVIEWER_PAT_FILE=/工作区外/路径 scripts/review.sh <pr#> approve --body-file <文件>`。行为允许/禁止的口径只在 [AGENTS.md §5.1](../AGENTS.md) 写一次，本文件不复述；**隔离的强度边界见 §4 陷阱 13**。
 
 ## 1. 状态机（唯一源）
 
@@ -100,7 +113,7 @@
 
 ### W0 预检（每次接手都跑）— `scripts/preflight.sh`
 
-全部 `[ OK ]` 才继续；任何 `[FAIL]` → 把原文报告 dispatcher，**不要"先干着看"**。它检查：命令齐备 / gh 登录 / cwd 在仓库内且非 worktree / 工作区状态 / 远端唯一 origin / 三身份凭据可用且**两两不同** / 作者凭据含 `workflow` scope / 凭据未入库且权限 600 / 线上规则集与 `.github/rulesets/main-protection.json` 的必需 context 一致 / 每个必需 context 都有工作流 job。
+全部 `[ OK ]` 才继续；任何 `[FAIL]` → 把原文报告 dispatcher，**不要"先干着看"**。它检查：命令齐备 / gh 登录 / cwd 在仓库内且非 worktree / 工作区状态 / 远端唯一 origin / 作者凭据可用（认证、`workflow` scope、最小权限）且 ≠ gh 登录身份 / 评审凭据在**工作区之外**（只做内容无关判据；缺失记 `[WARN]`，属 W6 的前置）/ 凭据未入库且权限 600 / 线上规则集与 `.github/rulesets/main-protection.json` 的必需 context 一致 / 每个必需 context 都有工作流 job。
 
 ### W1 领片（DoR）— `gh issue list --state open --label status/ready --limit 20 --json number,title,labels`
 
@@ -135,7 +148,7 @@
 
 ### W6 独立评审 — `scripts/review.sh <pr#> approve --body-file review.md`（或 `request-changes`）
 
-必须由 `@yes8080-reviewer-bot` 发（`review.sh` 用评审凭据，**不加** `--as`）。评审通过 → **不迁移状态**（停在 `in-review`）；打回 → `in-progress`（平台 `reviewDecision=CHANGES_REQUESTED`；在**同一分支**继续提交，不新建分支/PR）。`require_last_push_approval`：返修后新推送会**驳回旧批准**，必须重新评审。
+必须由 `@yes8080-reviewer-bot` 发（`review.sh` 用评审凭据，**不加** `--as`；凭据必须在**工作区之外**，见 §0 —— 落在仓库内脚本直接拒绝执行）。评审通过 → **不迁移状态**（停在 `in-review`）；打回 → `in-progress`（平台 `reviewDecision=CHANGES_REQUESTED`；在**同一分支**继续提交，不新建分支/PR）。`require_last_push_approval`：返修后新推送会**驳回旧批准**，必须重新评审。
 
 ### W7 合并与收尾（dispatcher）
 
@@ -179,6 +192,7 @@ W0..W7 只覆盖「一路顺风」。`canceled` 是**既有终态**（无出边�
 10. **状态迁移必须原子：`status.sh` 里「带标签 → 带标签」的迁移只能有 1 次 `gh issue edit` 调用（同一次里带全部 `--remove-label` 旧标签 + `--add-label` 新标签）。** 拆成「先 remove、再 add」两次调用就出现「零 `status/*` 标签」窗口（v1 本是原子的一次调用，v2 重写拆成两步 → 回归：PR #92 首 SHA `cc9cf14` 实测 `14:06:13Z` unlabeled → `14:06:16Z` labeled，约 3 秒）。代价特别大：`deliver.sh` 的次序是「推送 → 建 PR → 迁 `in-review`」，PR 事件**立刻**触发必需检查，`policy/branch-name` 在窗口内读到 0 个标签 → 把 Issue 判成 Backlog → **该 SHA 留下不可逆的 FAILURE**（陷阱 1），只能重推 SHA；曾靠「重跑 `policy/branch-name`」兜底，但那是在赌，不可依赖。三类迁移的判据不同，别一刀切：带标签→带标签（`ready`/`in-progress`/`in-review`）**必须原子**；→ `backlog` 的载体就是无标签，移除即结果，不保留；→ `done`/`canceled` 的载体是 CLOSED + 无标签，标签移除与关闭之间没有「必须保留标签」的要求。**判据**（`#93` 起）：用 stub `gh` 记录调用次数与参数，断言该迁移只发生 **1 次** `issue edit` 且同一次同时含 `--remove-label`(旧) 与 `--add-label`(新)；反向样本 = 把实现改回两次调用时该断言**必须失败**。**已知残余（别过度相信这一步）**：`gh issue edit` 内部把 add 与 remove 发成**两个并发** GraphQL mutation（`cli/cli` v2.102.0 `pkg/cmd/pr/shared/editable_http.go:13,17-36,91`，`addLabelsToLabelable` / `removeLabelsFromLabelable`），所以「1 次 CLI 调用」把窗口从约 3 秒压到毫秒级、但**严格意义上未归零**（中间态可能是 0 或 2 个标签，`policy/branch-name` 两者都判失败）。真要消窗只能用**单次 HTTP 的整份替换**（REST `PUT /repos/{owner}/{repo}/issues/{n}/labels`，需读-改-写、要带上非 `status/*` 标签）；那超出 `#93` 的边界，留作后续项。
 11. **脚本里用 tab 当字段分隔符会静默吞掉空字段。** `IFS="$(printf '\t')" read -r a b c` 遇到连续 tab（中间字段为空）时后面的字段会**左移** —— tab 属于 IFS 空白，连续空白只算一个分隔符。`--check-cross` 的早期实现因此在「按行分类」时静默失配（Issue 的 `stateReason` 空字段把标签字段顶位）。脚本内部的记录分隔改用**非空白字符**（本仓库用 `|`）或给空值写占位符；这类差别必须能用反向样本抓到（见 W8 与 §1 交叉体检）。
 12. **Issue 表单不会打标签，标签也没有清单。** `bug.yml` 的「轨道」下拉选「线上故障」**不会**给 Issue 打 `type/hotfix`（表单只有固定的 `labels:` 数组），而 `start.sh` 靠 `type/*` 推导分支类型 —— 漏打标签就让热修**静默退化成 `fix/`**（Issue #103）。线上故障一律用 `scripts/start.sh <issue#> --type hotfix --as author`。标签是仓库级对象（`status.sh --add-label` 遇不存在的标签直接失败），所以机器消费的标签由 `preflight.sh` 与 `ci/test` 用同一判据 `LABEL_ASSERT` 断言存在，`ci/test` 里还留了反向样本（删掉 `type/hotfix` 后断言必须失败），防止判据退化成空断言。
+13. **凭据隔离的范围（已知局限）：文件隔离只是提高了门槛，不是防线本身。** `#94` 把两个身份凭据都放到工作区之外（`$HOME/.config/pm4gh/`），它**提供**的是：**工作区边界**（凭据落在仓库根内 → `review.sh` 报错退出、`preflight.sh` 记 `[FAIL]`，机器可查）与**杜绝提交/泄露**（不可能被 `git add` 误提交、不会撞 `ci/test` 的凭据扫描）。它**不提供**：**同一 OS 用户下两个凭据文件之间的身份隔离** —— 作者本来就要读 `developer.pat`，同一用户能列 `$HOME/.config/pm4gh/` 就读得到同目录的 `reviewer.pat`；文件层面**不构成身份隔离**（PM 裁定方案 1 的配套声明，`#94`）。因此三身份分离的**真正强制点是平台与契约**：① **平台** —— GitHub 拒绝自我批准（`Review Can not approve your own pull request`）+ 规则集 `require_code_owner_review` / `require_last_push_approval`；② **流程契约** —— [AGENTS.md §5.1](../AGENTS.md)（作者不得读取其他身份凭据）。**禁止**把这条写成"作者取不到评审凭据"或等价说法 —— 假装隔离成功比承认没隔离更危险。
 
 ## 5. 明确不做（边界）
 

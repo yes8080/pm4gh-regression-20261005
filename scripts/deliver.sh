@@ -18,19 +18,14 @@
 
 set -eu
 
-DEVELOPER_PAT_FILE="${DEVELOPER_PAT_FILE:-.secrets/developer.pat}"
-REVIEWER_PAT_FILE="${REVIEWER_PAT_FILE:-.secrets/reviewer.pat}"
+# 作者凭据默认在**工作区之外**（#94 / PM 裁定 (B)）：默认值必须可用。写法与 review.sh 一致。
+DEVELOPER_PAT_FILE="${DEVELOPER_PAT_FILE:-${HOME}/.config/pm4gh/developer.pat}"
 BASE_BRANCH="${BASE_BRANCH:-main}"
 
 die()  { printf '[FAIL] %s\n' "${1:-}" >&2; exit "${2:-1}"; }
 ok()   { printf '[ OK ] %s\n' "$*"; }
 warn() { printf '[WARN] %s\n' "$*" >&2; }
 info() { printf '\n== %s ==\n' "$*"; }
-
-login_via_pat() {
-  [ -s "${1:-}" ] || return 0
-  GH_TOKEN="$(cat "$1")" gh api user --jq .login 2>/dev/null || true
-}
 
 ACTOR=""
 use_identity() {
@@ -44,8 +39,8 @@ use_identity() {
       [ -n "$ACTOR" ] || die "作者凭据无效（无法认证）"
       main="$(env -u GH_TOKEN -u GITHUB_TOKEN gh api user --jq .login 2>/dev/null || true)"
       [ -z "$main" ] || [ "$main" != "$ACTOR" ] || die "身份分离失败：作者身份 = gh 登录身份（${ACTOR}）"
-      rev="$(login_via_pat "$REVIEWER_PAT_FILE")"
-      [ -z "$rev" ] || [ "$rev" != "$ACTOR" ] || die "身份分离失败：作者身份 = 评审身份（${ACTOR}）"
+      # 评审凭据**不在这里读**（#94 / AGENTS §5：作者不得读取其他身份的凭据）。
+      # 「评审 ≠ 作者」由 W6 `scripts/review.sh` 用**评审凭据自身**判定（平台另禁止自我批准）。
       ok "本次执行身份（作者）：${ACTOR}"
       ;;
     main)
