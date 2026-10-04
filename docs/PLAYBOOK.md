@@ -84,6 +84,7 @@ unset GH_TOKEN                 # 用完立刻切回主身份
 | **GraphQL 输入对象的键必须是裸名** | `{"name":"x"}` → `Expected NAME, actual: STRING ("name")` | 传 GraphQL 字面量 `{name:"x"}`（本项目 `json_to_gql` 已封装） |
 | **状态标签必须唯一** | 多个 `status/*` 标签会让状态不可判定 | 只用 `scripts/status.sh` 迁移；`ci/test` 会扫描全部开放 Issue 并在违规时失败 |
 | **同一 workspace 只允许一个执行者** | 两个执行者并发会互相删分支/切 HEAD（本项目已实际发生：演练执行者的分支被我清理时被切走，它靠悬空 commit 恢复） | 交接必须显式"让出"：确认对方工作区干净且已切回 `main` 后再动手；并行应使用独立 clone/worktree |
+| **环境里残留失效的 `GH_TOKEN` 会让所有脚本在 source 阶段就失败** | `lib.sh` 在 **source 时**（早于 `use_main_identity`）就用 `gh repo view` 解析 `REPO`，失效 token → 报"无法确定仓库" | 要强制主身份的脚本需在 `source lib.sh` **之前** `unset GH_TOKEN`（`scripts/report.sh` 已如此处理）；排查时先 `unset GH_TOKEN` |
 
 ---
 
@@ -131,7 +132,53 @@ gh issue list -R yes8080/pm4gh --search 'is:open -label:status/ready,...'       
 gh issue list -R yes8080/pm4gh --milestone "M1 自举流程骨架"                     # 里程碑进度（原生页面）
 gh api repos/yes8080/pm4gh/milestones --jq '.[] | "\(.title) \(.closed_issues)/\(.open_issues+\(.closed_issues))"'  # 燃尽
 ```
-度量表（吞吐/在途/返修率）由 `scripts/report.sh` 产出；GitHub 仓库级"保存视图"（2026-09 GA）可作人工便利层。
+**度量出口**（`scripts/report.sh`，只读；替代已随 D9 移除的 Projects Insights）：
+
+```bash
+scripts/report.sh                      # 最近 30 天，按周聚合（默认）
+scripts/report.sh --days 7             # 换窗口
+scripts/report.sh --group-by day       # 按日聚合
+scripts/report.sh --json | jq .        # 机器可读：stdout 只有 JSON，可安全接管道
+```
+
+实测输出（2026-10-04T05:06:09Z，repo=yes8080/pm4gh，仅主身份 `gh` 登录凭据）：
+
+```text
+[INFO] 只读读取：repo=yes8080/pm4gh 窗口=最近 30 天（since 2026-09-04）聚合=week
+pm4gh 度量报告
+仓库：yes8080/pm4gh   窗口：最近 30 天（since 2026-09-04）   聚合：week
+生成时间：2026-10-04T05:06:09Z   （只读；口径见 docs/GOVERNANCE.md §8）
+
+① 在途（开放 Issue 按 status/* 分组；backlog = 无 status/* 标签）
+status/in-progress   1 个
+      #27  [E1-S11] scripts/report.sh：用搜索 API 替代 Projects Insights 的度量出口
+backlog（无 status/* 标签）   3 个
+      #1  [E1] 自举流程骨架
+      #8  [E1-S7] 工具切换演练（本 Epic 终验）
+      #23  [Chore] 删除已废弃的 GitHub Projects 对象（仅 PM 可执行）
+  合计 4 个
+
+② 吞吐（窗口内已关闭且 state_reason=completed；按周聚合）
+  2026-W40 (09-28~10-04)   11 个   #2 #3 #4 #5 #6 #7 #10 #13 #15 #22 #25
+  合计 11 个
+
+③ 返修率（分子＝带 src/rework 的 Issue 数；分母＝窗口内已关闭 Issue 数）
+  带 src/rework 的 Issue：0 个（其中窗口内已关闭：0 个）
+  窗口内已关闭：11 个
+  返修率 = 0 / 11 = 0%
+```
+
+口径与边界（**口径唯一来源仍是 [GOVERNANCE §8](GOVERNANCE.md)**，`report.sh` 只做只读聚合，不写任何状态）：
+
+- 在途按 `status/*` 标签分组，`backlog` = 开放且无 `status/*` 标签；同时把"多个/非法 `status/*` 标签"
+  归为 `违反不变量` 并在 **stderr** 告警（状态必须唯一，用 `scripts/status.sh` 修正）。
+- 吞吐只统计 `state_reason=completed`；`not planned`（`Canceled`）不计入。
+- 返修率分子取"带 `src/rework` 的 Issue 数"，分母取"窗口内已关闭 Issue 数"（Issue #27 验收标准）；
+  §8 原文的"总切片"分母（是否把 Epic/Chore 计入）未在脚本中展开，如需收紧另开切片。
+- 数据质量告警（结果被 `--limit` 截断、状态标签违反不变量）一律写 stderr，**不污染 `--json` 的 stdout**；
+  失败（参数非法、jq 缺 `strftime`）直接以非零退出，不静默降级。
+
+GitHub 仓库级"保存视图"（2026-09 GA）可作人工便利层。
 
 ### W1 里程碑立项
 ```bash
