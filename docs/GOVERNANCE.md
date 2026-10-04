@@ -53,6 +53,8 @@
 | D4 | M1 试点 = **本项目自举** | 2026-10-04 | 用真实流程建设自己 | 每个缺陷都成为真实需求 |
 | D5 | `qa/acceptance` **降级为非必需审计检查** | 2026-10-04 | Bug #13 实测：必需检查不能"先失败后通过"，否则每个 PR 永久 BLOCKED | 验收的机器门禁回归原生审批规则；`/accept` 为审计证据 |
 | D6 | CODEOWNERS 所有路径**必须含非作者 owner** | 2026-10-04 | Bug #13 第二死锁：仅作者 owner + `require_code_owner_review` = 永久不可合并 | 治理目录不再"仅主账号"，治理保护改由 CI 不变量 + 评审共同承担 |
+| D7 | Projects 一律走 **GraphQL + 配置即代码**（`.github/project/*.json` + `scripts/bootstrap-project.sh`），不用 `gh project` CLI | 2026-10-04 | `gh project` 需额外 `read:org` + `read:discussion` scope，且 CLI 不支持 iteration 字段；GraphQL 覆盖完整 | 凭据只需 `project`+`repo`；字段/视图可幂等重建；但**视图分组与内置自动化仍需 UI**（官方无 API） |
+| D8 | 更新 Projects 单选字段时**必须保留选项 id、只改名称** | 2026-10-04 | 内置工作流（加入→Todo、关闭→Done、合并→Done）指向的是**选项 id**；重建选项会让工作流指向已删除的值 | `fields.json` 用 `legacyRename` 把 `Todo` 改名为 `Backlog` 并保留 `f75ad846` 等原 id |
 
 ---
 

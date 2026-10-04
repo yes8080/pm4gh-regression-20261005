@@ -1,0 +1,5 @@
+{
+  "title": "PM4GH 交付看板",
+  "shortDescription": "GitHub 原生团队协同：状态唯一源、切片交付、度量口径固定。定义见 .github/project/*.json，重建用 scripts/bootstrap-project.sh。",
+  "readme": "## 这是什么\n\n本项目**唯一的状态源**。所有状态取值来自 `Status` 字段；标签只表达正交维度（类型/角色/领域/风险），不表达状态。\n\n## 使用须知\n\n- 字段与视图由 `.github/project/*.json` 定义，`scripts/bootstrap-project.sh` 可幂等重建。\n- **分组（Group by）与内置自动化无法通过 API 设置**，必须在 UI 手工完成 —— 清单见 `docs/PLAYBOOK.md` §9。`scripts/bootstrap-project.sh --check` 会检测并提示。\n- 状态机、DoR/DoD、度量口径见 `docs/GOVERNANCE.md`。\n\n## 视图用途\n\n| 视图 | 用途 |\n|---|---|\n| Roadmap | 按 Iteration/日期看交付节奏 |\n| Sprint Board | 按 Status 看当前迭代 |\n| My Queue | 我该做什么 |\n| Review Desk | 等待独立评审 |\n| Acceptance Desk | 等待验收 |\n| Blocked Wall | 被阻塞的切片 |\n| Epic Progress | 按父 Issue 看 Epic 完成度 |\n| Delivery Audit | 已交付清单与返修次数 |"
+}

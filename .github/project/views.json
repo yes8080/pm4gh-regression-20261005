@@ -1,0 +1,58 @@
+[
+  {
+    "name": "Roadmap",
+    "layout": "ROADMAP_LAYOUT",
+    "filter": "-status:Done,Canceled",
+    "visibleFields": ["Status", "Priority", "Size", "Iteration", "Target date"],
+    "manualNote": "路线图按 Iteration/Target date 定位；若需垂直标记里程碑，在视图设置里勾选 Milestone"
+  },
+  {
+    "name": "Sprint Board",
+    "layout": "BOARD_LAYOUT",
+    "filter": "status:Ready,\"In Progress\",\"In Review\",Acceptance,Rework",
+    "visibleFields": ["Status", "Priority", "Size", "Area"],
+    "manualNote": "看板列 = Status 字段；WIP 上限需在列设置中手工配置"
+  },
+  {
+    "name": "My Queue",
+    "layout": "TABLE_LAYOUT",
+    "filter": "assignee:@me status:Ready,\"In Progress\",Rework",
+    "visibleFields": ["Status", "Priority", "Size", "Target date"],
+    "manualNote": "无"
+  },
+  {
+    "name": "Review Desk",
+    "layout": "TABLE_LAYOUT",
+    "filter": "status:\"In Review\"",
+    "visibleFields": ["Status", "Priority", "Size", "Area"],
+    "manualNote": "无"
+  },
+  {
+    "name": "Acceptance Desk",
+    "layout": "TABLE_LAYOUT",
+    "filter": "status:Acceptance",
+    "visibleFields": ["Status", "Priority", "Size", "Area"],
+    "manualNote": "无"
+  },
+  {
+    "name": "Blocked Wall",
+    "layout": "TABLE_LAYOUT",
+    "filter": "is:open",
+    "visibleFields": ["Status", "Priority", "Size"],
+    "manualNote": "被阻塞条目由官方 blockedBy 关系自动显示 Blocked 图标；如需仅看被阻塞项，用 GitHub 的 is:blocked 搜索或在 UI 调整过滤器（API 无法表达该过滤）"
+  },
+  {
+    "name": "Epic Progress",
+    "layout": "TABLE_LAYOUT",
+    "filter": "-status:Canceled",
+    "visibleFields": ["Status", "Priority", "Size"],
+    "manualNote": "**必须手工设置**：Group by → Parent issue（API 无法设置分组），并按 Sub-issue progress 排序"
+  },
+  {
+    "name": "Delivery Audit",
+    "layout": "TABLE_LAYOUT",
+    "filter": "status:Done",
+    "visibleFields": ["Status", "Size", "Target date", "Rework count"],
+    "manualNote": "建议按 Iteration 分组（手工），用于产出吞吐与返修率"
+  }
+]

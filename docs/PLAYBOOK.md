@@ -79,6 +79,9 @@ unset GH_TOKEN                 # 用完立刻切回主身份
 | **`gh pr create --fill` 会丢正文** | 多提交时只带提交标题 | 用 `--body-file`（`scripts/deliver.sh` 已强制） |
 | **squash 合并后 `git branch -d` 拒绝删分支** | 原始提交不在 main 上，git 祖先判定失效 | 先验证 `gh pr view <n> --json state` 为 `MERGED`，再用 `-D`（`scripts/closeout.sh` 已封装） |
 | **`blockedBy` 不因对方关闭而清除** | 阻塞项关闭了，关系仍挂着 | 判断是否被阻塞**只看 blocker 的 `state`**；`scripts/audit.sh` 会报"可解锁" |
+| **GraphQL 输入对象的键必须是裸名** | `{"name":"x"}` → `Expected NAME, actual: STRING ("name")` | 传 GraphQL 字面量 `{name:"x"}`（本项目 `json_to_gql` 已封装） |
+| **Projects 的 Status 选项 id 被内置工作流引用** | 重建选项会让"加入→Todo"指向已删除的值 | 更新选项必须**保留 id、只改名**（`fields.json` 的 `legacyRename`） |
+| **`gh project` CLI 需要额外 scope** | `gh project list --owner @me` 报缺 `read:org` + `read:discussion` | 改用 GraphQL（`scripts/bootstrap-project.sh`），凭据只需 `project`+`repo` |
 
 ---
 
@@ -94,6 +97,27 @@ gh repo edit --delete-branch-on-merge --enable-auto-merge \
 scripts/sync-labels.sh                     # 标签即代码（幂等，不删存量）
 # 规则集：见 §9「规则集分阶段应用」
 ```
+
+### W0.5 Projects 配置即代码（建立时一次，之后幂等）
+
+```bash
+# 需要 .secrets/main.pat（classic，scope: project + repo）
+# 官方：GITHUB_TOKEN 无 projects 权限，Actions 里也必须用 PAT 或 GitHub App
+scripts/bootstrap-project.sh --dry-run     # 预演
+scripts/bootstrap-project.sh               # 幂等应用（可反复执行）
+scripts/bootstrap-project.sh --check       # 校验漂移，有漂移退出码 1
+```
+
+定义在 `.github/project/*.json`（项目/字段/视图）。脚本会：创建缺失的项目与字段、**保留默认 Status 选项 id 只改名**、创建视图并设置过滤器、把 open Issue 加入项目，并**报告**无法通过 API 完成的项。
+
+**能力边界（官方 + 实测）**：
+
+| 事项 | 能否 API | 说明 |
+|---|---|---|
+| 项目、字段（含 iteration）、视图、条目 | ✅ | 视图过滤器只能"先 create 再 update"（create 无 filter 参数） |
+| 视图**分组**（Group by） | ❌ | `UpdateProjectV2ViewInput` 无 groupBy → 必须 UI 设置 |
+| 内置自动化（加入→Todo / 关闭→Done / 合并→Done / 状态改变→关单 / 子Issue 入库） | ❌ | GraphQL 只有 `deleteProjectV2Workflow`，**无 create/enable**。**但 2026-10 实测：新建项目默认已开启 6 条**（官方文档称默认 2 条），本项目需要的策略全部在其中 |
+| 自定义 filter 的 auto-add / auto-archive | ❌ | 只能 UI 配置（套餐：Free 1 / Pro 5 条） |
 
 ### W1 里程碑立项
 ```bash
@@ -242,6 +266,8 @@ gh api repos/{o}/{r}/commits/<head-sha>/check-runs --jq '.check_runs[] | "\(.nam
 | **规则集分阶段应用** | 一把覆盖会让所有 PR 卡死 | 见下 |
 | **规则集应急回退** | 唯一的"开门"手段 | `gh api -X DELETE repos/yes8080/pm4gh/rulesets/24442991` |
 | **必需检查改名** | 改名会让所有 PR 永久 pending | ①规划新名 ②同时改工作流 job 名与规则集 context（先加后删，避免空窗）③合并后立刻验证新检查上报 ④更新本文与 `.github/rulesets/README.md` |
+| 设置视图分组（Group by） | `UpdateProjectV2ViewInput` 无 groupBy 参数 | 在 UI：打开视图 → Group by → (Parent issue / Iteration / Assignee)。本项目需设：Epic Progress 按 `Parent issue`、Delivery Audit 按 `Iteration` |
+| 开启/调整内置自动化 | GraphQL 只有 delete，无 create/enable | 项目 → Workflows → 逐条开启。新建项目默认已开 6 条；如需自定义 filter 的 auto-add/auto-archive 也在此配置 |
 | 签发 Release | 涉及对外发布 | `gh release create v<x.y.z> --generate-notes`，并核对 Milestone |
 
 **规则集分阶段应用**（个人 Pro 无 `evaluate` 灰度态，只能逐步加严）：
