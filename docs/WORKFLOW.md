@@ -17,50 +17,40 @@
 > 状态 = `status/*` 标签 + Issue 开关；**没有本地状态文件**。迁移只能走 `scripts/status.sh <issue#> <state>`。
 > 状态集 **7 个**：`backlog | ready | in-progress | in-review | rework | done | canceled`；`in-review` = 「评审中 / 已批准待合并」（没有单独的「验收」状态，批准本身就是验收门禁）。
 
-### 状态机图（7 个状态、18 条边）
+### 状态迁移表（**唯一表权威**：7 个状态、18 条边；与 `scripts/status.sh` 的 `TRANSITIONS` 由 `ci/test` 断言**逐字一致**）
 
-```mermaid
-stateDiagram-v2
-    state "in-progress" as in_progress
-    state "in-review" as in_review
-    backlog --> ready: DoR 五项齐备
-    backlog --> in_progress: 直接开工
-    backlog --> canceled: 不做
-    ready --> in_progress: start.sh 开工
-    ready --> backlog: 收回
-    ready --> canceled: 不做
-    in_progress --> in_review: deliver.sh 交付 PR
-    in_progress --> ready: 退回补 DoR
-    in_progress --> backlog: 重置
-    in_progress --> canceled: 不做
-    in_review --> rework: 评审 request-changes
-    in_review --> done: 合并关单 + closeout.sh
-    in_review --> backlog: 重置
-    in_review --> canceled: 不做
-    rework --> in_review: 同分支再交（deliver.sh）
-    rework --> ready: 退回补 DoR
-    rework --> backlog: 重置
-    rework --> canceled: 不做
-```
+> 这里**没有图**（Issue #107）：AI 读的是 token 不是像素 —— 表一行一条边、可 grep/awk 校验；图带语法开销、隐式节点易漏，还要额外断言才不漂移。
+> `类型` 取值：`正常` = 主路径推进；`异常` = 回退 / 打回 / 终止；`终态` = 进入 `done`（合并关单）或终态本身（无出边）。
 
-`done` / `canceled` 无出边。**转换表是强制的**：表外 `from → to` → `status.sh` 失败（退出码 1），**没有跳过开关** ——
-需要例外就开 Issue 补一条边（同时改 `status.sh` 的 `TRANSITIONS` 与本表，两处由 `ci/test` 断言集合相等）。
+<!-- TRANSITIONS:BEGIN（机器可读；与 scripts/status.sh 的 TRANSITIONS 逐字一致，由 ci/test 断言；首列 = 状态集，其余反引号 token = 出边） -->
 
-### 转换表（唯一权威；与 `scripts/status.sh` 的 `TRANSITIONS` 由 `ci/test` 断言**逐字一致**）
-
-<!-- TRANSITIONS:BEGIN（机器可读；与 scripts/status.sh 的 TRANSITIONS 逐字一致，由 ci/test 断言） -->
-
-| from | to（合法出边） |
-|---|---|
-`backlog` | `ready` `in-progress` `canceled`
-`ready` | `in-progress` `backlog` `canceled`
-`in-progress` | `in-review` `ready` `backlog` `canceled`
-`in-review` | `rework` `done` `backlog` `canceled`
-`rework` | `in-review` `ready` `backlog` `canceled`
-`done` | （终态；无出边）
-`canceled` | （终态；无出边）
+| from | to | 触发者 | 命令/事件 | 类型 |
+|---|---|---|---|---|
+`backlog` | `ready` | 人/PM | W1 DoR 五项齐备 | 正常
+`backlog` | `in-progress` | dev-bot | W2 start.sh 直接开工（不假定 Issue 在 backlog） | 正常
+`backlog` | `canceled` | 人/PM | 不做（dispatcher 确认） | 异常
+`ready` | `in-progress` | dev-bot | W2 start.sh 开工 | 正常
+`ready` | `backlog` | 人/PM | 收回（DoR 不再齐备） | 异常
+`ready` | `canceled` | 人/PM | 不做（dispatcher 确认） | 异常
+`in-progress` | `in-review` | dev-bot | W4 deliver.sh 推送并开 PR | 正常
+`in-progress` | `ready` | 人/PM | 退回补 DoR | 异常
+`in-progress` | `backlog` | 人/PM | 重置 | 异常
+`in-progress` | `canceled` | 人/PM | 不做（W8 abort.sh 清分支） | 异常
+`in-review` | `rework` | reviewer-bot | W6 评审 request-changes | 异常
+`in-review` | `done` | dispatcher | W7 合并关单 + closeout.sh | 终态
+`in-review` | `backlog` | 人/PM | 重置 | 异常
+`in-review` | `canceled` | 人/PM | 不做 | 异常
+`rework` | `in-review` | dev-bot | W6 同分支再交（deliver.sh） | 正常
+`rework` | `ready` | 人/PM | 退回补 DoR | 异常
+`rework` | `backlog` | 人/PM | 重置 | 异常
+`rework` | `canceled` | 人/PM | 不做（W8 abort.sh 清分支） | 异常
+`done` | （终态；无出边） | — | 只能 gh issue reopen 后走合法边 | 终态
+`canceled` | （终态；无出边） | — | 只能 gh issue reopen 后走合法边 | 终态
 
 <!-- TRANSITIONS:END -->
+
+`done` / `canceled` 无出边。**转换表是强制的**：表外 `from → to` → `status.sh` 失败（退出码 1），**没有跳过开关** ——
+需要例外就开 Issue 补一条边（同时改 `status.sh` 的 `TRANSITIONS` 与本表，两处由 `ci/test` 断言**逐字一致**）。
 
 ### 状态载体与体检
 
@@ -96,41 +86,21 @@ stateDiagram-v2
 
 ## 2. W0..W8 闭环
 
-### 时序图（谁在什么时候触发）
+### 时序步骤表（谁在什么时候触发；取代原时序图 —— Issue #107）
 
-```mermaid
-sequenceDiagram
-    participant PM as 人/PM
-    participant DEV as dev-bot
-    participant CI as CI/规则集
-    participant REV as reviewer-bot
-    participant DSP as dispatcher
-    PM->>DEV: Issue + 验收标准（DoR 五项）
-    DEV->>DEV: start.sh 建分支 + 绑定 Issue
-    Note over DEV: 状态 in-progress
-    DEV->>DEV: 实现 + 提交（作者身份，commit -F）
-    DEV->>CI: deliver.sh 推送并开 PR / 更新正文
-    Note over DEV,CI: 状态 in-review
-    CI->>CI: 跑 5 项必需检查
-    Note over CI: ci/lint、ci/test、policy/linked-issue、<br/>policy/branch-name、policy/template
-    CI-->>REV: 5 项全部 pass
-    REV->>REV: 独立评审（reviewer 凭据，禁止自批）
-    alt 通过 approve
-        REV->>DSP: reviewDecision=APPROVED
-        Note over DSP: 停在 in-review（已批准待合并）
-    else 打回 request-changes
-        REV->>DEV: request-changes
-        Note over DEV: 状态 rework
-        DEV->>DEV: 同一分支继续提交（不新建分支/PR）
-        DEV->>CI: deliver.sh 再推送
-        CI-->>REV: 必需检查在新 SHA 重跑
-        Note over REV: require_last_push_approval 驳回旧批准 → 重评
-    end
-    DSP->>DSP: gh pr merge --squash --delete-branch
-    Note over PM,DSP: Issue 自动关单 → 状态 done
-    DSP->>DSP: closeout.sh 五项核验
-    Note over DSP: ① MERGED ② Issue 已关 ③④ 无头分支 ⑤ 无残留标签
-```
+| # | 角色 | 动作 | 产物/门禁 | 失败·返修 |
+|---|---|---|---|---|
+| 1 | 人/PM | 交 Issue + 验收标准（DoR 五项） | Issue（W1）；此前**状态 `backlog`**（OPEN 且无 `status/*`） | DoR 不齐 → 留在 `backlog` 补齐 |
+| 2 | dev-bot | W2 `start.sh <issue#> --as author`：建分支 + 绑定 Issue + 指派给作者 | 分支 `<type>/<issue#>-<slug>`；**状态 `in-progress`**（W0 预检全过） | 只读状态预检非法 → **建分支之前**失败 |
+| 3 | dev-bot | W3 实现 + 提交（作者身份，`commit -F`） | 提交；工作区干净；`bash -n scripts/*.sh` 通过 | 语法 / bash 3.2 兼容性失败 → 先修 |
+| 4 | dev-bot | W4 `deliver.sh <issue#> --as author`：推送并开 PR / 更新正文 | PR 正文含 `Closes #N` + 六段；**状态 `in-review`** | 缺 `Closes #N` / 六段 → 推送前失败 |
+| 5 | CI/规则集 | W5 跑 5 项必需检查（PR 事件触发） | `ci/lint`、`ci/test`、`policy/linked-issue`、`policy/branch-name`、`policy/template` 全 `pass` | 任一失败 → 修后同分支再推（走 #7） |
+| 6 | reviewer-bot | W6 独立评审（评审凭据，**不加** `--as`；禁止自批） | `reviewDecision=APPROVED` → 停在 `in-review`（已批准待合并） | `request-changes` → **状态 `rework`**；旧批准留在原 SHA |
+| 7 | dev-bot | 返修：**同一分支**继续提交（不新建分支/PR）后 `deliver.sh` 再推 | 新 SHA；必需检查在新 SHA **重跑**；**状态 `rework → in-review`** | `require_last_push_approval` **驳回旧批准** → 必须回 #6 重评 |
+| 8 | dispatcher | W7 `gh pr merge <pr#> --squash --delete-branch`（只有 `@yes8080` 能做） | Issue 自动关单 → **状态 `done`** | 缺批准 / 必需检查未过 → 合并被拒 |
+| 9 | dispatcher | `closeout.sh <pr#>` 五项核验 | ① PR MERGED ② 关联 Issue 已关 ③ 远端无头分支 ④ 本地无头分支已清理 ⑤ 无残留 `status/*` 标签 | 任一项不过 → 贴原文报告；⑤ 由脚本自己 `status.sh <n> done` |
+
+> 顺序之外只有 W8：异常路径出口（PR 关闭不合并 / 作者放弃 / Issue 已取消）→ `scripts/abort.sh <issue#>` → `canceled`（见 W8）。
 
 ### W0 预检（每次接手都跑）— `scripts/preflight.sh`
 
@@ -160,7 +130,7 @@ sequenceDiagram
 | context（= job `name:`） | 判什么 |
 |---|---|
 | `ci/lint` | 被跟踪脚本的 `bash -n` + bash 3.2 兼容（禁 bash4 特性、`$VAR` 后不得紧跟中文）+ JSON 有效 |
-| `ci/test` | 关键不变量：5 个 context 与工作流 job 名**精确相等**、规则集形状、状态标签互斥、PR 模板六段、无凭据入库、脚本自包含、docs↔status.sh 转换表逐字一致、mermaid 边集与转换表集合相等 |
+| `ci/test` | 关键不变量：5 个 context 与工作流 job 名**精确相等**、规则集形状、状态标签互斥、PR 模板六段、无凭据入库、脚本自包含、docs↔status.sh 状态迁移表逐字一致（状态集 + 边集，读 `TRANSITIONS` 标记区） |
 | `policy/linked-issue` | 正文有 `Closes #N` **且** GitHub 解析出了关闭关系（目标必须是默认分支） |
 | `policy/branch-name` | 分支名匹配正则 + Issue OPEN + 已有 `status/*` 标签 |
 | `policy/template` | 正文有 `## 1.` … `## 6.` |

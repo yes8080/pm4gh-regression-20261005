@@ -338,8 +338,8 @@ jobs:
           # 为什么要有这一步：本仓库曾经「文档画一条主路径、脚本只校验标签互斥」——
           # 结果任何状态可跳任何状态，PM 的原话是「我现在看不懂你的流转」。
           # 所以转换表只有一处权威定义（status.sh），文档里的表由本步断言逐字一致：
-          # 状态集（VALID_STATES vs 转换表首列）与边集（TRANSITIONS vs ``` 代码块）都逐字比对。
-          # 相邻的下一步把 mermaid 图的边集也纳入（图与表集合相等）。
+          # 状态集（VALID_STATES vs 转换表首列）与边集（TRANSITIONS vs 标记区每行的 to 列）都逐字比对。
+          # Issue #107 已删除 mermaid 图：表是唯一权威，不再有「图漂移」这条断言（图专属语法也随之消失）。
           sh=scripts/status.sh
           md=docs/WORKFLOW.md
           sh_states="$(grep -m1 '^VALID_STATES=' "$sh" | sed -E 's/^VALID_STATES="//; s/"$//' | tr ' ' '\n' | sort -u)"
@@ -371,7 +371,7 @@ jobs:
           [ -n "$sh_states" ] || { echo "::error file=$sh::未能解析出 VALID_STATES"; bad=1; }
           [ -n "$sh_edges" ]  || { echo "::error file=$sh::未能解析出 TRANSITIONS"; bad=1; }
           [ -n "$md_states" ] || { echo "::error file=$md::未能解析出转换表首列（状态集）"; bad=1; }
-          [ -n "$md_edges" ]  || { echo "::error file=$md::未能解析出转换表（第一个代码块）"; bad=1; }
+          [ -n "$md_edges" ]  || { echo "::error file=$md::未能解析出转换表（TRANSITIONS 标记区内的 from→to 行）"; bad=1; }
           if [ "$sh_states" != "$md_states" ]; then
             echo "::error file=$md::状态集与 scripts/status.sh 不一致"
             echo "--- status.sh ---"; printf '%s\n' "$sh_states"
@@ -399,52 +399,6 @@ jobs:
           if [ "$bad" -ne 0 ]; then exit 1; fi
           echo "✅ 状态集与转换表逐字一致（$(printf '%s\n' "$sh_edges" | grep -c .) 条边，$(printf '%s\n' "$sh_states" | grep -c .) 个状态）"
           printf '%s\n' "$sh_edges"
-
-      - name: mermaid 状态机图的边集与 scripts/status.sh 转换表集合相等（防图漂移）
-        run: |
-          set -euo pipefail
-          # 为什么要有这一步：状态机曾有 4 个载体（status.sh / WORKFLOW 表 / WORKFLOW mermaid / README ASCII），
-          # 而旧断言只覆盖前两者 —— mermaid 改了没人拦，图必然漂移。这里把 mermaid 的**边集**也纳入：
-          # 只要求与 status.sh 的 TRANSITIONS **集合相等**，**不要求边标签文字一致**（标签是给人读的）。
-          sh=scripts/status.sh
-          md=docs/WORKFLOW.md
-          sh_edges="$(sed -nE 's/^TRANSITIONS="(.*)"$/\1/p' "$sh" | tr ' ' '\n' \
-            | grep -E '^[a-z-]+->[a-z-]+$' | sort -u || true)"
-          # stateDiagram-v2 的边形如 `A --> B: 标签`；`state "in-progress" as in_progress` 是别名声明。
-          # 别名把 `-` 写成 `_`，故节点名统一把 `_` 归一成 `-` 再与转换表比。
-          mermaid_edges() {
-            awk '
-              /^```mermaid/ { inb=1; next }
-              inb && /^stateDiagram-v2/ { sd=1; next }
-              sd && /^```/ { exit }
-              sd { print }
-            ' "$1" \
-              | grep -E '^[[:space:]]*[A-Za-z_][A-Za-z0-9_-]*[[:space:]]*-->' \
-              | sed -E 's/^[[:space:]]*([A-Za-z_][A-Za-z0-9_-]*)[[:space:]]*-->[[:space:]]*([A-Za-z_][A-Za-z0-9_-]*).*/\1->\2/' \
-              | tr '_' '-' | sort -u || true
-          }
-          md_edges="$(mermaid_edges "$md")"
-          edges_equal() { [ "${1:-}" = "${2:-}" ]; }
-          bad=0
-          [ -n "$sh_edges" ] || { echo "::error file=$sh::未能解析出 TRANSITIONS"; bad=1; }
-          if [ -z "$md_edges" ]; then
-            echo "::error file=$md::未能从 mermaid stateDiagram-v2 解析出任何边"; bad=1
-          elif ! edges_equal "$sh_edges" "$md_edges"; then
-            echo "::error file=$md::mermaid 状态机图的边集与 scripts/status.sh 的转换表不一致（图漂移）"
-            echo "--- status.sh 独有 ---"; comm -23 <(printf '%s\n' "$sh_edges") <(printf '%s\n' "$md_edges") || true
-            echo "--- mermaid 独有 ---"; comm -13 <(printf '%s\n' "$sh_edges") <(printf '%s\n' "$md_edges") || true
-            bad=1
-          fi
-          # 反向样本：从 mermaid 边集里删掉一条边，断言**必须失败**（判据退化成空断言会被这一步抓住）
-          if [ -n "$md_edges" ]; then
-            probe="$(printf '%s\n' "$md_edges" | grep -vxF "$(printf '%s\n' "$md_edges" | head -1)" || true)"
-            if edges_equal "$sh_edges" "$probe"; then
-              echo "::error::反向样本未失败：从 mermaid 边集删掉一条边后断言仍通过 —— 判据形同虚设"
-              bad=1
-            fi
-          fi
-          if [ "$bad" -ne 0 ]; then exit 1; fi
-          echo "✅ mermaid 边集与转换表集合相等（$(printf '%s\n' "$md_edges" | grep -c .) 条边）；反向样本（删一条边）按预期失败"
 
       - name: 未提交任何凭据
         run: |
