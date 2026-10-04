@@ -111,14 +111,19 @@ info "推导分支名"
 title="$(gh issue view "$ISSUE" -R "$REPO" --json title --jq .title)"
 labels="$(gh issue view "$ISSUE" -R "$REPO" --json labels --jq '[.labels[].name] | join(",")')"
 if [ -z "$TYPE" ]; then
+  # `type/hotfix` 必须**先**判：线上故障的 Issue 会同时带 type/bug（模板预置）与 type/hotfix（手动加），
+  # 先匹配 type/bug 会把热修静默判成 fix/（Issue #103）。
   case ",${labels}," in
-    *",type/bug,"*)    TYPE="fix" ;;
     *",type/hotfix,"*) TYPE="hotfix" ;;
+    *",type/bug,"*)    TYPE="fix" ;;
     *",type/spike,"*)  TYPE="spike" ;;
     *",type/chore,"*)  TYPE="chore" ;;
     *)                 TYPE="slice" ;;
   esac
   info "未指定 --type，按标签推导：${TYPE}"
+  if [ "$TYPE" = "fix" ]; then
+    warn "推导结果为 fix —— 若这是**线上故障**（hotfix 轨道），请改用 --type hotfix，或先给 Issue 加 type/hotfix 标签再重跑；本次未创建分支、未指派、未评论"
+  fi
 fi
 case "$TYPE" in slice|fix|hotfix|spike|chore) : ;; *) die "--type 只能是 slice|fix|hotfix|spike|chore（当前：${TYPE}）" ;; esac
 if [ -z "$SLUG" ]; then

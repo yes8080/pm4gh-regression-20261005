@@ -3,7 +3,8 @@
 #
 # 判定：全部 [ OK ] 才继续；任何 [FAIL] → 把原文报告 dispatcher，不要"先干着看"。
 # 检查项：命令齐备 / gh 登录 / cwd 与仓库形态 / 工作区 / 远端唯一 / 三身份互不相同 /
-#         凭据 scope 与最小权限 / 线上规则集 == 仓库内定义 / 每个必需 context 都有工作流 job。
+#         凭据 scope 与最小权限 / 线上规则集 == 仓库内定义 / 每个必需 context 都有工作流 job /
+#         机器消费的标签存在（判据 LABEL_ASSERT，与 ci/test 同一段文本）。
 #
 # 退出码：0 全部通过；1 存在未通过项（每项都给出可行动的修复提示）
 
@@ -29,6 +30,30 @@ REQUIRED_EXPECTED="ci/lint ci/test policy/linked-issue policy/branch-name policy
 # RULESET_CANON_JQ:BEGIN
 RULESET_CANON_JQ='def canon: with_entries(select(.key|startswith("_comment")|not)) | del(.id,.node_id,.source_type,.source,.created_at,.updated_at,.current_user_can_bypass,._links) | .conditions.ref_name.include = ((.conditions.ref_name.include // [])|sort) | .conditions.ref_name.exclude = ((.conditions.ref_name.exclude // [])|sort) | .bypass_actors = ((.bypass_actors // [])|sort_by(.actor_id|tostring)) | .rules = ((.rules // []) | map(if (.type == "required_status_checks" and .parameters) then .parameters.required_status_checks = ((.parameters.required_status_checks // [])|sort_by(.context)) else . end) | sort_by(.type)); canon'
 # RULESET_CANON_JQ:END
+
+# ── 机器消费的标签存在性判据（本仓库**唯一**的一份实现）──────────────────────
+# 为什么要有它：标签是**仓库级对象**，仓库里既没有清单也没有断言。而 `status.sh` 的 --add-label
+# 遇到不存在的标签会**直接失败**（把 Issue 留在「零 status/* 标签」的中间态）；`start.sh` 靠
+# `type/*` 推导分支类型，缺标签会**静默**退化（Issue #103）。这里只断言「机器消费的标签必须存在」，
+# 不新增任何必需检查、不改线上标签。
+# 同一段文本也出现在 .github/workflows/required-checks.yml 的 ci/test 步骤里，由 ci/test 断言
+# 两处**逐字一致**（并带一个反向样本，证明判据本身不是空断言）—— 判据只有这一套。
+# LABEL_ASSERT:BEGIN
+MACHINE_LABELS="status/ready status/in-progress status/in-review status/rework type/bug type/hotfix type/spike type/chore"
+assert_machine_labels() {
+  missing=""
+  for l in $MACHINE_LABELS; do
+    printf '%s\n' "${1:-}" | grep -qxF "$l" || missing="${missing} ${l}"
+  done
+  if [ -n "$missing" ]; then
+    printf '[FAIL] 机器消费的标签在平台上不存在：%s\n' "$missing" >&2
+    printf '       后果：status.sh 迁移直接失败 / start.sh 静默退化。标签是仓库级对象 —— 报告 dispatcher，不要自行删改线上标签\n' >&2
+    return 1
+  fi
+  printf '[ OK ] 机器消费的标签全部存在（%s）\n' "$MACHINE_LABELS"
+  return 0
+}
+# LABEL_ASSERT:END
 
 fail=0
 ok()   { printf '[ OK ] %s\n' "$*"; }
@@ -57,13 +82,13 @@ file_mode() {
   stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1" 2>/dev/null || printf '?'
 }
 
-info "1/9 基础命令"
+info "1/10 基础命令"
 for c in git gh jq awk grep sed curl diff; do
   if command -v "$c" >/dev/null 2>&1; then ok "${c} 可用"; else bad "缺少命令 ${c}，请先安装"; fi
 done
 printf '  bash：%s\n' "$(bash --version | head -1)"
 
-info "2/9 gh 登录（合并身份 / dispatcher）"
+info "2/10 gh 登录（合并身份 / dispatcher）"
 main_login=""
 if gh auth status >/dev/null 2>&1; then
   main_login="$(env -u GH_TOKEN -u GITHUB_TOKEN gh api user --jq .login 2>/dev/null || true)"
@@ -72,7 +97,7 @@ else
   bad "gh 未登录：运行 gh auth login（合并身份靠它，见 docs/WORKFLOW.md §0）"
 fi
 
-info "3/9 仓库形态与 cwd"
+info "3/10 仓库形态与 cwd"
 toplevel="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 REPO=""
 if [ -z "$toplevel" ]; then
@@ -101,7 +126,7 @@ else
   [ -n "$REPO" ] && ok "仓库 slug：${REPO}" || bad "无法确定仓库 slug（gh repo view 失败）"
 fi
 
-info "4/9 工作区与远端"
+info "4/10 工作区与远端"
 dirty="$(git status --porcelain 2>/dev/null | wc -l | tr -d ' ')"
 [ "$dirty" = "0" ] && ok "工作区干净" || warn "工作区有 ${dirty} 处未提交改动 —— 开工前确认归属（不要抹掉他人成果）"
 current="$(git branch --show-current 2>/dev/null || true)"
@@ -121,7 +146,7 @@ else
   bad "远端不是唯一的 origin（当前：${remotes:-无}）"
 fi
 
-info "5/9 三身份凭据（作者 / 评审 / 合并）"
+info "5/10 三身份凭据（作者 / 评审 / 合并）"
 dev_login="$(login_via_pat "$DEVELOPER_PAT_FILE")"
 rev_login="$(login_via_pat "$REVIEWER_PAT_FILE")"
 for pair in "${DEVELOPER_PAT_FILE}:作者" "${REVIEWER_PAT_FILE}:评审"; do
@@ -151,7 +176,7 @@ elif [ -n "$dev_login" ] && [ "$dev_login" = "$rev_login" ]; then
   bad "身份分离失败：作者身份 = 评审身份（${dev_login}）—— 两个凭据拿错了"
 fi
 
-info "6/9 凭据 scope 与最小权限"
+info "6/10 凭据 scope 与最小权限"
 dev_scopes="$(scopes_via_pat "$DEVELOPER_PAT_FILE" | tr '\n' ' ' | sed -E 's/[[:space:]]+$//')"
 rev_scopes="$(scopes_via_pat "$REVIEWER_PAT_FILE" | tr '\n' ' ' | sed -E 's/[[:space:]]+$//')"
 if [ -z "$dev_scopes" ]; then
@@ -177,7 +202,7 @@ if [ -n "$REPO" ] && [ -n "$dev_login" ]; then
   esac
 fi
 
-info "7/9 工作流 job 名 == 必需检查 context（逐字）"
+info "7/10 工作流 job 名 == 必需检查 context（逐字）"
 wf_actual="$(grep -hE '^[[:space:]]+name: (ci|policy)/' .github/workflows/*.yml 2>/dev/null \
   | sed -E 's/^[[:space:]]*name:[[:space:]]*//' | sort -u || true)"
 expected_sorted="$(printf '%s\n' $REQUIRED_EXPECTED | sort -u)"
@@ -189,7 +214,7 @@ else
   warn "  实际：$(printf '%s' "$wf_actual" | tr '\n' ' ')"
 fi
 
-info "8/9 线上规则集 vs 仓库内定义（整份 diff，全量键）"
+info "8/10 线上规则集 vs 仓库内定义（整份 diff，全量键）"
 if [ -z "$REPO" ]; then
   bad "仓库 slug 未知，跳过线上规则集比对"
 else
@@ -218,7 +243,20 @@ else
   fi
 fi
 
-info "9/9 未提交任何凭据"
+info "9/10 机器消费的标签存在性（status/* ×4 + start.sh 消费的 type/* ×4）"
+if [ -z "$REPO" ]; then
+  bad "仓库 slug 未知，跳过标签存在性断言"
+else
+  live_labels="$(gh label list -R "$REPO" --limit 200 --json name --jq '.[].name' 2>/dev/null || true)"
+  if [ -z "$live_labels" ]; then
+    bad "读不到线上标签清单（gh label list 失败）—— 无法证明机器消费的标签存在，报告 dispatcher"
+  else
+    # 判据见文件头 LABEL_ASSERT（与 ci/test 逐字一致）；失败原因由判据自己打印
+    assert_machine_labels "$live_labels" || fail=$((fail + 1))
+  fi
+fi
+
+info "10/10 未提交任何凭据"
 if git grep -nE 'ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|gho_[A-Za-z0-9]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY-----' -- . >/dev/null 2>&1; then
   bad "检测到疑似凭据被提交进仓库（git grep 命中）"
 else

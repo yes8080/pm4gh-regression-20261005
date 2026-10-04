@@ -101,6 +101,21 @@ stateDiagram-v2
 分支名 `<type>/<issue#>-<slug>`。两者都没有的 PR **不得猜测** —— 如实标注为「无法判定」并列出，
 不计入冲突。退出码 0 = 四条规则全未命中；1 = 存在冲突（逐条打印规则、Issue/PR 号与关联方式）。
 
+### 标签族定位（**唯一一处**声明；别处只引用本表，不复述）
+
+标签是**仓库级对象**，不在版本库里，只能靠断言防漂移：机器消费的标签由 `preflight.sh`（W0）与
+`ci/test`（每次 PR）用**同一段判据**（`LABEL_ASSERT`，`ci/test` 断言两处逐字一致）断言存在。
+
+| 标签族 | 定位 |
+|---|---|
+| `status/*` | **消费者**：`status.sh`（唯一迁移入口）/`start.sh`/`deliver.sh`/`abort.sh`/`closeout.sh`/`ci/test`；标签缺失会让 `status.sh` 的迁移**直接失败** |
+| `type/*` | **消费者**（仅 `bug`/`hotfix`/`spike`/`chore`）：`start.sh` 据此推导分支类型；`task`/`feature` 无消费者 → **人类元数据（机器不读）** |
+| `prio/*`、`risk/*` | **人类元数据（机器不读）**：优先级与风险提示，供人读与筛选；没有任何脚本读取 |
+| `role/*`、`area/*` | **人类元数据（机器不读）**：角色/模块导航；`role/dev` 由 Issue 模板自动打上 |
+| GitHub 默认标签（`bug`/`documentation`/`duplicate`/`enhancement`/`good first issue`/`help wanted`/`invalid`/`question`/`wontfix`/`accessibility`） | **人类元数据（机器不读）**：GitHub 自带，仓库内零引用，只用人工筛选 |
+| `src/*` | **删除**（v1 遗留，被跟踪文件零引用）；线上删除由 dispatcher 在本 Issue 合并后执行（见 Issue #103） |
+| `size/*` | **删除**（与 `slice.yml` ⑤ 的 Size 正文重复；Issue 表单**不能**自动打标签 → 标签这一载体必然与正文漂移）；同上由 dispatcher 执行 |
+
 ## 2. W0..W7 闭环
 
 ### 时序图（谁在什么时候触发）
@@ -153,6 +168,14 @@ sequenceDiagram
 非法（例如 Issue 停在 `in-review`）→ **在创建分支之前**失败，绝不留下半成品。
 然后：校验 Issue OPEN 且无未关闭阻塞 → `gh issue develop` 建分支并**绑定** Issue → 指派给作者 → 留开工声明 → `in-progress`。
 分支名 `<type>/<issue#>-<slug>`，`type ∈ {slice,fix,hotfix,spike,chore}`，slug 只允许 `[a-z0-9-]`；`policy/branch-name` 会**逐字**校验这条正则，并要求 Issue OPEN 且已有 `status/*` 标签。
+
+**`type` 显式给（尤其 hotfix）**：不给 `--type` 时 `start.sh` 按标签推导（`type/bug`→`fix`、`type/hotfix`→`hotfix`、
+`type/spike`→`spike`、`type/chore`→`chore`，其余→`slice`），而 **Issue 表单的下拉/文本框都不会打标签** ——
+`bug.yml` 的「线上故障」下拉**不会**打 `type/hotfix`，漏打就让热修**静默**变成 `fix/`。所以：
+
+- **线上故障**：`scripts/start.sh <issue#> --type hotfix --as author`（唯一不会退化的路径）；想用标签推导也可以，
+  但必须**先手动**给 Issue 加 `type/hotfix`。未显式 `--type` 且推导结果为 `fix` 时脚本会打印 `[WARN]` 要求复核。
+- **其它轨道**：显式 `--type` 与 `type/*` 标签任选其一。
 
 ### W3 实现与提交
 
@@ -241,6 +264,7 @@ W0..W7 只覆盖「一路顺风」。`canceled` 是**既有终态**（无出边�
 13. **规则集声明必须与线上「整份」一致，不是"挑几个字段"。** `.github/rulesets/main-protection.json` 的比对是**全量键 diff**：唯一判据是 `RULESET_CANON_JQ`（同一段文本同时出现在 `scripts/preflight.sh` 与 `ci/test`，由 `ci/test` 断言逐字一致）。挑字段比对曾让线上多出的 `require_extra_approval_for_unattributed_changes: true` / `required_reviewers: []` 静默漂移很久。语义：`require_extra_approval_for_unattributed_changes` = 含**无法归属到 GitHub 身份**的提交时需**额外批准**（本项目历史提交的作者邮箱 `wsmsn@msn.com`/`10019@outlook.com` 不可归属 → 这类 PR **可能要求多于 1 个批准**）。改这个文件属 dispatcher 权限；改键集时 `ci/test` 的全量键清单要同步改（有意的摩擦）。
 14. **状态迁移不是原子的（`status.sh` 先 remove 再 add），中间有「零 `status/*` 标签」窗口。** `deliver.sh` 的次序是「推送 → 建 PR → 迁 `in-review`」，而 PR 事件会**立刻**触发必需检查 —— `policy/branch-name` 若在窗口内读标签，会把 Issue 判成 Backlog 并**在该 SHA 上失败**（实测 PR #92 首 SHA `cc9cf14`：`2026-10-04T14:06:13Z` unlabeled → `14:06:16Z` labeled，检查在 `14:06:14.84Z` 读）。临时缓解：**重跑失败的 `policy/branch-name`**（同一 SHA 实测重跑后 5 项全 pass）。根治见 Issue #93。
 15. **脚本里用 tab 当字段分隔符会静默吞掉空字段。** `IFS="$(printf '\t')" read -r a b c` 遇到连续 tab（中间字段为空）时后面的字段会**左移** —— tab 属于 IFS 空白，连续空白只算一个分隔符。`--check-cross` 的早期实现因此在「按行分类」时静默失配（Issue 的 `stateReason` 空字段把标签字段顶位）。脚本内部的记录分隔改用**非空白字符**（本仓库用 `|`）或给空值写占位符；这类差别必须能用反向样本抓到（见 W8 与 §1 交叉体检）。
+16. **Issue 表单不会打标签，标签也没有清单。** `bug.yml` 的「轨道」下拉选「线上故障」**不会**给 Issue 打 `type/hotfix`（表单只有固定的 `labels:` 数组），而 `start.sh` 靠 `type/*` 推导分支类型 —— 漏打标签就让热修**静默退化成 `fix/`**（Issue #103）。线上故障一律用 `scripts/start.sh <issue#> --type hotfix --as author`；未显式 `--type` 且推导为 `fix` 时脚本会打印 `[WARN]`。标签是仓库级对象（`status.sh --add-label` 遇不存在的标签直接失败），所以机器消费的标签由 `preflight.sh` 与 `ci/test` 用同一判据 `LABEL_ASSERT` 断言存在；`ci/test` 里还留了反向样本（删掉 `type/hotfix` 后断言必须失败），防止判据本身退化成空断言。
 
 ## 5. 明确不做（边界）
 

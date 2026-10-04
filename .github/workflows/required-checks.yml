@@ -279,6 +279,59 @@ jobs:
           done < /tmp/status.tsv
           if [ "$bad" -ne 0 ]; then exit 1; fi
           echo "✅ 全部开放 Issue 恰好 0 或 1 个合法状态标签"
+      - name: 机器消费的标签在平台上存在（与 preflight.sh 同一判据 + 反向样本）
+        run: |
+          set -euo pipefail
+          # 为什么要有这一步：标签是**仓库级对象**，不在版本库里、没有清单也没有断言；
+          # 而 status.sh 的 --add-label 遇到不存在的标签会直接失败，start.sh 靠 type/* 推导
+          # 分支类型（缺标签就静默退化）。这里只断言"机器消费的标签必须存在"，不新增必需检查。
+          # 判据只有一套：权威副本是下面的 heredoc，scripts/preflight.sh 的副本必须逐字一致；
+          # 最后用反向样本（抽掉 type/hotfix）证明判据本身不是空断言。
+          cat > /tmp/label-assert.sh <<'EOS'
+          MACHINE_LABELS="status/ready status/in-progress status/in-review status/rework type/bug type/hotfix type/spike type/chore"
+          assert_machine_labels() {
+            missing=""
+            for l in $MACHINE_LABELS; do
+              printf '%s\n' "${1:-}" | grep -qxF "$l" || missing="${missing} ${l}"
+            done
+            if [ -n "$missing" ]; then
+              printf '[FAIL] 机器消费的标签在平台上不存在：%s\n' "$missing" >&2
+              printf '       后果：status.sh 迁移直接失败 / start.sh 静默退化。标签是仓库级对象 —— 报告 dispatcher，不要自行删改线上标签\n' >&2
+              return 1
+            fi
+            printf '[ OK ] 机器消费的标签全部存在（%s）\n' "$MACHINE_LABELS"
+            return 0
+          }
+          EOS
+          bad=0
+          # ① 判据唯一：preflight.sh 的 LABEL_ASSERT 标记区必须与本步骤的权威副本一致（忽略缩进/空行）
+          have="$(sed -n '/LABEL_ASSERT:BEGIN/,/LABEL_ASSERT:END/p' scripts/preflight.sh | sed -e '1d' -e '$d' | sed -E 's/^[[:space:]]+//' | grep -v '^$')"
+          want="$(sed -E 's/^[[:space:]]+//' /tmp/label-assert.sh | grep -v '^$')"
+          if [ -z "$have" ]; then
+            echo "::error file=scripts/preflight.sh::未能从 LABEL_ASSERT 标记区解析出判据"
+            bad=1
+          elif [ "$have" != "$want" ]; then
+            echo "::error::preflight.sh 与 ci/test 的标签判据不一致（必须逐字相同 —— 同一判据，不是两套实现）"
+            echo "--- preflight.sh ---"; printf '%s\n' "$have"
+            echo "--- ci/test ---"; printf '%s\n' "$want"
+            bad=1
+          fi
+          . /tmp/label-assert.sh
+          # ② 线上标签：机器消费的每一个都必须存在
+          live="$(gh label list -R "$REPO" --limit 200 --json name --jq '.[].name')"
+          if [ -z "$live" ]; then
+            echo "::error::读不到线上标签清单（gh label list 返回空）"
+            bad=1
+          elif ! assert_machine_labels "$live"; then
+            bad=1
+          fi
+          # ③ 反向样本：抽掉 type/hotfix 后断言**必须失败**（退化成空断言会被这一步抓住）
+          if [ -n "$live" ] && assert_machine_labels "$(printf '%s\n' "$live" | grep -vxF 'type/hotfix')"; then
+            echo "::error::反向样本未失败：缺 type/hotfix 时断言仍然通过 —— 判据形同虚设"
+            bad=1
+          fi
+          if [ "$bad" -ne 0 ]; then exit 1; fi
+          echo "✅ 机器消费的标签全部存在；判据与 preflight.sh 逐字一致；反向样本（缺 type/hotfix）按预期失败"
       - name: docs 状态机转换表与 scripts/status.sh 逐字一致（防文档漂移）
         run: |
           set -euo pipefail

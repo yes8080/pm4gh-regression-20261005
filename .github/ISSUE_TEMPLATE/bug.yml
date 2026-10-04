@@ -6,10 +6,13 @@ body:
   - type: markdown
     attributes:
       value: |
-        **轨道判定（见 `docs/WORKFLOW.md` W1/W3）：**
+        **轨道判定（见 `docs/WORKFLOW.md` W1/W2）：**
         - 切片**尚未合并**时发现 → 不要建本 Issue，直接在原切片分支上按返修流程处理
         - 切片**已合并**后 → 建本 Issue，分支用 `fix/<issue#>-<slug>`
         - 线上故障 → 建本 Issue 并标 `prio/P0`，分支用 `hotfix/<issue#>-<slug>` 从 main 拉出
+        - ⚠️ 下面的「轨道」下拉**不会**打 `type/hotfix` 标签（表单只能预置固定的 `labels:`）：线上故障请
+          **手动**给 Issue 加 `type/hotfix`，开工一律用 `scripts/start.sh <issue#> --type hotfix --as author`；
+          两者都漏时热修会静默退化成 `fix/`
 
   - type: dropdown
     attributes:
