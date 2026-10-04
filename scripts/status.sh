@@ -2,8 +2,7 @@
 # scripts/status.sh —— 状态机的**唯一迁移入口**（唯一源 = status/* 标签 + Issue 开关状态）
 #
 # 用法：
-#   scripts/status.sh <issue#> <state> [--force]   # 迁移到指定状态
-#   scripts/status.sh <issue#> --show              # 查看当前状态
+#   scripts/status.sh <issue#> <state>             # 迁移到指定状态
 #   scripts/status.sh --check                      # 扫**全部开放 Issue**：每个恰好 0 或 1 个合法 status/*
 #   scripts/status.sh --check-transition <from> <to>  # **只读**判定迁移是否合法（零副作用；不读网络）
 #   scripts/status.sh --check-cross                # **只读**交叉状态检查（Issue ↔ PR 四条规则；零副作用）
@@ -25,8 +24,8 @@
 #   rework      -> in-review | ready | backlog | canceled
 #   done        -> （终态；无出边）
 #   canceled    -> （终态；无出边）
-# 表外的 from -> to 一律**失败**（含 done/canceled 出边、跨级跳跃）。
-# 唯一兜底：显式 `--force` 跳过表校验（日志打印 [WARN] 说明被绕过的边；互斥与迁移后校验仍执行）。
+# 表外的 from -> to 一律**失败**（含 done/canceled 出边、跨级跳跃）—— **没有跳过开关**：
+# 需要例外就开 Issue 补一条边（改本文件的 TRANSITIONS + docs/WORKFLOW.md 的表，两处由 ci/test 断言集合相等）。
 # 幂等：from == to 且载体齐备时不迁移（终态还要求无残留标签，否则继续清理）。
 #
 # 不变量：开放 Issue 至多一个 status/* 标签；迁移只允许走本脚本。
@@ -375,7 +374,7 @@ if [ "${1:-}" = "--check-cross" ]; then
 fi
 
 ISSUE="${1:-}"
-[ -n "$ISSUE" ] || die "用法：scripts/status.sh <issue#> <state> [--force] | <issue#> --show | --check | --check-cross | --check-transition <from> <to>" 2
+[ -n "$ISSUE" ] || die "用法：scripts/status.sh <issue#> <state> | --check | --check-cross | --check-transition <from> <to>" 2
 case "$ISSUE" in *[!0-9]*) die "Issue 编号必须是数字：${ISSUE}" 2 ;; esac
 
 state_of() {
@@ -397,18 +396,11 @@ state_of() {
   esac
 }
 
-if [ "${2:-}" = "--show" ]; then
-  info "Issue #${ISSUE} 当前状态：$(state_of "$ISSUE")"
-  exit 0
-fi
-
 STATE="${2:-}"
-[ -n "$STATE" ] || die "用法：scripts/status.sh <issue#> <state> [--force] | <issue#> --show | --check | --check-cross | --check-transition <from> <to>" 2
-FORCE=0
+[ -n "$STATE" ] || die "用法：scripts/status.sh <issue#> <state> | --check | --check-cross | --check-transition <from> <to>" 2
 case "${3:-}" in
   "") : ;;
-  --force) FORCE=1 ;;
-  *) die "未知参数 ${3}（只支持 --force）" 2 ;;
+  *) die "未知参数 ${3}（本脚本不接受额外参数；迁移合法性只由转换表决定）" 2 ;;
 esac
 case " ${VALID_STATES} " in
   *" ${STATE} "*) : ;;
@@ -441,13 +433,13 @@ fi
 
 # ── 终态出边保护：CLOSED 的 done/canceled 不能迁到非终态 ────────
 # 为什么要有这一步：终态的载体是「Issue CLOSED + 无标签」，而本脚本不重开 Issue。
-# 若放行，--force 会先删掉残留标签、再在迁移后校验失败 —— 把 Issue 留在「已关闭且无标签」
+# 若放行，会先删掉残留标签、再在迁移后校验失败 —— 把 Issue 留在「已关闭且无标签」
 # 这种「看着是 done/canceled 但目标是 backlog」的分裂状态。宁可在动手前就拒绝。
 if [ "$cur" != "$STATE" ] && [ "$terminal" -eq 0 ] && [ "$raw_state" = "CLOSED" ]; then
-  die "终态 ${cur} 不能迁出到 ${STATE}：终态的载体是 Issue CLOSED，而本脚本**不重开** Issue。先 gh issue reopen ${ISSUE} 再迁移（--force 也不绕过这一步）"
+  die "终态 ${cur} 不能迁出到 ${STATE}：终态的载体是 Issue CLOSED，而本脚本**不重开** Issue。先 gh issue reopen ${ISSUE} 再迁移（这一步没有任何开关能绕过）"
 fi
 
-# ── 转换表强校验（迁移前；--force 显式兜底）──────────────────
+# ── 转换表强校验（迁移前；表外一律失败，没有跳过开关）──────────
 if is_legal_transition "$cur" "$STATE"; then
   ok "转换表允许：${cur} → ${STATE}"
 else
@@ -455,17 +447,13 @@ else
   if [ -n "$edges" ]; then
     edges_hint="出边参考：${edges}"
   else
-    edges_hint="出边参考：（${cur} 是终态，无出边；确需复活请 gh issue reopen ${ISSUE} 后用 --force）"
+    edges_hint="出边参考：（${cur} 是终态，无出边；确需复活请先 gh issue reopen ${ISSUE}）"
   fi
-  if [ "$FORCE" -eq 1 ]; then
-    warn "转换表外的迁移 ${cur} → ${STATE} —— 因显式 --force 而继续"
-    warn "  ${edges_hint}"
-  else
-    printf '[FAIL] 非法迁移：%s → %s\n' "$cur" "$STATE" >&2
-    printf '       %s\n' "$edges_hint" >&2
-    printf '       转换表见 scripts/status.sh 头部 / docs/WORKFLOW.md §1；确有例外才用 --force（会留 [WARN] 记录）\n' >&2
-    exit 1
-  fi
+  printf '[FAIL] 非法迁移：%s → %s\n' "$cur" "$STATE" >&2
+  printf '       %s\n' "$edges_hint" >&2
+  printf '       转换表见 scripts/status.sh 头部 / docs/WORKFLOW.md §1。表外迁移**一律拒绝**（没有跳过开关）：\n' >&2
+  printf '       需要例外就在 Issue 里补一条边 —— 同时改 TRANSITIONS 与文档表，再重跑\n' >&2
+  exit 1
 fi
 
 # 先移除已有的全部 status/* 标签，保证互斥（含 done/canceled 的残留标签）

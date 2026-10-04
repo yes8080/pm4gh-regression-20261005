@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scripts/abort.sh <issue#> [--branch NAME] [--reason TEXT] [--evidence TEXT] [--as author|main] [--dry-run]
+# scripts/abort.sh <issue#> [--branch NAME] [--reason TEXT] [--evidence TEXT] [--as author] [--dry-run]
 #
 # W0..W7 只覆盖「一路顺风」；本脚本是三条**异常路径**的出口（#60 的孤儿分支就是缺失它的后果：
 # Issue 已 canceled、远端分支却留着，无 PR、无任何门禁能看到）：
@@ -58,13 +58,9 @@ use_identity() {
       ok "本次执行身份（作者）：${ACTOR}"
       ;;
     main)
-      unset GH_TOKEN || true
-      unset GITHUB_TOKEN || true
-      ACTOR="$(gh api user --jq .login 2>/dev/null || true)"
-      [ -n "$ACTOR" ] || die "gh 未登录或读不到身份（见 docs/WORKFLOW.md §0）"
-      ok "本次执行身份（dispatcher）：${ACTOR}"
+      die "--as 只接受 author：本脚本**没有** dispatcher 身份开关（分支清理按 W8 由作者身份执行）。当前：${1:-}" 2
       ;;
-    *) die "--as 只能是 author|main（当前：${1:-}）" 2 ;;
+    *) die "--as 只接受 author（当前：${1:-}）" 2 ;;
   esac
 }
 
@@ -82,11 +78,12 @@ while [ $# -gt 0 ]; do
     --as)       AS="${2:?--as 需要取值}"; shift 2 ;;
     --dry-run)  DRY=1; shift ;;
     -h|--help)  sed -n '2,29p' "$0"; exit 0 ;;
+    -*)         die "未知参数 ${1:-}（本脚本不提供该开关；用法见 scripts/abort.sh -h）" 2 ;;
     *) ISSUE="$1"; shift ;;
   esac
 done
 
-[ -n "$ISSUE" ] || die "用法：scripts/abort.sh <issue#> [--branch NAME] [--reason TEXT] [--evidence TEXT] [--as author|main] [--dry-run]" 2
+[ -n "$ISSUE" ] || die "用法：scripts/abort.sh <issue#> [--branch NAME] [--reason TEXT] [--evidence TEXT] [--as author] [--dry-run]" 2
 case "$ISSUE" in *[!0-9]*) die "Issue 编号必须是数字：${ISSUE}" 2 ;; esac
 [ -f .github/rulesets/main-protection.json ] || die "请在仓库根目录运行"
 REPO="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || true)"

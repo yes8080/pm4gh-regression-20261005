@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scripts/deliver.sh <issue#> [--prepare] [--title TITLE] [--body-file FILE] [--as author|main] [--dry-run]
+# scripts/deliver.sh <issue#> [--prepare] [--body-file FILE] [--as author] [--dry-run]
 #
 # W4「交付 PR」一条命令：
 #   ⓪ 读当前 Issue 状态 + `status.sh --check-transition <cur> in-review` **只读**判定 —— 在任何
@@ -49,18 +49,13 @@ use_identity() {
       ok "本次执行身份（作者）：${ACTOR}"
       ;;
     main)
-      unset GH_TOKEN || true
-      unset GITHUB_TOKEN || true
-      ACTOR="$(gh api user --jq .login 2>/dev/null || true)"
-      [ -n "$ACTOR" ] || die "gh 未登录或读不到身份"
-      ok "本次执行身份（dispatcher）：${ACTOR}"
+      die "--as 只接受 author：本脚本**没有** dispatcher 身份开关（作者身份不可被绕过）。当前：${1:-}"
       ;;
-    *) die "--as 只能是 author|main（当前：${1:-}）" ;;
+    *) die "--as 只接受 author（当前：${1:-}）" ;;
   esac
 }
 
 ISSUE=""
-TITLE=""
 BODY_FILE=""
 PREPARE=0
 AS="author"
@@ -68,16 +63,16 @@ DRY=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --prepare)   PREPARE=1; shift ;;
-    --title)     TITLE="${2:?--title 需要取值}"; shift 2 ;;
     --body-file) BODY_FILE="${2:?--body-file 需要取值}"; shift 2 ;;
     --as)        AS="${2:?--as 需要取值}"; shift 2 ;;
     --dry-run)   DRY=1; shift ;;
     -h|--help)   sed -n '2,17p' "$0"; exit 0 ;;
+    -*)          die "未知参数 ${1:-}（本脚本不提供该开关；用法见 scripts/deliver.sh -h）" ;;
     *) ISSUE="$1"; shift ;;
   esac
 done
 
-[ -n "$ISSUE" ] || die "用法：scripts/deliver.sh <issue#> [--prepare] [--title ...] [--body-file ...] [--as author|main]"
+[ -n "$ISSUE" ] || die "用法：scripts/deliver.sh <issue#> [--prepare] [--body-file ...] [--as author]"
 case "$ISSUE" in *[!0-9]*) die "Issue 编号必须是数字：${ISSUE}" ;; esac
 [ -f .github/rulesets/main-protection.json ] || die "请在仓库根目录运行"
 REPO="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || true)"
@@ -151,7 +146,7 @@ Closes #${ISSUE}
 ## 6. 风险与破坏性变更
 EOF
   ok "正文骨架已生成：${BODY_FILE}"
-  printf '填写后运行：scripts/deliver.sh %s --as %s\n' "$ISSUE" "$AS"
+  printf '填写后运行：scripts/deliver.sh %s --as author\n' "$ISSUE"
   exit 0
 fi
 
@@ -192,7 +187,7 @@ empty_sec="$(awk '
 [ -z "$empty_sec" ] || die "以下章节内容过少（需要真实填写）：${empty_sec}"
 ok "各章节均有实质内容"
 
-[ -n "$TITLE" ] || TITLE="$(gh issue view "$ISSUE" -R "$REPO" --json title --jq .title)"
+TITLE="$(gh issue view "$ISSUE" -R "$REPO" --json title --jq .title)"
 existing_pr="$(gh pr list -R "$REPO" --head "$BRANCH" --state open --json number --jq '.[0].number // ""' 2>/dev/null || true)"
 
 if [ "$DRY" -eq 1 ]; then

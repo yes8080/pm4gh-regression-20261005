@@ -14,17 +14,13 @@ scripts/preflight.sh     # 任何一项失败 → 停下报告，不要"先干�
 ## 2. 一次只做一片
 
 **一个切片 = 一个 Issue = 一个分支 = 一个 PR。** 同时只允许一个 `status/in-progress`。
-工作顺序只有 W0..W7（见 `docs/WORKFLOW.md`），不得自创顺序。
+工作顺序只有 W0..W8（见 `docs/WORKFLOW.md`），不得自创顺序。
 
 ## 3. 身份（平台强制，不是自觉）
 
-| 角色 | 谁 | 做什么 |
-|---|---|---|
-| 作者 | `@yes8080-dev-bot`（`--as author`） | 分支、提交、推送、开 PR、返修 |
-| 评审 | `@yes8080-reviewer-bot`（**不加** `--as`） | `approve` / `request-changes`，不得合并 |
-| 合并 | `@yes8080`（dispatcher） | 只有它能 `gh pr merge --squash` |
-
-GitHub 禁止自我批准；规则集另有 `require_last_push_approval`（新推送会驳回旧批准）与
+三身份表、各自凭据与平台强制点见 **[docs/WORKFLOW.md §0](docs/WORKFLOW.md)**（唯一权威，本文件不复述）。
+要点：作者走 `--as author`（`--as` 只接受 `author`），评审**不加** `--as`，只有 `@yes8080`（dispatcher）能
+`gh pr merge --squash`；GitHub 禁止自我批准，规则集另有 `require_last_push_approval`（新推送驳回旧批准）与
 `require_code_owner_review`。三者都不得越权。
 
 ## 4. 必须
@@ -62,8 +58,4 @@ GitHub 禁止自我批准；规则集另有 `require_last_push_approval`（新�
 
 ## 7. 一轮工作的完成标准
 
-- [ ] Issue 有开工声明与进度评论
-- [ ] 分支已推送，PR 已开，正文含 `Closes #N` 与六段
-- [ ] 5 个必需检查状态已核对并记录
-- [ ] 若已合并：`scripts/closeout.sh` 五项全过（含「无残留状态标签」）
-- [ ] 新发现的坑已写进 `docs/WORKFLOW.md` §已知陷阱
+见 **[docs/WORKFLOW.md §3 DoD](docs/WORKFLOW.md)**（唯一权威；本文件不再复述条目）。

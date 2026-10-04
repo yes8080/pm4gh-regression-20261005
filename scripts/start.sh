@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scripts/start.sh <issue#> [--type slice|fix|hotfix|spike|chore] [--slug SLUG] [--as author|main] [--dry-run]
+# scripts/start.sh <issue#> [--type slice|fix|hotfix|spike|chore] [--as author] [--dry-run]
 #
 # W2「开工」一条命令：
 #   ⓪ 读当前状态 + `status.sh --check-transition <cur> in-progress` **只读**判定 —— 在任何
@@ -9,7 +9,7 @@
 #   ③ 指派给执行身份 + 留开工声明评论
 #   ④ 迁到 status/in-progress（唯一状态入口 scripts/status.sh）
 #
-# 身份：--as author（默认）= 作者身份 .secrets/developer.pat；--as main = gh 登录身份（dispatcher）。
+# 身份：只有 `--as author`（作者身份 .secrets/developer.pat）—— **没有 dispatcher 开关**，作者身份不可被绕过。
 
 set -eu
 
@@ -44,13 +44,9 @@ use_identity() {
       ok "本次执行身份（作者）：${ACTOR}"
       ;;
     main)
-      unset GH_TOKEN || true
-      unset GITHUB_TOKEN || true
-      ACTOR="$(gh api user --jq .login 2>/dev/null || true)"
-      [ -n "$ACTOR" ] || die "gh 未登录或读不到身份（见 docs/WORKFLOW.md §0）"
-      ok "本次执行身份（dispatcher）：${ACTOR}"
+      die "--as 只接受 author：本脚本**没有** dispatcher 身份开关（作者身份不可被绕过）。当前：${1:-}"
       ;;
-    *) die "--as 只能是 author|main（当前：${1:-}）" ;;
+    *) die "--as 只接受 author（当前：${1:-}）" ;;
   esac
 }
 
@@ -62,15 +58,15 @@ DRY=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --type) TYPE="${2:?--type 需要取值}"; shift 2 ;;
-    --slug) SLUG="${2:?--slug 需要取值}"; shift 2 ;;
     --as)   AS="${2:?--as 需要取值}"; shift 2 ;;
     --dry-run) DRY=1; shift ;;
     -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
+    -*) die "未知参数 ${1:-}（本脚本不提供该开关；用法见 scripts/start.sh -h）" ;;
     *) ISSUE="$1"; shift ;;
   esac
 done
 
-[ -n "$ISSUE" ] || die "用法：scripts/start.sh <issue#> [--type ...] [--slug ...] [--as author|main] [--dry-run]"
+[ -n "$ISSUE" ] || die "用法：scripts/start.sh <issue#> [--type ...] [--as author] [--dry-run]"
 case "$ISSUE" in *[!0-9]*) die "Issue 编号必须是数字：${ISSUE}" ;; esac
 [ -f .github/rulesets/main-protection.json ] || die "请在仓库根目录运行（未找到 .github/rulesets/main-protection.json）"
 REPO="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || true)"
@@ -131,7 +127,7 @@ if [ -z "$SLUG" ]; then
   SLUG="$(printf '%s' "$title" | LC_ALL=C sed -E 's/[^A-Za-z0-9]+/-/g' | tr 'A-Z' 'a-z' \
     | sed -E -e 's/^-+//' -e 's/-+$//' | cut -c1-40)"
 fi
-[ -n "$SLUG" ] || die "无法从标题推导 slug，请用 --slug 指定"
+[ -n "$SLUG" ] || die "无法从标题推导出合法 slug —— 请把 Issue 标题改成含 ASCII 字母/数字（slug 从标题推导，没有覆盖开关）"
 printf '%s' "$SLUG" | grep -qE '^[a-z0-9-]+$' || die "slug 只允许小写字母、数字、连字符：${SLUG}"
 BRANCH="${TYPE}/${ISSUE}-${SLUG}"
 printf '%s' "$BRANCH" | grep -qE '^(slice|fix|hotfix|spike|chore)/[0-9]+-[a-z0-9-]+$' \
