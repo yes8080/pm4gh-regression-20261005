@@ -74,6 +74,39 @@
   color: "D4A373"
   description: "技术债"
 
+# ── 优先级（正交维度，可叠加，不互斥）────────────────────────
+# 背景：D9 移除 Projects 后，原先放在 Projects 自定义字段的 Priority 改由标签承载
+- name: prio/P0
+  color: "B60205"
+  description: "优先级：阻塞（线上不可用或数据风险）"
+- name: prio/P1
+  color: "D93F0B"
+  description: "优先级：高（主流程受损，有临时绕过）"
+- name: prio/P2
+  color: "FBCA04"
+  description: "优先级：中（局部受损）"
+- name: prio/P3
+  color: "0E8A16"
+  description: "优先级：低（体验或文案）"
+
+# ── 规模（正交维度，可叠加，不互斥）──────────────────────────
+# 背景：同上。取值沿用方案 §2.4 的序列，用于 WIP 控制与吞吐度量
+- name: size/1
+  color: "C2E0C6"
+  description: "规模：1（约半小时内）"
+- name: size/2
+  color: "BFD4F2"
+  description: "规模：2（约半天）"
+- name: size/3
+  color: "D4C5F9"
+  description: "规模：3（约 1 天）"
+- name: size/5
+  color: "FEF2C0"
+  description: "规模：5（约 2~3 天，建议再拆）"
+- name: size/8
+  color: "F9D0C4"
+  description: "规模：8（超过 3 天，必须拆分）"
+
 # ── 状态（**唯一状态载体**，互斥：开放 Issue 至多一个）──────────
 # 说明：Backlog = 无 status/* 标签；Done / Canceled = Issue 已关闭（state_reason）
 # 迁移只允许通过 scripts/status.sh（避免多处写入导致状态分裂）

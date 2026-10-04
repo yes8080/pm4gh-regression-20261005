@@ -152,6 +152,24 @@ gh issue edit <slice#> --add-blocked-by <other#>
 ```
 判定：切片满足 DoR 五项（价值/验收标准/边界/依赖/估算与归属）。
 
+### W2.5 就绪判定（谁把切片从 Backlog 置为 Ready）
+
+**首次工具切换演练暴露的缺口**：早期文档只说"DoR 满足 → Ready"，但**没有写明由谁执行**。
+现明确：**PM（或自领者本人，需在 Issue 中说明）** 在 DoR 五项齐全后执行：
+
+```bash
+scripts/status.sh <issue#> ready
+```
+
+同时补齐正交维度标签（可叠加，与状态不互斥）：
+
+```bash
+gh issue edit <issue#> --add-label "prio/P1,size/3"
+```
+
+> 维度分工（方案 §2.4）：`status/*` = 状态（**互斥**，唯一迁移入口 `status.sh`）；
+> `prio/*`、`size/*`、`area/*`、`role/*`、`risk/*`、`src/*` = 正交维度（**可叠加**）。
+
 ### W3 领取与开工
 ```bash
 scripts/start.sh <issue#>                      # 推荐
