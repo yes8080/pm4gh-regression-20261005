@@ -55,7 +55,7 @@ jobs:
           gh api "repos/$REPO/pulls/$PR/reviews" --paginate \
             --jq '.[] | select(.state=="APPROVED") | .user.login' | sort -u > /tmp/approved.txt || true
           echo "已批准身份："; cat /tmp/approved.txt || true
-          allow="$(grep -vE '^[[:space:]]*(#|$)' .github/authorized-identities.txt || true)"
+          allow="$(grep -vE '^[[:space:]]*(#|$)' @@KIT_GOVERNANCE_DIR@@/authorized-identities.txt || true)"
           ok=0
           while IFS= read -r who; do
             [ -n "$who" ] || continue
@@ -69,6 +69,6 @@ jobs:
             fi
           done <<< "$allow"
           if [ "$ok" != 1 ]; then
-            echo "::error::尚无授权独立身份提交 APPROVED 评审。官方限制：issue_comment 触发的检查不满足必需检查，/accept 评论无法作为机器判据；请由 .github/authorized-identities.txt 中的身份执行 gh pr review <n> --approve。"
+            echo "::error::尚无授权独立身份提交 APPROVED 评审。官方限制：issue_comment 触发的检查不满足必需检查，/accept 评论无法作为机器判据；请由 @@KIT_GOVERNANCE_DIR@@/authorized-identities.txt 中的身份执行 gh pr review <n> --approve。"
             exit 1
           fi

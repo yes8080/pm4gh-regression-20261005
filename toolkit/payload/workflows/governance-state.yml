@@ -1,0 +1,41 @@
+# 状态一致性（**非必需**检查）—— 专治「没有 PR 时门禁停摆」
+#
+# 为什么需要它（Issue #69 S-A 第 7 项交付）：
+#   5 项必需检查只在 pull_request / merge_group 上触发（官方：issue_comment 等事件不满足必需检查）。
+#   仓库里没有开放 PR 时它们**从不运行** —— 受管资产被删、命名空间被越界写入、门禁引用了
+#   不存在的资产，都不会有人发现（这正是"漂移静默存在"的形态）。
+#   本工作流只读仓库内容（不需要 PR、不需要网络、不需要 gh），在 push 到默认分支与手动触发时
+#   跑同一套不变量断言（见 @@KIT_ROOT@@/scripts/check-invariants.sh 的 --check state）。
+#
+# ⚠️ 它**不是**必需检查，也**不得**被加进必需清单：必需检查集合一变，所有在飞的 PR 会立刻
+#    变成 pending（PLAYBOOK §9「必需检查改名」同型风险）。
+name: governance-state
+
+on:
+  push:
+    branches: [ @@DEFAULT_BRANCH@@ ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: governance-state-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  state:
+    name: ci/state
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: 无 PR 场景的状态一致性（不变量 B + 命名空间 + 归属）
+        run: |
+          set -euo pipefail
+          f=@@KIT_ROOT@@/scripts/check-invariants.sh
+          if [ ! -f "$f" ]; then
+            echo "::error file=$f::套件不变量脚本缺失 —— 「无 PR 时门禁停摆」的补救措施失效，必须显式失败"
+            exit 1
+          fi
+          bash "$f" --check state
+          echo "✅ 无 PR 场景状态一致"

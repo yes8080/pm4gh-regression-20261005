@@ -7,3 +7,10 @@ node_modules/
 .env
 .env.local
 .env.*
+
+# 治理套件运行时记账（Bug #60 / Issue #69 S-A）：状态只在一个地方，且**不得进版本库**。
+# 默认落点是 <root>/.git/governance-ledger.json（在 .git/ 下，本就不被跟踪；
+# 选 .git/ 的硬理由：它必须活过 `git clean -fdx`）。
+# 下面两条是"改用仓库内路径"时的兜底，防止把真实账号写进分发物。
+governance-ledger.json
+.governance-ledger.json

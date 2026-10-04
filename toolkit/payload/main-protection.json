@@ -1,29 +1,39 @@
 {
-  "name": "main-protection",
+  "name": "governance-main-protection",
   "target": "branch",
   "enforcement": "active",
   "_comment": "目标分支只用 ~DEFAULT_BRANCH，绝不用 ** —— 官方明确：分支保护/仓库规则可能阻止『自动删除头分支』，写 ** 会导致切片分支合并后删不掉。应用方式与分阶段说明见同目录 README.md，不要直接一把梭。",
   "_comment_qa_acceptance": "qa/acceptance **故意不在必需清单里**：它是非必需的审计检查。原因（Bug #13 实测）：必需检查一旦在某个 SHA 上留下失败结论，后续同名检查通过也无法解除阻塞；而验收检查在 PR 打开时必然『先失败』（尚无批准），批准后复检才通过 —— 该模式与必需检查机制根本冲突，会导致每个 PR 永久 BLOCKED。验收的机器门禁改由原生规则承担：required_approving_review_count=1 + require_last_push_approval + dismiss_stale_reviews_on_push。",
   "conditions": {
     "ref_name": {
-      "include": ["~DEFAULT_BRANCH"],
+      "include": [
+        "~DEFAULT_BRANCH"
+      ],
       "exclude": []
     }
   },
   "bypass_actors": [],
   "rules": [
-    { "type": "deletion" },
-    { "type": "non_fast_forward" },
-    { "type": "required_linear_history" },
+    {
+      "type": "deletion"
+    },
+    {
+      "type": "non_fast_forward"
+    },
+    {
+      "type": "required_linear_history"
+    },
     {
       "type": "pull_request",
       "parameters": {
         "required_approving_review_count": 1,
         "dismiss_stale_reviews_on_push": true,
-        "require_code_owner_review": true,
+        "require_code_owner_review": false,
         "require_last_push_approval": true,
         "required_review_thread_resolution": true,
-        "allowed_merge_methods": ["squash"]
+        "allowed_merge_methods": [
+          "squash"
+        ]
       }
     },
     {
@@ -32,11 +42,21 @@
         "do_not_enforce_on_create": false,
         "strict_required_status_checks_policy": true,
         "required_status_checks": [
-          { "context": "ci/lint" },
-          { "context": "ci/test" },
-          { "context": "policy/linked-issue" },
-          { "context": "policy/branch-name" },
-          { "context": "policy/template" }
+          {
+            "context": "ci/lint"
+          },
+          {
+            "context": "ci/test"
+          },
+          {
+            "context": "policy/linked-issue"
+          },
+          {
+            "context": "policy/branch-name"
+          },
+          {
+            "context": "policy/template"
+          }
         ]
       }
     }

@@ -121,6 +121,17 @@ case "$cmd" in
         else
           jq -r '.rulesets[] | "\(.name)\t\(.id)"' "$STUB_STATE"
         fi ;;
+      *"/contents/"*)
+        # 模拟 `gh api repos/{o}/{r}/contents/<path>?ref=<default>`：
+        # 存在 → 输出 {sha,...}（退出码 0）；不存在 → 404（退出码 1）。
+        # 沙箱里没有"默认分支"这个概念，用 STUB_ROOT 的工作区当作默认分支的镜像 ——
+        # 卸载阶段 A 删掉工作区文件后，这里就会报 404 = "内容已落地"。
+        cpath="${path#*/contents/}"; cpath="${cpath%%\?*}"
+        if [ -n "${STUB_ROOT:-}" ] && [ -e "${STUB_ROOT}/${cpath}" ]; then
+          printf '{"path":"%s","sha":"deadbeef"}\n' "$cpath"
+        else
+          echo "HTTP 404: Not Found" >&2; exit 1
+        fi ;;
       */rulesets/*)
         rid="${path##*/}"
         if [ "$method" = "DELETE" ]; then

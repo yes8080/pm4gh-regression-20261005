@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# toolkit/install.sh —— 可移植治理套件安装器（E2-S1：归属清单 + --dry-run / --check / --apply）
+# toolkit/install.sh —— 可移植治理套件安装器（E2-S-A：出厂声明 + 运行时账 + --dry-run / --check / --apply）
 #
 # 用法：
 #   toolkit/install.sh --dry-run        # 默认模式。零写入，完整预告每个对象将被创建/更新/跳过
-#   toolkit/install.sh --check          # 只读。比对「线上实况 vs manifest 期望」，漂移只报告
+#   toolkit/install.sh --check          # 只读。比对「线上实况 vs kit.yaml 期望」，漂移只报告
 #   toolkit/install.sh --apply          # 实际安装（幂等；重复执行是 no-op）
 #
-# 参数（全部可参数化；对应 toolkit/manifest.json 的 parameters 段）：
+# 参数（全部可参数化；对应 toolkit/kit.yaml 的 parameters 段）：
 #   --repo OWNER/NAME        目标仓库（默认：gh repo view）
 #   --default-branch NAME    默认分支（默认：gh repo view 的 defaultBranchRef）
 #   --owner ACCOUNT          仓库 owner / 主身份账号（默认：REPO 的 owner 部分）
@@ -14,21 +14,27 @@
 #   --reviewer-account ACCT  评审身份账号（默认：读凭据文件 .secrets/reviewer.pat 的身份）
 #   --root DIR               目标仓库根目录（默认：本脚本所在目录的上一级）
 #   --kit-dir DIR            套件目录（默认：本脚本所在目录）
-#   --manifest FILE          归属清单（默认：<kit-dir>/manifest.json）
+#   --kit-yaml FILE          出厂声明（默认：<kit-dir>/kit.yaml）
+#   --ledger FILE            运行时记账（默认：<root>/.git/governance-ledger.json，**不在版本库内**）
 # 等价环境变量：REPO / DEFAULT_BRANCH / OWNER / AUTHOR_ACCOUNT / REVIEWER_ACCOUNT
-#               DEVELOPER_PAT_FILE / REVIEWER_PAT_FILE
+#               DEVELOPER_PAT_FILE / REVIEWER_PAT_FILE / TOOLKIT_LEDGER
 #
-# 设计要点（对应 Issue #46 的验收标准）：
-#   ① 归属清单唯一：manifest.json 登记每一类受管对象（文件 / 标签 / 规则集 / workflow /
-#      CODEOWNERS 行 / 协作者），并记录「装机前是否已存在」。
-#   ② 三态幂等 planned → observed → owned：
-#        planned  = manifest 里声明的期望（本脚本的输入）
+# 设计要点（Issue #69 / S-A；设计 #68 §2.1–§2.3）：
+#   ① **声明与状态彻底分离**：
+#        kit.yaml（出厂声明，进版本库、运行时只读、可审计可 diff）= 定义「管什么」
+#        <root>/.git/governance-ledger.json（安装器事务账，**不进版本库**）= 记录「实际创建了什么」
+#      收尾时断言 kit.yaml 逐字节未变（Bug #60 的护栏：状态混进分发物会弄红套件自带的 ci/test）。
+#   ② 命名空间归属（P-5）：受管文件 .github/governance/**、workflow .github/workflows/governance-*.yml、
+#      标签前缀 gov/、规则集前缀 governance-。豁免允许但必须逐条写理由，且由本脚本硬校验。
+#   ③ 三态幂等 planned → observed → owned：
+#        planned  = kit.yaml 里声明的期望（本脚本的输入）
 #        observed = **本次运行现读的线上实况**（绝不用上一次运行的记账代替观测）
 #        owned    = 本套件创建或明确接管（--apply 时**写前落账** intent=create，成功后回读确认）
 #      重试语义：上一次命令报错、但对象其实已经创建 → 记账里留有 create 意图且实况存在
 #      → 仍判 owned=true，不会被误当成「用户既有对象」而漏记（失败案例库 D6 的直接教训）。
-#   ③ 不覆盖、不接管：对象已存在但非本套件创建时只报告，绝不修改。
-#   ④ 零新增运行时依赖：只用 bash 3.2 / git / gh / jq 与 POSIX 自带命令（awk/sed/cmp/mktemp）。
+#   ④ 冲突不接管：对象已存在但非本套件创建时只报告，绝不修改、绝不静默合并。
+#   ⑤ NFR-17：绝不就地改写用户既有文件（CODEOWNERS 只给建议行，见 report_codeowners）。
+#   ⑥ 零新增运行时依赖：只用 bash 3.2 / git / gh / jq / python3 与 POSIX 自带命令。
 #      兼容性铁律：不用 mapfile/readarray/declare -A/${var,,}；变量后紧跟中文必须写 ${VAR}。
 #
 # 退出码：0 无漂移（--dry-run/--check）或安装成功（--apply）；1 存在漂移/冲突；2 参数或环境错误
@@ -36,7 +42,9 @@ set -eu
 
 KIT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "${KIT_DIR}/.." && pwd)"
-MANIFEST=""            # 未显式指定时，参数解析完再按 KIT_DIR 推导
+KIT_YAML=""            # 出厂声明（kit.yaml）；未显式指定时按 KIT_DIR 推导
+KIT_JSON=""            # 运行时由 kit.yaml 派生（lib.sh kit_load；不进版本库）
+LEDGER=""              # 未显式指定时，参数解析完再按 ROOT 推导（见 toolkit/lib.sh ledger_default）
 MODE="dry-run"          # dry-run | check | apply
 
 die()  { local m="${1:-}"; local c="${2:-2}"; printf '[FAIL] %s\n' "$m" >&2; exit "$c"; }
@@ -47,7 +55,7 @@ die()  { local m="${1:-}"; local c="${2:-2}"; printf '[FAIL] %s\n' "$m" >&2; exi
 # die 留在本脚本：install 的参数/环境错误用退出码 2，eject 用 1。
 . "${KIT_DIR}/lib.sh"
 
-usage() { sed -n '2,37p' "$0"; }
+usage() { sed -n '2,39p' "$0"; }
 
 REPO_OPT=""; BRANCH_OPT=""; OWNER_OPT=""; AUTHOR_OPT=""; REVIEWER_OPT=""
 while [ $# -gt 0 ]; do
@@ -62,19 +70,19 @@ while [ $# -gt 0 ]; do
     --reviewer-account) REVIEWER_OPT="${2:?--reviewer-account 需要取值}"; shift ;;
     --root)            ROOT="${2:?--root 需要取值}"; shift ;;
     --kit-dir)         KIT_DIR="${2:?--kit-dir 需要取值}"; shift ;;
-    --manifest)        MANIFEST="${2:?--manifest 需要取值}"; shift ;;
+    --kit-yaml)        KIT_YAML="${2:?--kit-yaml 需要取值}"; shift ;;
+    --ledger)          LEDGER="${2:?--ledger 需要取值}"; shift ;;
     -h|--help) usage; exit 0 ;;
     *) die "未知参数：${1}（见 --help）" ;;
   esac
   shift
 done
 
-for c in gh jq awk sed cmp mktemp comm cut sort tr diff date; do
+for c in gh jq awk sed cmp mktemp comm cut sort tr diff date find; do
   command -v "$c" >/dev/null 2>&1 || die "缺少命令 ${c}（本套件只依赖 bash/git/gh/jq 与 POSIX 自带命令）"
 done
-[ -n "$MANIFEST" ] || MANIFEST="${KIT_DIR}/manifest.json"
-[ -f "$MANIFEST" ] || die "找不到归属清单 ${MANIFEST}（用 --manifest 指定）"
-jq -e '.objects' "$MANIFEST" >/dev/null 2>&1 || die "归属清单不是合法 JSON 或缺少 objects 段：${MANIFEST}"
+[ -n "$KIT_YAML" ] || KIT_YAML="${KIT_DIR}/kit.yaml"
+[ -f "$KIT_YAML" ] || die "找不到出厂声明 ${KIT_YAML}（用 --kit-yaml 指定）"
 
 # ── 临时区 ────────────────────────────────────────────────────
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/toolkit-install.XXXXXX")"
@@ -82,6 +90,24 @@ trap 'rm -rf "$TMP_DIR"' EXIT INT TERM
 DRIFT_FILE="${TMP_DIR}/drift.txt"
 CREATED_FILE="${TMP_DIR}/created.txt"
 : > "$DRIFT_FILE"; : > "$CREATED_FILE"
+
+# ── 声明 / 状态分离（Bug #60 / Issue #69 S-A）────────────────────
+# ① 出厂声明：kit.yaml → KIT_JSON（运行时**只读**；收尾时逐字节断言未变）
+kit_load
+KIT_ROOT="${KIT_ROOT:-$(jq -r '.objects.kit.entries[0].path // ".github/governance/kit"' "$KIT_JSON")}"
+KIT_GOVERNANCE_DIR="${KIT_GOVERNANCE_DIR:-$(ns_files)}"; KIT_GOVERNANCE_DIR="${KIT_GOVERNANCE_DIR%/}"
+# payload 占位符的具体值（一处定义在 kit.yaml 的 placeholders 段；不变量 B 用同一张表解析）
+RULESET_DECL_PATH="${RULESET_DECL_PATH:-$(jq -r '.placeholders.RULESET_DECL_PATH // ""' "$KIT_JSON")}"
+CODEOWNERS_PATH="${CODEOWNERS_PATH:-$(jq -r '.placeholders.CODEOWNERS_PATH // ""' "$KIT_JSON")}"
+WORKFLOWS_GLOB="${WORKFLOWS_GLOB:-$(jq -r '.placeholders.WORKFLOWS_GLOB // ""' "$KIT_JSON")}"
+CODE_OWNER_IDS="${CODE_OWNER_IDS:-}"
+# ② 运行时记账：默认 <root>/.git/governance-ledger.json（**版本库之外**，
+#    硬理由：它必须活过 `git clean -fdx`，而 gitignore 方案下它会被直接清掉）
+[ -n "$LEDGER" ] || LEDGER="${TOOLKIT_LEDGER:-}"
+[ -n "$LEDGER" ] || LEDGER="$(ledger_default "$ROOT")"
+# ③ 护栏：记账绝不能被 git 跟踪（一旦入库，真实账号与归属就进了分发物 —— Bug #60）
+ledger_reject_if_tracked "$LEDGER"
+
 
 N_CREATE=0; N_UPDATE=0; N_OK=0; N_SKIP=0; N_DRIFT=0; N_CONFLICT=0; N_FAIL=0
 drift() { N_DRIFT=$((N_DRIFT + 1)); printf '%s\n' "$*" >> "$DRIFT_FILE"; }
@@ -115,6 +141,22 @@ REVIEWER_ACCOUNT="${REVIEWER_OPT:-${REVIEWER_ACCOUNT:-}}"
 if [ -z "$REVIEWER_ACCOUNT" ]; then REVIEWER_ACCOUNT="$(identity_from_pat "$REVIEWER_PAT" || true)"; fi
 [ -n "$REVIEWER_ACCOUNT" ] || die "无法确定评审账号：用 --reviewer-account 指定，或提供凭据 ${REVIEWER_PAT}"
 
+# ── 记账存在性策略（Bug #60 追加要求）──────────────────────────
+#  · --check   ：记账缺失 = **明确报错**（退出码 2）。绝不能静默按「全部装机前已存在」处理，
+#                否则既不报漂移、也无法卸载。
+#  · --dry-run ：零写入，因此**不创建**记账；缺失时保守按「非本套件创建」处理并显式告警。
+#  · --apply   ：记账缺失 = 首次安装，此时创建（唯一允许创建记账的路径）。
+if [ "$MODE" = "check" ]; then
+  ledger_require
+elif [ "$MODE" = "dry-run" ]; then
+  LEDGER_LENIENT=1
+else
+  if [ ! -f "$LEDGER" ]; then
+    ledger_init_if_missing
+    info "首次安装：已创建归属记账 ${LEDGER}（**位于版本库之外**，不属于分发物 —— Bug #60）"
+  fi
+fi
+
 # ── 公共 helper（渲染 / 线上实况探测 / 规则集语义比对 / 归属判定 / 标签解析 / CODEOWNERS 归一化）
 #     全部在 toolkit/lib.sh —— 与 eject.sh 共用同一份判据，避免归属逻辑出现第二实现。
 
@@ -140,7 +182,7 @@ decide_files() {
   case "$act" in
     create)
       if [ "$MODE" = "check" ]; then
-        drift "文件缺失 ${path}（manifest 期望存在）"; pline "[漂移]" "缺失" "$path"
+        drift "文件缺失 ${path}（kit.yaml 期望存在）"; pline "[漂移]" "缺失" "$path"
       else
         N_CREATE=$((N_CREATE + 1)); pline "[${MODE}]" "创建" "${path}  ← ${src}"
         if [ "$MODE" = "apply" ]; then
@@ -193,7 +235,7 @@ decide_labels() {
       fi
       wcolor="$(label_want "$name" | cut -f1)"; wdesc="$(label_want "$name" | cut -f2)"
       if [ "$MODE" = "check" ]; then
-        drift "标签缺失 ${name}（manifest 期望存在）"; pline "[漂移]" "缺失" "label ${name}"
+        drift "标签缺失 ${name}（kit.yaml 期望存在）"; pline "[漂移]" "缺失" "label ${name}"
       else
         N_CREATE=$((N_CREATE + 1)); pline "[${MODE}]" "创建" "label ${name}（${wcolor}）"
         if [ "$MODE" = "apply" ]; then
@@ -234,7 +276,7 @@ decide_rulesets() {
   rid="$(ruleset_id_by_name "$name")"
   if [ -z "$rid" ]; then
     if [ "$MODE" = "check" ]; then
-      drift "规则集缺失 ${name}（manifest 期望存在，缺它则门禁未生效）"; pline "[漂移]" "缺失" "ruleset ${name}"
+      drift "规则集缺失 ${name}（kit.yaml 期望存在，缺它则门禁未生效）"; pline "[漂移]" "缺失" "ruleset ${name}"
     else
       N_CREATE=$((N_CREATE + 1)); pline "[${MODE}]" "创建" "ruleset ${name} ← ${src}"
       if [ "$MODE" = "apply" ]; then
@@ -266,6 +308,7 @@ $(ruleset_diff "$want" "$live")
 EOF
   if [ "$act" = "ok" ]; then
     N_OK=$((N_OK + 1)); pline "[ OK ]" "已存在且一致" "ruleset ${name}（id=${rid}）"
+    ledger_clear_narrowed "$id"
     return 0
   fi
   if ledger_owned "$id"; then
@@ -335,7 +378,7 @@ decide_workflows() {
       drift "工作流冲突 ${path}：已存在、非本套件创建、内容与期望不一致 → 不覆盖、不接管"
       pline "[冲突]" "不覆盖" "${path}（非本套件创建，仅报告）" ;;
   esac
-  # 检查名核验：manifest 声明的每个检查名都必须能在文件里找到同名 job，否则该必需检查永久 pending
+  # 检查名核验：kit.yaml 声明的每个检查名都必须能在文件里找到同名 job，否则该必需检查永久 pending
   if [ -f "$target" ]; then wf_file="$target"; else wf_file="$want"; fi
   missing=""
   while IFS= read -r c; do
@@ -351,39 +394,140 @@ EOF
   fi
 }
 
-# ── ⑤ CODEOWNERS 行 ───────────────────────────────────────────
-# normalize_co 在 toolkit/lib.sh（与 eject.sh 同源）
+# ── ⑤ CODEOWNERS：**只报告，不写入**（NFR-17 / 命名空间归属）──────────
+# S3 演练 F4（Bug #62）实证：CODEOWNERS 以"最后匹配"为准，向用户文件末尾追加 `*`
+# 会静默覆盖其更早的窄规则（例：`/legacy/ @owner`）—— 那正是 NFR-17「不得就地改写用户
+# 既有文件」要防的事故。因此本套件把建议行打印在**报告**里，由采用者自行决定；
+# 相应地，卸载时也没有"我们追加的行"要撤（归属问题在源头消失）。
+# 另一半（采用者侧不使用 require_code_owner_review）由不变量检查断言，见
+# scripts/check-invariants.sh 的 codeowners 检查：否则会装出一个"套件自己无法满足"的门禁。
+report_codeowners() {
+  local l
+  jq -r '.report_only.codeowners.suggested_lines[]?' "$KIT_JSON" | while IFS= read -r l; do
+    [ -n "$l" ] || continue
+    pline "[报告]" "建议追加" "CODEOWNERS: $(render_str "$l")"
+  done
+  pline "[报告]" "不写入" "CODEOWNERS（NFR-17：绝不就地改写用户既有文件）"
+}
 
-decide_codeowners() {
-  local entry id path pattern owners owned_line found act f
+# ── ⑥ 套件自身（整树装配进目标仓库）─────────────────────────────
+# 为什么需要它（Bug #61 F2，P0）：
+#   装到目标仓库的必需检查**不得引用未安装的资产**。ci/lint 需要至少一个被跟踪的 *.sh，
+#   ci/test 需要 toolkit/tests/self-test.sh 与 toolkit/scripts/labels.sh —— 它们全都是
+#   **套件自己**的文件。修法（二选一中的第①种，理由见 toolkit/README.md §8）：
+#   「把依赖资产纳入套件并登记」→ 在 kit.yaml 的 objects.kit 登记，并由本函数整树装配。
+# 判定：逐文件比对（缺失/内容不同 = 需要处理）；目标目录里**套件之外**的文件只报告、不删。
+decide_kit() {
+  local entry id path src dst list rel missing differ extra act h want_dir
   entry="$1"; id="$(jget "$entry" '.id')"; path="$(jget "$entry" '.path')"
-  pattern="$(jget "$entry" '.pattern')"
-  owners="$(jget "$entry" '.owners | join(" ")')"
-  owned_line="$(render_str "${pattern} ${owners}" | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//')"
-  f="${ROOT}/${path}"
-  found="no"
-  if [ -f "$f" ]; then
-    if normalize_co "$f" | grep -Fxq -- "$owned_line"; then found="yes"; fi
+  src="$(jget "$entry" '.source')"
+  if [ "$src" = "." ]; then src="$KIT_DIR"; else src="${KIT_DIR}/${src}"; fi
+  dst="${ROOT}/${path}"
+  if [ ! -d "$src" ]; then
+    N_FAIL=$((N_FAIL + 1)); drift "清单损坏 ${id}：套件目录不存在 ${src}"; pline "[失败]" "套件目录缺失" "$id"; return 0
   fi
-  if [ "$found" = "yes" ]; then
-    N_OK=$((N_OK + 1)); pline "[ OK ]" "已存在" "CODEOWNERS ${owned_line}"
+  # 自装配（在目标仓库内就地运行，KIT_DIR 就是目标路径）→ no-op
+  if [ -d "$dst" ] && same_dir "$src" "$dst"; then
+    N_OK=$((N_OK + 1)); pline "[ OK ]" "已存在且一致" "kit ${path}（就地运行：自装配 no-op）"
+    # 「就地运行且内容与套件逐字节一致」= 套件已装配在目标路径上（创建或明确接管）→ 记 owned，
+    # 否则 eject 会把它当成"用户既有对象"而永不回收。
+    if [ "$MODE" = "apply" ] && ! ledger_owned "$id"; then
+      printf '%s\n' "$id" >> "$CREATED_FILE"
+    fi
+    check_kit_required "$entry" "$dst"
     return 0
   fi
-  if [ "$MODE" = "check" ]; then
-    drift "CODEOWNERS 行缺失：${owned_line}（缺它则 ${pattern} 的改动没有独立 owner，require_code_owner_review 会死锁）"
-    pline "[漂移]" "缺失" "CODEOWNERS ${owned_line}"
-    return 0
+  list="${TMP_DIR}/kit_list.txt"; dir_rel_files "$src" > "$list"
+  missing=0; differ=0
+  while IFS= read -r rel; do
+    [ -n "$rel" ] || continue
+    if [ ! -f "${dst}/${rel}" ]; then missing=$((missing + 1))
+    elif ! cmp -s "${src}/${rel}" "${dst}/${rel}"; then differ=$((differ + 1)); fi
+  done < "$list"
+  extra=0
+  if [ -d "$dst" ]; then
+    while IFS= read -r rel; do
+      [ -n "$rel" ] || continue
+      if ! grep -Fxq -- "$rel" "$list"; then extra=$((extra + 1)); fi
+    done <<EOF
+$(dir_rel_files "$dst")
+EOF
   fi
-  N_CREATE=$((N_CREATE + 1)); pline "[${MODE}]" "追加" "CODEOWNERS ${owned_line}"
-  if [ "$MODE" = "apply" ]; then
-    ledger_mark_intent "$id"
-    if [ ! -f "$f" ]; then printf '# CODEOWNERS —— 由治理套件写入（归属见 toolkit/manifest.json）\n\n' > "$f"; fi
-    if printf '%s\n' "$owned_line" >> "$f"; then printf '%s\n' "$id" >> "$CREATED_FILE"
-    else N_FAIL=$((N_FAIL + 1)); drift "CODEOWNERS 写入失败：${owned_line}"; fi
+
+  if [ "$missing" -eq 0 ] && [ "$differ" -eq 0 ]; then
+    act="ok"
+  elif [ -e "$dst" ]; then
+    if ledger_owned "$id"; then act="update"; else act="conflict"; fi
+  else
+    act="create"
+  fi
+
+  case "$act" in
+    create)
+      if [ "$MODE" = "check" ]; then
+        drift "套件目录缺失 ${path}（kit.yaml 期望存在；缺它则 ci/lint 的 *.sh 覆盖面为空、ci/test 的 toolkit 自检必然变红）"
+        pline "[漂移]" "缺失" "kit ${path}"
+      else
+        N_CREATE=$((N_CREATE + 1)); pline "[${MODE}]" "装配" "kit ${path}（${missing} 个文件）"
+        if [ "$MODE" = "apply" ]; then
+          ledger_mark_intent "$id"
+          if apply_kit_files "$src" "$dst" "$list"; then
+            printf '%s\n' "$id" >> "$CREATED_FILE"
+          else
+            N_FAIL=$((N_FAIL + 1)); drift "套件装配失败 ${path}"
+          fi
+        fi
+      fi ;;
+    update)
+      if [ "$MODE" = "check" ]; then
+        drift "套件目录漂移 ${path}（本套件所有，内容与期望不一致：缺失 ${missing} / 不同 ${differ}）"; pline "[漂移]" "内容不一致" "kit ${path}"
+      else
+        N_UPDATE=$((N_UPDATE + 1)); pline "[${MODE}]" "更新" "kit ${path}（缺失 ${missing} / 不同 ${differ}）"
+        if [ "$MODE" = "apply" ]; then apply_kit_files "$src" "$dst" "$list" || { N_FAIL=$((N_FAIL + 1)); drift "套件更新失败 ${path}"; }; fi
+      fi ;;
+    ok) N_OK=$((N_OK + 1)); pline "[ OK ]" "已存在且一致" "kit ${path}" ;;
+    conflict)
+      N_CONFLICT=$((N_CONFLICT + 1))
+      drift "套件目录冲突 ${path}：已存在、非本套件创建、且与期望不一致（缺失 ${missing} / 不同 ${differ}）→ 不覆盖、不接管"
+      pline "[冲突]" "不覆盖" "kit ${path}（非本套件创建，仅报告）" ;;
+  esac
+  if [ "$extra" -gt 0 ]; then
+    pline "[INFO]" "目标多出" "kit ${path}：${extra} 个套件之外的文件 → 不接管、不删除"
+  fi
+  if [ "$act" != "conflict" ]; then
+    if [ -d "$dst" ]; then check_kit_required "$entry" "$dst"; else check_kit_required "$entry" "$src"; fi
   fi
 }
 
-# ── ⑥ 协作者 ──────────────────────────────────────────────────
+apply_kit_files() {  # $1 = src, $2 = dst, $3 = 相对路径清单
+  local rel rc=0
+  while IFS= read -r rel; do
+    [ -n "$rel" ] || continue
+    mkdir -p "$(dirname "${2}/${rel}")"
+    if ! cp "${1}/${rel}" "${2}/${rel}" || ! cmp -s "${1}/${rel}" "${2}/${rel}"; then
+      warn "套件文件写入失败：${2}/${rel}"; rc=1
+    fi
+  done < "$3"
+  return $rc
+}
+
+# 清单声明的 required 文件必须存在于装配结果里（缺失 = 清单损坏：必需检查会失去依赖资产）
+check_kit_required() {  # $1 = entry JSON, $2 = 被检查的目录
+  local d="$2" miss="" r
+  while IFS= read -r r; do
+    [ -n "$r" ] || continue
+    if [ ! -f "${d}/${r}" ]; then miss="${miss} ${r}"; fi
+  done <<EOF
+$(jget "$1" '.required[]?')
+EOF
+  if [ -n "$miss" ]; then
+    N_FAIL=$((N_FAIL + 1))
+    drift "套件目录缺少必需文件（必需检查的依赖资产）：${miss}"
+    pline "[失败]" "必需文件缺失" "kit:${miss}"
+  fi
+}
+
+# ── ⑦ 协作者 ──────────────────────────────────────────────────
 decide_collaborators() {
   local entry id account perm role role_suffix lv act
   entry="$1"; id="$(render_str "$(jget "$entry" '.id')")"
@@ -398,7 +542,7 @@ decide_collaborators() {
   case "$act" in
     create)
       if [ "$MODE" = "check" ]; then
-        drift "协作者缺失 ${account}（manifest 期望有 ${perm} 权限；缺它则独立评审链路不可用）"
+        drift "协作者缺失 ${account}（kit.yaml 期望有 ${perm} 权限；缺它则独立评审链路不可用）"
         pline "[漂移]" "缺失" "collaborator ${account}"
       else
         N_CREATE=$((N_CREATE + 1)); pline "[${MODE}]" "邀请" "collaborator ${account}（permission=${perm}${role_suffix}）"
@@ -433,9 +577,9 @@ finalize_ledger() {
   probe_labels; probe_collaborators; probe_ruleset_ids
   local ops="${TMP_DIR}/ledger_ops.jsonl" created_box="${TMP_DIR}/created_box.txt"
   : > "$ops"; sort -u "$CREATED_FILE" > "$created_box" 2>/dev/null || : > "$created_box"
-  local class entry id path name account pattern owners own_line
-  for class in files labels rulesets workflows codeowners collaborators; do
-    jq -c ".objects.${class}.entries[]" "$MANIFEST" > "${TMP_DIR}/fin_${class}.txt"
+  local class entry id path path2 name account extra_hash
+  for class in files kit labels rulesets workflows collaborators; do
+    jq -c ".objects.${class}.entries[]" "$KIT_JSON" > "${TMP_DIR}/fin_${class}.txt"
     while IFS= read -r entry; do
       [ -n "$entry" ] || continue
       id="$(render_str "$(jget "$entry" '.id')")"
@@ -443,16 +587,15 @@ finalize_ledger() {
         files|workflows)
           path="$(jget "$entry" '.path')"
           if [ -f "${ROOT}/${path}" ]; then present="present"; else present="absent"; fi ;;
+        kit)
+          path="$(jget "$entry" '.path')"
+          if [ -d "${ROOT}/${path}" ]; then present="present"; else present="absent"; fi ;;
         labels)
           name="$(jget "$entry" '.name')"
           if awk -F '\t' -v n="$name" '$1 == n { found=1 } END { exit !found }' "${TMP_DIR}/live_labels.tsv"; then present="present"; else present="absent"; fi ;;
         rulesets)
           name="$(jget "$entry" '.name')"
           if [ -n "$(ruleset_id_by_name "$name")" ]; then present="present"; else present="absent"; fi ;;
-        codeowners)
-          pattern="$(jget "$entry" '.pattern')"; owners="$(jget "$entry" '.owners | join(" ")')"
-          own_line="$(render_str "${pattern} ${owners}" | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//')"
-          if [ -f "${ROOT}/$(jget "$entry" '.path')" ] && normalize_co "${ROOT}/$(jget "$entry" '.path')" | grep -Fxq -- "$own_line"; then present="present"; else present="absent"; fi ;;
         collaborators)
           account="$(render_str "$(jget "$entry" '.account')")"
           if awk -F '\t' -v a="$account" '$1 == a { found=1 } END { exit !found }' "${TMP_DIR}/live_collab.tsv"; then present="present"; else present="absent"; fi ;;
@@ -462,21 +605,32 @@ finalize_ledger() {
         if grep -Fxq -- "$id" "$created_box" || ledger_owned "$id"; then owned="true"; else pre="true"; fi
       fi
       if [ "$present" = "present" ]; then phase="owned"; [ "$owned" = "true" ] || phase="pre-existing"; else phase="absent"; fi
+      extra_hash=""
+      if [ "$class" = "kit" ] && [ "$present" = "present" ]; then
+        # 整树指纹写进 ledger：eject 用它判定"套件目录是否被改过（漂移）"。
+        # 注意目标仓库里 KIT_DIR 就是被检查的目录本身，因此**不能**用 KIT_DIR 当基准。
+        path2="$(jget "$entry" '.path')"
+        extra_hash="$(dir_hash "${ROOT}/${path2}")"
+      fi
       jq -c -n --arg id "$id" --arg phase "$phase" --arg observed "$present" \
-         --argjson owned "$owned" --argjson pre "$pre" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-         '{id:$id, v:{phase:$phase, observed:$observed, owned:$owned, pre_existing:$pre, recorded_at:$ts}}' >> "$ops"
+         --argjson owned "$owned" --argjson pre "$pre" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg sha "$extra_hash" \
+         '{id:$id, v:({phase:$phase, observed:$observed, owned:$owned, pre_existing:$pre, recorded_at:$ts} + (if $sha == "" then {} else {sha256:$sha} end))}' >> "$ops"
     done < "${TMP_DIR}/fin_${class}.txt"
   done
-  # 已登记 create 意图但本次回读仍不存在 → 保留 intent=create，供下次运行正确归属（D6）
+  # Bug #60 / S-A：**只写 ledger，绝不写 kit.yaml**。kit.yaml 是出厂声明（可版本控制、可分发），
+  # 运行时状态（含目标特有数据）一律落在 <root>/.git/governance-ledger.json（版本库之外，
+  # 且必须在 `git clean -fdx` 下存活 —— 这是选 .git/ 的硬理由）。
+  ledger_init_if_missing
   local tmp
-  tmp="$(mktemp "${TMP_DIR}/mf.XXXXXX")"
-  jq --slurpfile ops "$ops" '
-    reduce $ops[] as $o (.;
-      .ledger[$o.id] =
-        ( if ($o.v.observed == "absent") and (((.ledger[$o.id] // {}).intent // "") == "create")
-          then ($o.v + {phase:"failed", intent:"create"})
-          else $o.v end ))
-  ' "$MANIFEST" > "$tmp" && mv "$tmp" "$MANIFEST"
+  tmp="$(mktemp "${TMP_DIR}/ledger.XXXXXX")"
+  jq --slurpfile ops "$ops" --arg repo "$REPO" --arg br "$DEFAULT_BRANCH" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '
+    .repo = $repo | .default_branch = $br | .updated_at = $ts
+    | .entries = (reduce $ops[] as $o (.entries;
+        .[$o.id] =
+          ( if ($o.v.observed == "absent") and ((.[$o.id] // {}).intent // "") == "create"
+            then ($o.v + {phase:"failed", intent:"create"})
+            else $o.v end )))
+  ' "$LEDGER" > "$tmp" && mv "$tmp" "$LEDGER"
 }
 
 # ── 主流程 ────────────────────────────────────────────────────
@@ -484,55 +638,84 @@ log "治理套件 install —— 模式：${MODE}"
 log "  套件目录：${KIT_DIR}"
 log "  目标仓库：${REPO}（默认分支 ${DEFAULT_BRANCH}，owner ${OWNER}）"
 log "  目标根目录：${ROOT}"
+log "  归属记账：${LEDGER}$(if [ -f "$LEDGER" ]; then printf '%s' '（已存在）'; else printf '%s' '（不存在）'; fi)"
 log "  身份：作者 ${AUTHOR_ACCOUNT} / 评审 ${REVIEWER_ACCOUNT}"
 log ""
 
 info "读取线上实况（每次运行都重新读，不用记账代替观测）"
 probe_labels; probe_collaborators; probe_ruleset_ids
-ok "标签 ${TMP_DIR}/live_labels.tsv：$(wc -l < "${TMP_DIR}/live_labels.tsv" | tr -d ' ') 条线上标签（仅比对 manifest 登记项）"
+ok "标签 ${TMP_DIR}/live_labels.tsv：$(wc -l < "${TMP_DIR}/live_labels.tsv" | tr -d ' ') 条线上标签（仅比对 kit.yaml 登记项）"
 ok "协作者：$(wc -l < "${TMP_DIR}/live_collab.tsv" | tr -d ' ') 个；规则集：$(wc -l < "${TMP_DIR}/live_rulesets.tsv" | tr -d ' ') 个"
 
-# 标签：payload 与 manifest 登记项必须一致（不一致 = 清单损坏）
-if [ -f "${KIT_DIR}/$(jq -r '.objects.labels.source' "$MANIFEST")" ]; then
-  parse_label_source "${KIT_DIR}/$(jq -r '.objects.labels.source' "$MANIFEST")" > "${TMP_DIR}/want_labels.tsv"
-  jq -r '.objects.labels.entries[].name' "$MANIFEST" | sort > "${TMP_DIR}/mf_labels.txt"
+# 命名空间归属不变量（设计 #68 §2.2 / PM 决策 P-5）：受管对象必须能**自证归属**，
+# 否则 ledger 一丢就无法安全卸载。豁免允许，但必须逐条写理由（不许把命名空间掏空）。
+log ""
+info "命名空间归属自检（P-5）"
+ns_bad="$(namespace_violations)"; ns_gap="$(namespace_exemption_gaps)"
+if [ -n "$ns_bad" ]; then
+  N_FAIL=$((N_FAIL + 1))
+  drift "受管对象越出命名空间 —— 要么改到命名空间内，要么在 kit.yaml 的 namespace.*_exemptions 里显式豁免并写明理由"
+  while IFS="$(printf '\t')" read -r cls oid why; do
+    [ -n "${cls}" ] || continue
+    pline "[漂移]" "${cls}" "${oid}：${why}"
+  done <<EOF
+${ns_bad}
+EOF
+else
+  ok "全部受管对象都在命名空间内（或已显式豁免）"
+fi
+if [ -n "$ns_gap" ]; then
+  N_FAIL=$((N_FAIL + 1)); drift "命名空间豁免清单缺项或缺理由：$(printf '%s' "$ns_gap" | tr '\n' ' ')"
+fi
+ok "命名空间：文件 $(ns_files)** ｜ workflow $(ns_workflows)*.yml ｜ 标签 $(ns_labels) ｜ 规则集 $(ns_rulesets)*"
+ok "命名空间豁免：$(printf '%s\n' "$(namespace_exemption_report)" | grep -c . || true) 条（逐条带理由，见 kit.yaml 的 namespace 段）"
+
+# 标签：payload 与 kit.yaml 登记项必须一致（不一致 = 声明损坏）
+if [ -f "${KIT_DIR}/$(jq -r '.objects.labels.source' "$KIT_JSON")" ]; then
+  parse_label_source "${KIT_DIR}/$(jq -r '.objects.labels.source' "$KIT_JSON")" > "${TMP_DIR}/want_labels.tsv"
+  jq -r '.objects.labels.entries[].name' "$KIT_JSON" | sort > "${TMP_DIR}/mf_labels.txt"
   cut -f1 "${TMP_DIR}/want_labels.tsv" | sort > "${TMP_DIR}/src_labels.txt"
   if ! cmp -s "${TMP_DIR}/mf_labels.txt" "${TMP_DIR}/src_labels.txt"; then
     N_FAIL=$((N_FAIL + 1))
-    drift "manifest 登记的标签与 payload 不一致（差异见下）—— 清单是唯一归属依据，必须保持同步"
+    drift "kit.yaml 登记的标签与 payload 不一致（差异见下）—— 出厂声明是唯一归属依据，必须保持同步"
     diff "${TMP_DIR}/mf_labels.txt" "${TMP_DIR}/src_labels.txt" >&2 || true
   fi
 fi
 
-for class in files labels rulesets workflows codeowners collaborators; do
-  count="$(jq ".objects.${class}.entries | length" "$MANIFEST")"
+for class in files kit labels rulesets workflows collaborators; do
+  count="$(jq ".objects.${class}.entries | length" "$KIT_JSON")"
   log ""
   info "受管对象：${class}（${count} 个）"
-  jq -c ".objects.${class}.entries[]" "$MANIFEST" > "${TMP_DIR}/entries.txt"
+  jq -c ".objects.${class}.entries[]" "$KIT_JSON" > "${TMP_DIR}/entries.txt"
   while IFS= read -r entry; do
     [ -n "$entry" ] || continue
     case "$class" in
       files)         decide_files "$entry" ;;
+      kit)           decide_kit "$entry" ;;
       labels)        decide_labels "$entry" ;;
       rulesets)      decide_rulesets "$entry" ;;
       workflows)     decide_workflows "$entry" ;;
-      codeowners)    decide_codeowners "$entry" ;;
       collaborators) decide_collaborators "$entry" ;;
     esac
   done < "${TMP_DIR}/entries.txt"
 done
 
+# 只报告、不写入的对象（NFR-17）：CODEOWNERS 只给建议行，绝不就地改写用户文件
+log ""
+info "只报告、不写入的对象（NFR-17）"
+report_codeowners
+
 # 规则集必需检查 ⊆ 工作流产生的检查名（否则必需检查永久 pending）
 log ""
 info "交叉校验：规则集必需检查 ⇄ 工作流 job 名"
-jq -r '.objects.rulesets.entries[]?.source' "$MANIFEST" > "${TMP_DIR}/rs_sources.txt"
+jq -r '.objects.rulesets.entries[]?.source' "$KIT_JSON" > "${TMP_DIR}/rs_sources.txt"
 : > "${TMP_DIR}/req_ctx.txt"
 while IFS= read -r s; do
   [ -n "$s" ] || continue
   [ -f "${KIT_DIR}/${s}" ] || continue
   jq -r '.rules[] | select(.type == "required_status_checks") | .parameters.required_status_checks[].context' "${KIT_DIR}/${s}" >> "${TMP_DIR}/req_ctx.txt"
 done < "${TMP_DIR}/rs_sources.txt"
-jq -r '.objects.workflows.entries[]?.checks[]?' "$MANIFEST" | sort -u > "${TMP_DIR}/wf_checks.txt"
+jq -r '.objects.workflows.entries[]?.checks[]?' "$KIT_JSON" | sort -u > "${TMP_DIR}/wf_checks.txt"
 sort -u "${TMP_DIR}/req_ctx.txt" > "${TMP_DIR}/req_ctx_sorted.txt"
 missing_ctx="$(comm -23 "${TMP_DIR}/req_ctx_sorted.txt" "${TMP_DIR}/wf_checks.txt" | tr '\n' ' ')"
 if [ -n "$(printf '%s' "$missing_ctx" | tr -d ' ')" ]; then
@@ -543,16 +726,20 @@ else
   ok "规则集引用的必需检查全部有对应 job"
 fi
 
-# 归属记账
+# 归属记账（**只写 ledger**；kit.yaml 只读 —— Bug #60 / S-A）
 if [ "$MODE" = "apply" ]; then
   log ""
   info "回读线上实况并写入归属记账（ledger）"
   finalize_ledger
-  ok "归属记账已更新：${MANIFEST}"
+  ok "归属记账已更新：${LEDGER}（在版本库之外，不是分发物）"
 fi
-ledger_total="$(jq -r '.ledger | to_entries | map(select(.key | startswith("_") | not)) | length' "$MANIFEST")"
-ledger_owned_n="$(jq -r '.ledger | to_entries | map(select(.key | startswith("_") | not)) | map(select(.value.owned == true)) | length' "$MANIFEST")"
-info "归属记账：已登记 ${ledger_total} 个对象（其中 owned=true 共 ${ledger_owned_n} 个）"
+# 护栏（Bug #60 / S-A）：出厂声明 kit.yaml 只定义「管什么」，运行时绝不写入。
+# kit_purity_check 与运行前的哈希逐字节比对，被污染时**立即响亮失败**（退出码 2）。
+kit_purity_check
+ledger_n="$(ledger_total)"
+ledger_owned_n="$(ledger_owned_total)"
+info "归属记账：已登记 ${ledger_n} 个对象（其中 owned=true 共 ${ledger_owned_n} 个）"
+info "记账文件：${LEDGER}"
 
 # ── 小结 ──────────────────────────────────────────────────────
 log ""
@@ -575,7 +762,7 @@ if [ "$MODE" = "dry-run" ]; then
 fi
 if [ "$MODE" = "check" ]; then
   if [ "$N_DRIFT" -eq 0 ] && [ "$N_FAIL" -eq 0 ]; then
-    ok "check 通过：线上实况与 manifest 期望一致（0 处漂移）"
+    ok "check 通过：线上实况与 kit.yaml 期望一致（0 处漂移）"
     exit 0
   fi
   warn "check 未通过：${N_DRIFT} 处漂移 / ${N_FAIL} 处失败 —— 只报告，不自动修改"

@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# toolkit/governance —— 可移植治理套件的**唯一 CLI 门面**（Issue #69 S-A）
+#
+# 为什么要有它：设计与文档里描述的用户动作都是 `governance <子命令>`
+# （见设计 #68 §2.1.1 的 `ledger show` / `ledger rebuild`）。把它做成稳定的门面，
+# 内部实现（install.sh / eject.sh / ledger.sh / scripts/check-invariants.sh）就可以自由演进，
+# 采用者不必记住 4 个脚本各自的旗标。
+#
+# 用法：
+#   toolkit/governance plan                          # = install.sh --dry-run（零写入）
+#   toolkit/governance install                       # = install.sh --apply
+#   toolkit/governance check                         # = install.sh --check（只读比对）
+#   toolkit/governance eject [--apply|--check|...]   # = eject.sh（默认 --dry-run）
+#   toolkit/governance ledger show [--json]          # 读取运行时账（它是什么/放哪/丢了怎么办）
+#   toolkit/governance ledger rebuild [--apply]      # **ledger 丢失可恢复**：按命名空间重建
+#   toolkit/governance invariants [--check NAME]     # 不变量 B / 命名空间 / 无 PR 状态一致性
+#   toolkit/governance help
+#
+# 退出码：透传内部命令；未知子命令 = 2
+set -eu
+
+KIT_DIR="$(cd "$(dirname "$0")" && pwd)"
+usage() { sed -n '2,18p' "$0"; }
+die() { printf '[FAIL] %s（见 governance help）\n' "$1" >&2; exit 2; }
+
+CMD="${1:-}"
+if [ $# -gt 0 ]; then shift; fi
+
+case "$CMD" in
+  plan)       exec bash "${KIT_DIR}/install.sh" --dry-run "$@" ;;
+  install)    exec bash "${KIT_DIR}/install.sh" --apply "$@" ;;
+  check)      exec bash "${KIT_DIR}/install.sh" --check "$@" ;;
+  eject)      exec bash "${KIT_DIR}/eject.sh" "$@" ;;
+  invariants) exec bash "${KIT_DIR}/scripts/check-invariants.sh" "$@" ;;
+  ledger)
+    SUB="${1:-}"
+    if [ $# -gt 0 ]; then shift; fi
+    case "$SUB" in
+      show|rebuild) exec bash "${KIT_DIR}/ledger.sh" "$SUB" "$@" ;;
+      "") die "ledger 需要子命令：show | rebuild" ;;
+      *)  die "未知的 ledger 子命令：${SUB}" ;;
+    esac ;;
+  ""|help|-h|--help) usage; exit 0 ;;
+  *) die "未知子命令：${CMD}" ;;
+esac
