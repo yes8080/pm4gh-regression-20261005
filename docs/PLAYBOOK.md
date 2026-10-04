@@ -355,8 +355,13 @@ gh api repos/{o}/{r}/commits/<head-sha>/check-runs --jq '.check_runs[] | "\(.nam
 | **规则集分阶段应用** | 一把覆盖会让所有 PR 卡死 | 见下 |
 | **规则集应急回退** | 唯一的"开门"手段 | `gh api -X DELETE repos/yes8080/pm4gh/rulesets/24442991` |
 | **必需检查改名** | 改名会让所有 PR 永久 pending | ①规划新名 ②同时改工作流 job 名与规则集 context（先加后删，避免空窗）③合并后立刻验证新检查上报 ④更新本文与 `.github/rulesets/README.md` |
-| **删除已废弃的 Projects 对象** | 需要 `project` scope 的凭据，本项目已在 D9 后撤销该凭据 | 浏览器打开 https://github.com/users/yes8080/projects/1 → 右上 `⋯` → **Settings** → 底部 **Delete project**。删除后 `docs/PLAYBOOK.md` 中不再有任何 Projects 依赖 |
 | 签发 Release | 涉及对外发布 | `gh release create v<x.y.z> --generate-notes`，并核对 Milestone |
+
+> **已完成的人工步骤（历史记录）**
+> · **删除已废弃的 Projects 对象**：2026-10-04 已于 Issue #23 执行完毕（`PM4GH 交付看板`，实际地址 `users/yes8080/projects/4`，非 `/1`）。
+>   本项目此后不再依赖任何 Projects。
+> · **经验更正**：钥匙串修复并重新授权后，`gh` 登录凭据**已可用 `project` scope**（`gh auth status` 可见 `project`）。
+>   因此"操作 Projects 必须另签 PAT"的旧结论**已不成立** —— 当时是钥匙串缺陷导致的误判。保留此条以免将来重犯。
 
 **规则集分阶段应用**（个人 Pro 无 `evaluate` 灰度态，只能逐步加严）：
 1. 只上 `required_status_checks`（strict）+ `deletion` + `non_fast_forward` + `required_linear_history`
