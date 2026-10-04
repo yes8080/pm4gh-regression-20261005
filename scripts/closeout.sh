@@ -10,8 +10,8 @@
 #      不再要求人先手动跑一遍 status.sh；判定的是「清理之后」的结果。
 #      Issue 本身必须已由平台合并关单：closeout 绝不允许把 OPEN 的 Issue 关掉（那是掩盖错误）。
 #
-# 为什么第 ④ 项这么绕：squash 合并后分支上的原始提交不在 main 上，`git branch -d` 基于祖先关系
-# 必然拒绝；而无条件 `-D` 会掩盖"PR 尚未合并就删本地分支"这类真实错误。所以顺序是
+# 第 ④ 项**必须**按此顺序：squash 合并后分支上的原始提交不在 main 上，`git branch -d` 基于祖先关系
+# 必然拒绝；**禁止**无条件 `-D`（会掩盖"PR 尚未合并就删本地分支"这类真实错误）。顺序 =
 # 「先确认 MERGED → 把分支 tip SHA + PR head SHA 写进 Issue → 再 -D」。
 
 set -eu
@@ -40,7 +40,7 @@ REPO="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || true)
 unset GH_TOKEN || true
 unset GITHUB_TOKEN || true
 ACTOR="$(gh api user --jq .login 2>/dev/null || true)"
-[ -n "$ACTOR" ] || die "gh 未登录或读不到身份（收尾用 gh 登录身份，见 docs/WORKFLOW.md §0）"
+[ -n "$ACTOR" ] || die "gh 未登录或读不到身份（收尾用 gh 登录身份，见 references/workflow.md §0）"
 ok "收尾身份（dispatcher）：${ACTOR}"
 
 problems=0

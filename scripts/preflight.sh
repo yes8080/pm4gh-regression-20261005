@@ -3,8 +3,8 @@
 #
 # 判定：全部 [ OK ] 才继续；任何 [FAIL] → 把原文报告 dispatcher，不要"先干着看"。
 # 检查项：命令齐备 / gh 登录 / cwd 与仓库形态 / 工作区 / 远端唯一 / 作者与合并身份互不相同 /
-#         作者凭据 scope 与最小权限 / **工作区内不得存在任何凭据文件**（#94）/
-#         评审凭据在**工作区之外**（#94，不读其内容）/
+#         作者凭据 scope 与最小权限 / **工作区内不得存在任何凭据文件**/
+#         评审凭据在**工作区之外**（不读其内容）/
 #         线上规则集 == 仓库内定义 / 每个必需 context 都有工作流 job /
 #         机器消费的标签存在（判据 LABEL_ASSERT，与 ci/test 同一段文本）。
 #
@@ -12,12 +12,12 @@
 
 set -eu
 
-# 作者凭据默认在**工作区之外**（#94 / PM 裁定 (B)）：默认值必须可用 —— 指向工作区内已不存在的
-# `.secrets/developer.pat` 等于把配置漂移写进默认值。写法与 review.sh 的评审凭据一致。
+# 作者凭据默认在**工作区之外**；**禁止**指回工作区内路径（工作区内的凭据 = 作者可读）。
+# 写法与 review.sh 的评审凭据一致。
 DEVELOPER_PAT_FILE="${DEVELOPER_PAT_FILE:-${HOME}/.config/pm4gh/developer.pat}"
-# 评审凭据默认在**工作区之外**（#94）：工作区内的评审凭据 = 作者可读，独立评审只剩名义。
+# 评审凭据默认在**工作区之外**：工作区内的评审凭据 = 作者可读，独立评审只剩名义。
 # 本脚本对它只做**内容无关**的判据（在不在工作区内 / 存在否 / 权限 / 是否入库）——
-# 作者不得读取其他身份的凭据内容（AGENTS §5），评审身份由 W6 `review.sh` 用凭据自身判定。
+# 作者不得读取其他身份的凭据内容（SKILL.md §5），评审身份由 W6 `review.sh` 用凭据自身判定。
 REVIEWER_PAT_FILE="${REVIEWER_PAT_FILE:-${HOME}/.config/pm4gh/reviewer.pat}"
 RULESET_FILE="${RULESET_FILE:-.github/rulesets/main-protection.json}"
 BASE_BRANCH="${BASE_BRANCH:-main}"
@@ -25,8 +25,8 @@ BASE_BRANCH="${BASE_BRANCH:-main}"
 REQUIRED_EXPECTED="ci/lint ci/test policy/linked-issue policy/branch-name policy/template"
 
 # ── 规则集全量比对判据（本仓库**唯一**的一份实现）──────────────────────────
-# 为什么是一整份 diff 而不是挑字段：曾经只比对 6 个字段，线上多出的
-# `require_extra_approval_for_unattributed_changes` / `required_reviewers` 静默通过了很久。
+# **必须**做一整份 diff，**禁止**挑字段比对：挑字段会让线上多出的键
+# （`require_extra_approval_for_unattributed_changes` / `required_reviewers` 一类）静默通过。
 # 本判据把线上与文件都投影成同一个规范形（canonical form）后逐字比较：
 #   ① 剔除文件内文档键（`_comment*`）与服务端只读元数据（id/node_id/source/...）；
 #   ② 其余**全量键**参与：缺键、多键、值不同都会让两个字符串不同；
@@ -38,9 +38,9 @@ RULESET_CANON_JQ='def canon: with_entries(select(.key|startswith("_comment")|not
 # RULESET_CANON_JQ:END
 
 # ── 机器消费的标签存在性判据（本仓库**唯一**的一份实现）──────────────────────
-# 为什么要有它：标签是**仓库级对象**，仓库里既没有清单也没有断言。而 `status.sh` 的 --add-label
-# 遇到不存在的标签会**直接失败**（把 Issue 留在「零 status/* 标签」的中间态）；`start.sh` 靠
-# `type/*` 推导分支类型，缺标签会**静默**退化（Issue #103）。这里只断言「机器消费的标签必须存在」，
+# **必须**断言机器消费的标签存在：标签是**仓库级对象**，仓库里没有清单也没有断言。而 `status.sh`
+# 的 --add-label 遇到不存在的标签会**直接失败**（把 Issue 留在「零 status/* 标签」的中间态）；
+# `start.sh` 靠 `type/*` 推导分支类型，缺标签会**静默**退化。本判据只断言存在性，
 # 不新增任何必需检查、不改线上标签。
 # 同一段文本也出现在 .github/workflows/required-checks.yml 的 ci/test 步骤里，由 ci/test 断言
 # 两处**逐字一致**（并带一个反向样本，证明判据本身不是空断言）—— 判据只有这一套。
@@ -88,9 +88,9 @@ file_mode() {
   stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1" 2>/dev/null || printf '?'
 }
 
-# ── 工作区判据（#94）────────────────────────────────────────
+# ── 工作区判据────────────────────────────────────────
 # WORKSPACE_ASSERT:BEGIN
-# 凭据路径是否落在**工作区之内**（#94 的机器判据）：工作区内的凭据 = 作者可读，「独立评审」只剩名义。
+# 凭据路径是否落在**工作区之内**：工作区内的凭据 = 作者可读，「独立评审」只剩名义。
 # 把路径解析成**绝对路径**：父目录存在时用 `cd … && pwd -P`（解析符号链接，如 /tmp → /private/tmp），
 # 否则退回词法归一化 —— 路径不存在也要能判定（凭据缺失正是要报的场景）。**不读文件内容**。
 # 同一段文本也出现在另一个脚本里（每个脚本自包含，不引共享库），由 ci/test 断言两处**逐字一致**。
@@ -144,7 +144,7 @@ if gh auth status >/dev/null 2>&1; then
   main_login="$(env -u GH_TOKEN -u GITHUB_TOKEN gh api user --jq .login 2>/dev/null || true)"
   if [ -n "$main_login" ]; then ok "gh 已登录：${main_login}"; else bad "gh 已登录但读不到账号（gh api user 失败）"; fi
 else
-  bad "gh 未登录：运行 gh auth login（合并身份靠它，见 docs/WORKFLOW.md §0）"
+  bad "gh 未登录：运行 gh auth login（合并身份靠它，见 references/workflow.md §0）"
 fi
 
 info "3/10 仓库形态与 cwd"
@@ -203,7 +203,7 @@ info "5/10 三身份凭据（作者 / 评审 / 合并）"
 # ① 作者凭据 = **本身份**凭据 → 允许读取内容（用它做本身份动作）
 dev_login="$(login_via_pat "$DEVELOPER_PAT_FILE")"
 if [ ! -s "$DEVELOPER_PAT_FILE" ]; then
-  bad "作者凭据缺失或为空：${DEVELOPER_PAT_FILE}（见 docs/WORKFLOW.md §0）"
+  bad "作者凭据缺失或为空：${DEVELOPER_PAT_FILE}（见 references/workflow.md §0）"
 else
   mode="$(file_mode "$DEVELOPER_PAT_FILE")"
   [ "$mode" = "600" ] && ok "作者凭据权限 600" || bad "作者凭据权限为 ${mode}，应为 600：chmod 600 ${DEVELOPER_PAT_FILE}"
@@ -215,12 +215,12 @@ else
 fi
 [ -n "$dev_login" ] && ok "作者身份：${dev_login}" || bad "作者凭据无法认证（已过期/被撤销/不是 classic PAT）"
 
-# ② 评审凭据：**不读取内容**（AGENTS §5：作者不得读取其他身份的凭据）——
+# ② 评审凭据：**不读取内容**（SKILL.md §5：作者不得读取其他身份的凭据）——
 #    这里只做内容无关的判据；评审身份/权限由 W6 `review.sh` 用凭据自身判定。
 rev_abs="$(physical "$REVIEWER_PAT_FILE")"
 rev_dev_abs="$(physical "$DEVELOPER_PAT_FILE")"
 if pat_in_workspace "$REVIEWER_PAT_FILE"; then
-  bad "评审凭据落在**工作区内**：${rev_abs}（仓库根 ${REPO_ROOT}）—— 这是 #94 的隔离缺口（作者可读 = 独立评审只剩名义）"
+  bad "评审凭据落在**工作区内**：${rev_abs}（仓库根 ${REPO_ROOT}）—— 评审凭据必须落在工作区之外"
   printf '       搬移（由 PM / dispatcher 在**工作区外**执行）：\n' >&2
   printf '         mkdir -p "${HOME}/.config/pm4gh" && chmod 700 "${HOME}/.config/pm4gh"\n' >&2
   printf '         mv "%s" "${HOME}/.config/pm4gh/reviewer.pat"\n' "$rev_abs" >&2
@@ -250,11 +250,11 @@ else
   fi
 fi
 
-# ③ 工作区内不得存在**任何**凭据文件（#94 / PM 裁定 (B) 第 3 条）：搬出仓库是默认值，一旦有人把
+# ③ 工作区内不得存在**任何**凭据文件：一旦有人把
 #    凭据拷回来，隔离会被**静默**破坏 —— 这里让它可见（判据是文件系统事实，与文档怎么写无关）。
 stray_pat="$(find . -path ./.git -prune -o -type f -name '*.pat' -print 2>/dev/null | sed -E 's#^\./##' | sort || true)"
 if [ -n "$stray_pat" ]; then
-  bad "工作区内存在凭据文件（#94 的隔离缺口，且可能被 git add 误提交）：$(printf '%s' "$stray_pat" | tr '\n' ' ')"
+  bad "工作区内存在凭据文件（可能被 git add 误提交）：$(printf '%s' "$stray_pat" | tr '\n' ' ')"
   printf '       搬移（由 PM / dispatcher 在**工作区外**执行）：\n' >&2
   printf '         mkdir -p "$HOME/.config/pm4gh" && chmod 700 "$HOME/.config/pm4gh"\n' >&2
   printf '         mv <上面列出的每个文件> "$HOME/.config/pm4gh/" && chmod 600 "$HOME/.config/pm4gh/"*.pat\n' >&2

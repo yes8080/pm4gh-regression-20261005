@@ -8,7 +8,7 @@
 #   ② 校验正文六段齐备且含 Closes 关键字（policy/linked-issue / policy/template 的本地预演）
 #   ③ 用当前身份推送分支（清掉本地 credential helper，否则会静默变成主身份推送）
 #   ④ 建 PR；若该分支已有 PR（返修）则用 **REST PATCH** 更新正文 —— `gh pr edit` 走 GraphQL，
-#      作者凭据没有 read:org，会报错且**静默不更新**（见 docs/WORKFLOW.md §已知陷阱 7）
+#      作者凭据没有 read:org，会报错且**静默不更新**（见 references/workflow.md §4 陷阱 5）
 #   ⑤ 迁到 status/in-review
 #
 # 用法：
@@ -18,7 +18,7 @@
 
 set -eu
 
-# 作者凭据默认在**工作区之外**（#94 / PM 裁定 (B)）：默认值必须可用。写法与 review.sh 一致。
+# 作者凭据默认在**工作区之外**；**禁止**指回工作区内路径。写法与 review.sh 一致。
 DEVELOPER_PAT_FILE="${DEVELOPER_PAT_FILE:-${HOME}/.config/pm4gh/developer.pat}"
 BASE_BRANCH="${BASE_BRANCH:-main}"
 
@@ -31,7 +31,7 @@ ACTOR=""
 use_identity() {
   case "${1:-}" in
     author)
-      [ -s "$DEVELOPER_PAT_FILE" ] || die "缺少作者凭据 ${DEVELOPER_PAT_FILE}（见 docs/WORKFLOW.md §0）"
+      [ -s "$DEVELOPER_PAT_FILE" ] || die "缺少作者凭据 ${DEVELOPER_PAT_FILE}（见 references/workflow.md §0）"
       GH_TOKEN="$(cat "$DEVELOPER_PAT_FILE")"
       export GH_TOKEN
       unset GITHUB_TOKEN || true
@@ -39,7 +39,7 @@ use_identity() {
       [ -n "$ACTOR" ] || die "作者凭据无效（无法认证）"
       main="$(env -u GH_TOKEN -u GITHUB_TOKEN gh api user --jq .login 2>/dev/null || true)"
       [ -z "$main" ] || [ "$main" != "$ACTOR" ] || die "身份分离失败：作者身份 = gh 登录身份（${ACTOR}）"
-      # 评审凭据**不在这里读**（#94 / AGENTS §5：作者不得读取其他身份的凭据）。
+      # 评审凭据**不在这里读**（SKILL.md §5：作者不得读取其他身份的凭据）。
       # 「评审 ≠ 作者」由 W6 `scripts/review.sh` 用**评审凭据自身**判定（平台另禁止自我批准）。
       ok "本次执行身份（作者）：${ACTOR}"
       ;;
@@ -77,9 +77,9 @@ use_identity "$AS"
 [ -z "$BODY_FILE" ] && BODY_FILE=".git/PR_BODY_${ISSUE}.md"
 
 info "状态预检（只读：任何副作用之前）"
-# 为什么最先做：本脚本的副作用（写正文骨架 / 推送分支 / 建或更新 PR）**不可逆**。
-# 旧实现先推送并建 PR、最后才迁移状态 —— Issue 停在 ready 时迁移非法，PR 已开而 Issue 卡住
-# （见 Issue #90 的 F）。所以：先把状态读出来、只读判定合法性，再决定要不要动手。
+# **必须**最先做：本脚本的副作用（写正文骨架 / 推送分支 / 建或更新 PR）**不可逆**。
+# 先把状态读出来、只读判定合法性，再决定要不要动手；**禁止**先推送 / 建 PR 再迁移状态 ——
+# 迁移非法会把仓库卡在半成品。
 pstate="$(gh issue view "$ISSUE" -R "$REPO" --json state --jq .state 2>/dev/null || true)"
 [ "$pstate" = "OPEN" ] || die "Issue #${ISSUE} 已 ${pstate:-未知}，不应对它开新 PR（policy/branch-name 会拒绝）"
 status_labels="$(gh issue view "$ISSUE" -R "$REPO" --json labels \
@@ -108,7 +108,7 @@ Closes #${ISSUE}
 
 ## 1. 变更摘要
 
-<!-- 做了什么、为什么这么做。评审人只看这里就该知道改动意图。 -->
+<!-- 必须写：改了什么、解决了什么问题。评审人只看这里就该知道改动意图。 -->
 
 ## 2. 影响面
 

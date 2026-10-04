@@ -7,7 +7,7 @@ body:
     attributes:
       value: |
         **DoR 五项全部填满，才可以从 Backlog 进入 `ready`。**
-        判定与步骤见 `docs/WORKFLOW.md`（W1 领片）。
+        判定与步骤见 `references/workflow.md`（W1 领片）。
         粒度：单个 PR 可评审、可独立回滚、1~3 个工作日。
 
   - type: textarea

@@ -6,7 +6,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        **轨道判定（见 `docs/WORKFLOW.md` W1/W2）：**
+        **轨道判定（见 `references/workflow.md` W1/W2）：**
         - 切片**尚未合并**时发现 → 不要建本 Issue，直接在原切片分支上按返修流程处理
         - 切片**已合并**后 → 建本 Issue，分支用 `fix/<issue#>-<slug>`
         - 线上故障 → 建本 Issue 并标 `prio/P0`，分支用 `hotfix/<issue#>-<slug>` 从 main 拉出

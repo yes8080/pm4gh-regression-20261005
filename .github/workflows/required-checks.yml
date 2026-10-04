@@ -6,7 +6,7 @@ name: required-checks
 #   2. 本文件**不得**配置 paths / branches 过滤：被跳过的工作流，其检查会永久 pending。
 #   3. 只监听 pull_request —— 官方认可的必需检查事件之一（`issue_comment` 等不算）。
 #   4. 不要在这里加"先失败后通过"的检查：必需检查一旦在某个 SHA 上留下失败结论，
-#      后续同名检查通过也无法解除阻塞（见 docs/WORKFLOW.md §已知陷阱 1）。
+#      后续同名检查通过也无法解除阻塞（见 references/workflow.md §4 陷阱 1）。
 #   5. 若将来启用 Merge Queue，必须同时给这 5 个 job 接上 merge_group 事件。
 on:
   pull_request:
@@ -61,7 +61,7 @@ jobs:
               fail=1
             fi
           done < "$list"
-          # 2) bash 3.2 兼容性：只在**代码行**里查（注释里出现这些字样是允许的 —— 脚本注释正是用它们说明为什么禁用）
+          # 2) bash 3.2 兼容性：只在**代码行**里查（注释行允许出现这些字样）
           files="$(tr '\n' ' ' < "$list")"
           code_hits() {
             grep -nHP "$1" $files 2>/dev/null | awk -F: '{
@@ -223,9 +223,8 @@ jobs:
       - name: 凭据隔离判据在 review.sh 与 preflight.sh 逐字一致（同一实现 + 反向样本）
         run: |
           set -euo pipefail
-          # 为什么要有这一步：隔离判据「凭据落在工作区内 → 拒绝」必须在 review.sh 与 preflight.sh
-          # 两处都成立，而脚本必须**自包含**（不引共享库）→ 两处文本必须逐字一致：只改一处就是
-          # 两套实现、口径分裂（同 #105 引入的 RULESET_CANON_JQ / LABEL_ASSERT 先例）。
+          # **必须**逐字一致：隔离判据「凭据落在工作区内 → 拒绝」在 review.sh 与 preflight.sh 两处都成立，
+          # 而脚本必须**自包含**（不引共享库）→ 两处文本只能逐字相同；只改一处 = 两套实现、口径分裂。
           # 断言本身也带反向样本 —— 否则「两处都空」也算"一致"。
           a="$(sed -n '/WORKSPACE_ASSERT:BEGIN/,/WORKSPACE_ASSERT:END/p' scripts/review.sh | sed -e '1d' -e '$d')"
           b="$(sed -n '/WORKSPACE_ASSERT:BEGIN/,/WORKSPACE_ASSERT:END/p' scripts/preflight.sh | sed -e '1d' -e '$d')"
@@ -279,7 +278,7 @@ jobs:
           done
           if git grep -nE '(^|[^A-Za-z0-9_])lib\.sh' -- scripts >/dev/null 2>&1; then
             git grep -nE '(^|[^A-Za-z0-9_])lib\.sh' -- scripts
-            echo "::error::scripts/ 引用了共享库 lib.sh —— 脚本必须自包含（见 README.md）"
+            echo "::error::scripts/ 引用了共享库 lib.sh —— 脚本必须自包含（见 SKILL.md）"
             fail=1
           fi
           if [ "$fail" -ne 0 ]; then exit 1; fi
@@ -324,11 +323,11 @@ jobs:
       - name: 机器消费的标签在平台上存在（与 preflight.sh 同一判据 + 反向样本）
         run: |
           set -euo pipefail
-          # 为什么要有这一步：标签是**仓库级对象**，不在版本库里、没有清单也没有断言；
-          # 而 status.sh 的 --add-label 遇到不存在的标签会直接失败，start.sh 靠 type/* 推导
-          # 分支类型（缺标签就静默退化）。这里只断言"机器消费的标签必须存在"，不新增必需检查。
+          # 断言"机器消费的标签必须存在"，不新增必需检查：标签是仓库级对象，不在版本库里、没有清单；
+          # status.sh 的 --add-label 遇到不存在的标签会直接失败，start.sh 靠 type/* 推导分支类型
+          # （缺标签就静默退化）。
           # 判据只有一套：权威副本是下面的 heredoc，scripts/preflight.sh 的副本必须逐字一致；
-          # 最后用反向样本（抽掉 type/hotfix）证明判据本身不是空断言。
+          # 反向样本（抽掉 type/hotfix）证明判据本身不是空断言。
           cat > /tmp/label-assert.sh <<'EOS'
           MACHINE_LABELS="status/ready status/in-progress status/in-review type/bug type/hotfix type/spike type/chore"
           assert_machine_labels() {
@@ -374,16 +373,14 @@ jobs:
           fi
           if [ "$bad" -ne 0 ]; then exit 1; fi
           echo "✅ 机器消费的标签全部存在；判据与 preflight.sh 逐字一致；反向样本（缺 type/hotfix）按预期失败"
-      - name: docs 状态机转换表与 scripts/status.sh 逐字一致（防文档漂移）
+      - name: references/workflow.md 状态机转换表与 scripts/status.sh 逐字一致（防文档漂移）
         run: |
           set -euo pipefail
-          # 为什么要有这一步：本仓库曾经「文档画一条主路径、脚本只校验标签互斥」——
-          # 结果任何状态可跳任何状态，PM 的原话是「我现在看不懂你的流转」。
-          # 所以转换表只有一处权威定义（status.sh），文档里的表由本步断言逐字一致：
+          # 转换表只有一处权威定义（status.sh）；references/workflow.md 的表由本步断言逐字一致：
           # 状态集（VALID_STATES vs 转换表首列）与边集（TRANSITIONS vs 标记区每行的 to 列）都逐字比对。
-          # Issue #107 已删除 mermaid 图：表是唯一权威，不再有「图漂移」这条断言（图专属语法也随之消失）。
+          # 表是唯一权威，**禁止**画图（图带语法开销、隐式节点易漏）。
           sh=scripts/status.sh
-          md=docs/WORKFLOW.md
+          md=references/workflow.md
           sh_states="$(grep -m1 '^VALID_STATES=' "$sh" | sed -E 's/^VALID_STATES="//; s/"$//' | tr ' ' '\n' | sort -u)"
           sh_edges="$(sed -nE 's/^TRANSITIONS="(.*)"$/\1/p' "$sh" | tr ' ' '\n' \
             | grep -E '^[a-z-]+->[a-z-]+$' | sort -u)"
@@ -417,13 +414,13 @@ jobs:
           if [ "$sh_states" != "$md_states" ]; then
             echo "::error file=$md::状态集与 scripts/status.sh 不一致"
             echo "--- status.sh ---"; printf '%s\n' "$sh_states"
-            echo "--- WORKFLOW.md ---"; printf '%s\n' "$md_states"
+            echo "--- references/workflow.md ---"; printf '%s\n' "$md_states"
             bad=1
           fi
           if [ "$sh_edges" != "$md_edges" ]; then
             echo "::error file=$md::转换表与 scripts/status.sh 不一致（文档漂移）"
             echo "--- status.sh 独有 ---"; comm -23 <(printf '%s\n' "$sh_edges") <(printf '%s\n' "$md_edges")
-            echo "--- WORKFLOW.md 独有 ---"; comm -13 <(printf '%s\n' "$sh_edges") <(printf '%s\n' "$md_edges")
+            echo "--- references/workflow.md 独有 ---"; comm -13 <(printf '%s\n' "$sh_edges") <(printf '%s\n' "$md_edges")
             bad=1
           fi
           # 自检：终态不得有出边（done/canceled 是终态；迁出只能靠 gh issue reopen 后走合法边）
@@ -445,11 +442,11 @@ jobs:
       - name: 状态迁移是 HTTP 层单请求：恰好 1 次标签写请求 + 载荷含全部非 status/* 标签（stub gh + 反向样本）
         run: |
           set -euo pipefail
-          # ── 状态迁移的判据：「HTTP 层单请求」（Issue #115）────────────────────────────
-          # 为什么要有这一步：#93 把 status.sh 从「remove→add 两次调用」改成「一次 gh issue edit」，
-          # 但 cli/cli 在 **HTTP 层**仍把它拆成 add/remove 两个**并发** mutation —— 中间态可以是
-          # 0 个或 2 个 status/*，policy/branch-name 对两者都判失败（失败 SHA 不可逆）。#115 改为
-          # REST `PUT …/labels` **整份替换**（HTTP 层 1 次请求）。断言必须常驻 ci/test，而不是在 /tmp 跑一次：
+          # ── 状态迁移的判据：「HTTP 层单请求」（#115）──────────────────────────────────
+          # 带标签→带标签的迁移**必须**是 REST `PUT …/labels` **整份替换**（HTTP 层 1 次请求）；
+          # **禁止** `gh issue edit` 或多次调用：HTTP 层是 add/remove 两个**并发** mutation，
+          # 中间态可以是 0 个或 2 个 status/*，policy/branch-name 对两者都判失败（失败 SHA 不可逆）。
+          # 断言必须常驻 ci/test，而不是在 /tmp 跑一次：
           #   ① 非终态迁移**恰好 1 次**标签写请求（stub gh 记录；`gh issue edit` 一次都不许有）
           #   ② 替换请求的载荷**包含全部非 status/ 标签** —— 整份替换会静默删掉没带上的标签
           #   ③ 读回校验：写后再 GET 一次比对非 status/* 集合；被他人改动 → 报告且**不重试覆盖**

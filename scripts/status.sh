@@ -18,23 +18,23 @@
 #   - 「被打回」**不设独立状态**：平台已免费提供 reviewDecision=CHANGES_REQUESTED，
 #     打回 = in-review -> in-progress（review.sh request-changes）
 #
-# 转换表（合法迁移的**唯一**定义；docs/WORKFLOW.md 里的表由 ci/test 断言与本表**逐字一致**）：
+# 转换表（合法迁移的**唯一**定义；references/workflow.md 里的表由 ci/test 断言与本表**逐字一致**）：
 #   backlog     -> ready | in-progress | done | canceled
 #   ready       -> in-progress | backlog | canceled
 #   in-progress -> in-review | ready | backlog | canceled
 #   in-review   -> in-progress | done | backlog | canceled
 #   done        -> （终态；无出边）
 #   canceled    -> （终态；无出边）
-# done 有三层语义（详见 docs/WORKFLOW.md §1）：切片 = in-review -> done（已评审并合并）；
+# done 有三层语义（详见 references/workflow.md §1）：切片 = in-review -> done（已评审并合并）；
 #   非切片（Epic / Audit / 提案）= backlog -> done（其待办项已全部关闭，**不表示任何工作被完成**）；
 #   不做 = -> canceled（NOT_PLANNED）。in-review -> done 仍是唯一表达「经过评审并合并」的路径。
 # 表外的 from -> to 一律**失败**（含 done/canceled 出边、跨级跳跃）—— **没有跳过开关**：
-# 需要例外就开 Issue 补一条边（改本文件的 TRANSITIONS + docs/WORKFLOW.md 的表，两处由 ci/test 断言集合相等）。
+# 需要例外就开 Issue 补一条边（改本文件的 TRANSITIONS + references/workflow.md 的表，两处由 ci/test 断言集合相等）。
 # 幂等：from == to 且载体齐备时不迁移（终态还要求无残留标签，否则继续清理）。
 #
 # 不变量：开放 Issue 至多一个 status/* 标签；迁移只允许走本脚本。
-# 迁移的**判据是「HTTP 层单请求」**（Issue #115）：标签改动只有一条 REST `PUT …/labels`（整份替换），
-# 不是「一次 `gh issue edit`」—— 后者在 HTTP 层是 add/remove 两个并发 mutation，仍有中间态（#93）。
+# 迁移的**判据是「HTTP 层单请求」**：标签改动只有一条 REST `PUT …/labels`（整份替换），
+# **禁止**用 `gh issue edit` —— 后者在 HTTP 层是 add/remove 两个并发 mutation，仍有中间态。
 # done / canceled 有两个载体：Issue CLOSED **且**无任何 status/* 标签。幂等判断两者都核 ——
 # 「已关闭但仍带残留标签」会继续清理，不短路返回。
 # 退出码：0 成功；1 校验/迁移失败；2 参数错误
@@ -61,8 +61,8 @@ BASE_LABEL_OF_STATE() {
 
 # ── 转换表判定：合法 0 / 非法非 0 ────────────────────────────
 # 用「空格 + 整边 + 空格」做整词匹配，避免 backlog->read 之类的子串误判。
-# 为什么不用多行 case pattern：macOS 自带 bash 3.2 里「引号包裹的多行 case pattern」不可靠
-# （实测 `case "$v" in *"\n$1->$2\n"*)` 恒不匹配），用 grep -F 更稳且可读。
+# **必须**用 `grep -F` 做这一步：macOS 自带 bash 3.2 里「引号包裹的多行 case pattern」
+# （`case "$v" in *"\n$1->$2\n"*)`）恒不匹配，会让全部迁移静默判为非法。
 # from == to 视为合法：幂等短路会先返回；只有「终态已 CLOSED 但仍有残留标签」会走到这里，
 # 那时需要继续执行清理（done -> done 必须放行，否则 closeout 的自动清理永远失败）。
 is_legal_transition() {
@@ -76,8 +76,8 @@ out_edges_of() {
 }
 
 # ── --check-transition <from> <to>：**只读**判定（零副作用）─────────────
-# 为什么要有它：start.sh / deliver.sh 的副作用（建分支、推送、建 PR）**不可逆**；
-# 若先动手再迁移状态，非法的迁移会把仓库留在半成品状态（见 Issue #90 的 F）。
+# **必须**在任何不可逆副作用（建分支、推送、建 PR）**之前**调用本命令：
+# 先动手再迁移状态，非法迁移会把仓库留在半成品状态。
 # 本分支在任何文件、网络、标签操作**之前**返回 —— 只读本脚本内的 TRANSITIONS。
 # 退出码：0 = 合法（含 from == to 的幂等）；1 = 非法（并打印该 from 的合法出边与对应命令）；2 = 用法/状态名错误
 if [ "${1:-}" = "--check-transition" ]; then
@@ -111,7 +111,7 @@ if [ "${1:-}" = "--check-transition" ]; then
   else
     printf '       %s 是终态，无出边；确需复活：gh issue reopen <issue#> 再迁移\n' "$from" >&2
   fi
-  printf '       转换表见脚本头部 / docs/WORKFLOW.md §1；本命令只读，未改动任何东西\n' >&2
+  printf '       转换表见脚本头部 / references/workflow.md §1；本命令只读，未改动任何东西\n' >&2
   exit 1
 fi
 
@@ -127,7 +127,7 @@ if [ -z "$ACTOR" ]; then
   unset GITHUB_TOKEN || true
   ACTOR="$(gh api user --jq .login 2>/dev/null || true)"
 fi
-[ -n "$ACTOR" ] || die "无法认证：检查环境里的 GH_TOKEN 与 gh auth login（见 docs/WORKFLOW.md §0）"
+[ -n "$ACTOR" ] || die "无法认证：检查环境里的 GH_TOKEN 与 gh auth login（见 references/workflow.md §0）"
 
 platform_state() { gh issue view "$1" -R "$REPO" --json state --jq .state 2>/dev/null || true; }
 status_labels() {
@@ -135,14 +135,14 @@ status_labels() {
     --jq '[.labels[].name | select(startswith("status/"))] | join(" ")' 2>/dev/null || true
 }
 
-# ── 单次 HTTP 请求的标签写入（Issue #115）────────────────────────────────
-# 为什么是 REST `PUT /repos/{owner}/{repo}/issues/{n}/labels`（**整份替换**）而不是 `gh issue edit`：
-#   `gh issue edit` 在 **CLI 层**是 1 次调用，但在 **HTTP 层不是** —— cli/cli 把 add 与 remove 发成
-#   两个**并发** GraphQL mutation（`pkg/cmd/pr/shared/editable_http.go:13,17-36,91`，
-#   `addLabelsToLabelable` / `removeLabelsFromLabelable`），中间态可能是 **0 个或 2 个** `status/*`，
-#   而 `policy/branch-name` 对两者都判失败；失败的 SHA **不可逆**（§已知陷阱 1：必需检查不能"先失败后通过"）。
-# 判据因此是「**HTTP 层单请求**」，不是「一次 CLI 调用」。
-# 两条硬约束（缺一即事故）：
+# ── 单次 HTTP 请求的标签写入────────────────────────────────────
+# **必须**用 REST `PUT /repos/{owner}/{repo}/issues/{n}/labels`（**整份替换**）；
+# **禁止**改用 `gh issue edit`：后者在 **CLI 层**是 1 次调用，但在 **HTTP 层**是
+#   add 与 remove 两个**并发** mutation，中间态可能是 **0 个或 2 个** `status/*`，
+#   而 `policy/branch-name` 对两者都判失败，失败的 SHA **不可逆**
+#   （references/workflow.md §4 陷阱 1：必需检查不能"先失败后通过"）。
+# 判据是「**HTTP 层单请求**」，不是「一次 CLI 调用」。
+# 两条硬约束：
 #   ① 载荷**必须**带上读到的**全部非 `status/*` 标签**（`type/*`、`role/*`、`prio/*`、`area/*` …）——
 #      PUT 是整份替换，只发 `status/*` 会**静默删掉**别人的标签。
 #   ② 读-改-写之间有并发覆盖风险（他人此刻的改动会被本次替换抹掉）→ 写完**读回校验**一次：
@@ -222,7 +222,7 @@ ${rows}
 EOF
   info "小结：开放 Issue ${total} 个；backlog ${backlog} 个；in-progress ${inprog} 个"
   if [ "$inprog" -gt 1 ]; then
-    warn "有 ${inprog} 个 in-progress —— 规则是「一次只做一个切片」（见 AGENTS.md §2）"
+    warn "有 ${inprog} 个 in-progress —— 规则是「一次只做一个切片」（见 SKILL.md §4）"
   fi
   if [ "$bad" -eq 0 ]; then
     ok "全部开放 Issue 恰好 0 或 1 个合法 status/* 标签"
@@ -233,9 +233,8 @@ EOF
 fi
 
 # ── --check-cross：**只读**交叉状态检查（Issue ↔ PR）────────────────────
-# 为什么要有它：--check / ci/test / policy/* **都只读 Issue**，因此
-# 「Issue in-review 而关联 PR 已 CLOSED」「Issue done 而 PR 未合并」这类不一致
-# 没有任何门禁能看到（#60 的孤儿分支正是这条盲区的后果）。
+# **必须**用本命令兜住 Issue ↔ PR 不一致：--check / ci/test / policy/* **都只读 Issue**，
+# 「Issue in-review 而关联 PR 已 CLOSED」「Issue done 而 PR 未合并」这类不一致它们都看不到。
 # 规则（只读：只发 GET，不写任何东西）：
 #   R1 Issue 为 in-review，但关联 PR 已 CLOSED（未合并）
 #   R2 Issue 为 done，但关联 PR 未合并（仍开放 / 已关闭未合并）
@@ -489,9 +488,8 @@ if [ "$short_circuit" -eq 1 ]; then
 fi
 
 # ── 终态出边保护：CLOSED 的 done/canceled 不能迁到非终态 ────────
-# 为什么要有这一步：终态的载体是「Issue CLOSED + 无标签」，而本脚本不重开 Issue。
-# 若放行，会先删掉残留标签、再在迁移后校验失败 —— 把 Issue 留在「已关闭且无标签」
-# 这种「看着是 done/canceled 但目标是 backlog」的分裂状态。宁可在动手前就拒绝。
+# **必须**在动手前拒绝：终态的载体是「Issue CLOSED + 无标签」，而本脚本不重开 Issue。
+# 若放行，会先删掉残留标签、再在迁移后校验失败 —— 把 Issue 留在「已关闭且无标签」的分裂状态。
 if [ "$cur" != "$STATE" ] && [ "$terminal" -eq 0 ] && [ "$raw_state" = "CLOSED" ]; then
   die "终态 ${cur} 不能迁出到 ${STATE}：终态的载体是 Issue CLOSED，而本脚本**不重开** Issue。先 gh issue reopen ${ISSUE} 再迁移（这一步没有任何开关能绕过）"
 fi
@@ -508,13 +506,13 @@ else
   fi
   printf '[FAIL] 非法迁移：%s → %s\n' "$cur" "$STATE" >&2
   printf '       %s\n' "$edges_hint" >&2
-  printf '       转换表见 scripts/status.sh 头部 / docs/WORKFLOW.md §1。表外迁移**一律拒绝**（没有跳过开关）：\n' >&2
+  printf '       转换表见 scripts/status.sh 头部 / references/workflow.md §1。表外迁移**一律拒绝**（没有跳过开关）：\n' >&2
   printf '       需要例外就在 Issue 里补一条边 —— 同时改 TRANSITIONS 与文档表，再重跑\n' >&2
   exit 1
 fi
 
-# ── 迁移：**单次 HTTP 请求**（REST PUT 整份替换）落地（Issue #115）────────
-# 判据是「**HTTP 层单请求**」，不是「一次 CLI 调用」（后者在 #93 → #115 被证伪）。
+# ── 迁移：**单次 HTTP 请求**（REST PUT 整份替换）落地────────────
+# 判据是「**HTTP 层单请求**」，不是「一次 CLI 调用」。
 # 三类迁移的载荷不同，不要一刀切（由 status_put_labels 统一落地同一条 PUT 端点）：
 #   - 带标签 → 带标签（ready / in-progress / in-review）：载荷 = 全部非 status/* + 目标标签
 #     —— 任何观察者都看不到 0 个或 2 个 status/* 的中间态。

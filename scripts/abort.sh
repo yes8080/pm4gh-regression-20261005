@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # scripts/abort.sh <issue#> [--branch NAME] [--reason TEXT] [--evidence TEXT] [--as author] [--dry-run]
 #
-# W0..W7 只覆盖「一路顺风」；本脚本是三条**异常路径**的出口（#60 的孤儿分支就是缺失它的后果：
-# Issue 已 canceled、远端分支却留着，无 PR、无任何门禁能看到）：
+# W0..W7 只覆盖「一路顺风」；本脚本是三条**异常路径**的唯一出口（没有它就会留下
+# Issue 已 canceled、远端分支却留着，无 PR、无任何门禁能看到的孤儿分支）：
 #   ① PR 被**关闭但不合并**
 #   ② 作者**中途放弃**（有分支，可能从未有 PR）
 #   ③ **Issue 已被取消**（不做）但分支已建
@@ -27,7 +27,7 @@
 
 set -eu
 
-# 作者凭据默认在**工作区之外**（#94 / PM 裁定 (B)）：默认值必须可用。写法与 review.sh 一致。
+# 作者凭据默认在**工作区之外**；**禁止**指回工作区内路径。写法与 review.sh 一致。
 DEVELOPER_PAT_FILE="${DEVELOPER_PAT_FILE:-${HOME}/.config/pm4gh/developer.pat}"
 BASE_BRANCH="${BASE_BRANCH:-main}"
 
@@ -40,7 +40,7 @@ ACTOR=""
 use_identity() {
   case "${1:-}" in
     author)
-      [ -s "$DEVELOPER_PAT_FILE" ] || die "缺少作者凭据 ${DEVELOPER_PAT_FILE}（见 docs/WORKFLOW.md §0）"
+      [ -s "$DEVELOPER_PAT_FILE" ] || die "缺少作者凭据 ${DEVELOPER_PAT_FILE}（见 references/workflow.md §0）"
       GH_TOKEN="$(cat "$DEVELOPER_PAT_FILE")"
       export GH_TOKEN
       unset GITHUB_TOKEN || true
@@ -48,7 +48,7 @@ use_identity() {
       [ -n "$ACTOR" ] || die "作者凭据无效（无法认证）"
       main="$(env -u GH_TOKEN -u GITHUB_TOKEN gh api user --jq .login 2>/dev/null || true)"
       [ -z "$main" ] || [ "$main" != "$ACTOR" ] || die "身份分离失败：作者身份 = gh 登录身份（${ACTOR}）"
-      # 评审凭据**不在这里读**（#94 / AGENTS §5：作者不得读取其他身份的凭据）。
+      # 评审凭据**不在这里读**（SKILL.md §5：作者不得读取其他身份的凭据）。
       # 「评审 ≠ 作者」由 W6 `scripts/review.sh` 用**评审凭据自身**判定（平台另禁止自我批准）。
       ok "本次执行身份（作者）：${ACTOR}"
       ;;
@@ -304,7 +304,7 @@ anchor="$TMP/anchor.md"
     done < "$rows"
   fi
   printf -- '- 恢复方式：远端分支删除后，GitHub 仍保留 PR 中的提交（PR 页可 "Restore branch"）；本地可用 `git branch <名字> <tip>` 从对象库恢复（reflog 未过期前）。\n'
-  printf -- '\n> 由 `scripts/abort.sh` 自动生成；判据与执行者见 `docs/WORKFLOW.md`（终止/取消）。\n'
+  printf -- '\n> 由 `scripts/abort.sh` 自动生成；判据与执行者见 `references/workflow.md`（终止/取消）。\n'
 } > "$anchor"
 
 if ! gh issue comment "$ISSUE" -R "$REPO" --body-file "$anchor" >/dev/null 2>&1; then

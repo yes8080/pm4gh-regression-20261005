@@ -13,8 +13,8 @@
 
 set -eu
 
-# 作者凭据默认在**工作区之外**（#94 / PM 裁定 (B)）：默认值必须可用 —— 指向工作区内的旧路径
-# 等于把配置漂移写进默认值。写法与 scripts/review.sh 的评审凭据一致（同样支持 env 覆盖）。
+# 作者凭据默认在**工作区之外**；**禁止**指回工作区内路径。
+# 写法与 scripts/review.sh 的评审凭据一致（同样支持 env 覆盖）。
 DEVELOPER_PAT_FILE="${DEVELOPER_PAT_FILE:-${HOME}/.config/pm4gh/developer.pat}"
 BASE_BRANCH="${BASE_BRANCH:-main}"
 
@@ -27,7 +27,7 @@ ACTOR=""
 use_identity() {
   case "${1:-}" in
     author)
-      [ -s "$DEVELOPER_PAT_FILE" ] || die "缺少作者凭据 ${DEVELOPER_PAT_FILE}（见 docs/WORKFLOW.md §0）"
+      [ -s "$DEVELOPER_PAT_FILE" ] || die "缺少作者凭据 ${DEVELOPER_PAT_FILE}（见 references/workflow.md §0）"
       GH_TOKEN="$(cat "$DEVELOPER_PAT_FILE")"
       export GH_TOKEN
       unset GITHUB_TOKEN || true
@@ -35,7 +35,7 @@ use_identity() {
       [ -n "$ACTOR" ] || die "作者凭据无效（无法认证）"
       main="$(env -u GH_TOKEN -u GITHUB_TOKEN gh api user --jq .login 2>/dev/null || true)"
       [ -z "$main" ] || [ "$main" != "$ACTOR" ] || die "身份分离失败：作者身份 = gh 登录身份（${ACTOR}）—— 检查 ${DEVELOPER_PAT_FILE}"
-      # 评审凭据**不在这里读**（#94 / AGENTS §5：作者不得读取其他身份的凭据）。
+      # 评审凭据**不在这里读**（SKILL.md §5：作者不得读取其他身份的凭据）。
       # 「评审 ≠ 作者」由 W6 `scripts/review.sh` 用**评审凭据自身**判定（平台另禁止自我批准）。
       ok "本次执行身份（作者）：${ACTOR}"
       ;;
@@ -79,9 +79,8 @@ blockers="$(gh issue view "$ISSUE" -R "$REPO" --json blockedBy \
 ok "Issue OPEN 且无未关闭阻塞"
 
 info "状态预检（只读：先读平台上的当前状态，再判断能否开工）"
-# 为什么必须先读、先判：本脚本的副作用（gh issue develop 建分支 / 指派 / 评论）**不可逆**。
-# 旧实现无条件假定 backlog、把迁移放到最后 —— Issue 停在 in-review 时迁移非法，
-# 副作用却已完成，仓库被留在半成品（见 Issue #90 的 F）。所以状态从平台读，不假定。
+# **必须**先读平台状态、先做只读判定：本脚本的副作用（gh issue develop 建分支 / 指派 / 评论）**不可逆**。
+# **禁止**假定 Issue 在 backlog，**禁止**把状态迁移放到副作用之后 —— 非法迁移会把仓库留在半成品。
 status_labels="$(gh issue view "$ISSUE" -R "$REPO" --json labels \
   --jq '[.labels[].name | select(startswith("status/"))] | join(" ")' 2>/dev/null || true)"
 case "$status_labels" in
@@ -103,7 +102,7 @@ title="$(gh issue view "$ISSUE" -R "$REPO" --json title --jq .title)"
 labels="$(gh issue view "$ISSUE" -R "$REPO" --json labels --jq '[.labels[].name] | join(",")')"
 if [ -z "$TYPE" ]; then
   # `type/hotfix` 必须**先**判：线上故障的 Issue 会同时带 type/bug（模板预置）与 type/hotfix（手动加），
-  # 先匹配 type/bug 会把热修静默判成 fix/（Issue #103）。
+  # 先匹配 type/bug 会把热修静默判成 fix/。
   case ",${labels}," in
     *",type/hotfix,"*) TYPE="hotfix" ;;
     *",type/bug,"*)    TYPE="fix" ;;
