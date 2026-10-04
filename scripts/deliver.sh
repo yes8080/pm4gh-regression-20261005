@@ -2,6 +2,8 @@
 # scripts/deliver.sh <issue#> [--prepare] [--title TITLE] [--body-file FILE] [--as author|main] [--dry-run]
 #
 # W4「交付 PR」一条命令：
+#   ⓪ 读当前 Issue 状态 + `status.sh --check-transition <cur> in-review` **只读**判定 —— 在任何
+#      副作用之前；非法立即失败（不写骨架、不推送、不建 PR），并给出正确命令
 #   ① 校验分支名合规且对应本 Issue（policy/branch-name 的本地预演）
 #   ② 校验正文六段齐备且含 Closes 关键字（policy/linked-issue / policy/template 的本地预演）
 #   ③ 用当前身份推送分支（清掉本地 credential helper，否则会静默变成主身份推送）
@@ -84,6 +86,32 @@ REPO="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || true)
 use_identity "$AS"
 [ -z "$BODY_FILE" ] && BODY_FILE=".git/PR_BODY_${ISSUE}.md"
 
+info "状态预检（只读：任何副作用之前）"
+# 为什么最先做：本脚本的副作用（写正文骨架 / 推送分支 / 建或更新 PR）**不可逆**。
+# 旧实现先推送并建 PR、最后才迁移状态 —— Issue 停在 ready 时迁移非法，PR 已开而 Issue 卡住
+# （见 Issue #90 的 F）。所以：先把状态读出来、只读判定合法性，再决定要不要动手。
+pstate="$(gh issue view "$ISSUE" -R "$REPO" --json state --jq .state 2>/dev/null || true)"
+[ "$pstate" = "OPEN" ] || die "Issue #${ISSUE} 已 ${pstate:-未知}，不应对它开新 PR（policy/branch-name 会拒绝）"
+status_labels="$(gh issue view "$ISSUE" -R "$REPO" --json labels \
+  --jq '[.labels[].name | select(startswith("status/"))] | join(" ")' 2>/dev/null || true)"
+case "$status_labels" in
+  "")                   cur_state="backlog" ;;
+  "status/ready")       cur_state="ready" ;;
+  "status/in-progress") cur_state="in-progress" ;;
+  "status/in-review")   cur_state="in-review" ;;
+  "status/rework")      cur_state="rework" ;;
+  *" "*) die "Issue #${ISSUE} 有多个状态标签：${status_labels} —— 状态必须唯一，先 scripts/status.sh ${ISSUE} <state> 修正" ;;
+  *)     die "Issue #${ISSUE} 使用了未定义的状态标签：${status_labels} —— 用 scripts/status.sh 修正" ;;
+esac
+case "$cur_state" in
+  backlog|ready)
+    die "Issue #${ISSUE} 当前 ${cur_state}，尚未开工：先 scripts/start.sh ${ISSUE} --as author（或 scripts/status.sh ${ISSUE} in-progress）再交付；本次**未写正文骨架、未推送、未建 PR**" ;;
+esac
+if ! "$(dirname "$0")/status.sh" --check-transition "$cur_state" in-review; then
+  die "Issue #${ISSUE} 当前 ${cur_state}，不能交付（deliver.sh 只做 → in-review）。先按上方合法出边迁移再重跑；本次**未写正文骨架、未推送、未建 PR**"
+fi
+ok "当前状态：${cur_state}；迁移合法：${cur_state} → in-review（发生在任何副作用之前）"
+
 if [ "$PREPARE" -eq 1 ]; then
   mkdir -p "$(dirname "$BODY_FILE")"
   cat > "$BODY_FILE" <<EOF
@@ -136,12 +164,7 @@ branch_issue="${BRANCH#*/}"; branch_issue="${branch_issue%%-*}"
 [ "$branch_issue" = "$ISSUE" ] || die "当前分支 ${BRANCH} 指向 Issue #${branch_issue}，与传入的 #${ISSUE} 不一致"
 ok "分支 ${BRANCH} 合规且对应 #${ISSUE}"
 
-state="$(gh issue view "$ISSUE" -R "$REPO" --json state --jq .state 2>/dev/null || true)"
-[ "$state" = "OPEN" ] || die "Issue #${ISSUE} 已 ${state:-未知}，不应对它开新 PR"
-slabel="$(gh issue view "$ISSUE" -R "$REPO" --json labels \
-  --jq '[.labels[].name | select(startswith("status/"))] | length' 2>/dev/null || echo 0)"
-[ "$slabel" -ge 1 ] || die "Issue #${ISSUE} 处于 Backlog（无 status/* 标签）—— 先 scripts/status.sh ${ISSUE} in-progress（policy/branch-name 会拒绝）"
-ok "Issue OPEN 且已进入状态机"
+ok "Issue OPEN 且已进入状态机（状态预检已在任何副作用之前完成）"
 
 if [ -n "$(git status --porcelain)" ]; then
   git status --short >&2

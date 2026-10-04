@@ -2,6 +2,8 @@
 # scripts/start.sh <issue#> [--type slice|fix|hotfix|spike|chore] [--slug SLUG] [--as author|main] [--dry-run]
 #
 # W2「开工」一条命令：
+#   ⓪ 读当前状态 + `status.sh --check-transition <cur> in-progress` **只读**判定 —— 在任何
+#      副作用之前；非法立即失败（不建分支、不指派、不评论），并给出正确命令
 #   ① 校验 Issue 可开工（OPEN、无未关闭阻塞、状态标签 0 或 1 个）
 #   ② 用 `gh issue develop` 创建并**绑定**分支（手工 git checkout -b 不会建立 Issue 绑定）
 #   ③ 指派给执行身份 + 留开工声明评论
@@ -84,6 +86,27 @@ blockers="$(gh issue view "$ISSUE" -R "$REPO" --json blockedBy \
 [ -z "$blockers" ] || die "Issue #${ISSUE} 仍被未关闭的 Issue 阻塞：${blockers}（blockedBy 不会因对方关闭自动清除，这里按 state=OPEN 判定）"
 ok "Issue OPEN 且无未关闭阻塞"
 
+info "状态预检（只读：先读平台上的当前状态，再判断能否开工）"
+# 为什么必须先读、先判：本脚本的副作用（gh issue develop 建分支 / 指派 / 评论）**不可逆**。
+# 旧实现无条件假定 backlog、把迁移放到最后 —— Issue 停在 in-review 时迁移非法，
+# 副作用却已完成，仓库被留在半成品（见 Issue #90 的 F）。所以状态从平台读，不假定。
+status_labels="$(gh issue view "$ISSUE" -R "$REPO" --json labels \
+  --jq '[.labels[].name | select(startswith("status/"))] | join(" ")' 2>/dev/null || true)"
+case "$status_labels" in
+  "")                   cur_state="backlog" ;;
+  "status/ready")       cur_state="ready" ;;
+  "status/in-progress") cur_state="in-progress" ;;
+  "status/in-review")   cur_state="in-review" ;;
+  "status/rework")      cur_state="rework" ;;
+  *" "*) die "Issue #${ISSUE} 有多个状态标签：${status_labels} —— 状态必须唯一，先 scripts/status.sh ${ISSUE} <state> 修正" ;;
+  *)     die "Issue #${ISSUE} 使用了未定义的状态标签：${status_labels} —— 用 scripts/status.sh 修正" ;;
+esac
+ok "当前状态：${cur_state}（读自平台，不是假定值）"
+if ! "$(dirname "$0")/status.sh" --check-transition "$cur_state" in-progress; then
+  die "Issue #${ISSUE} 当前 ${cur_state}，不能开工（start.sh 只做 → in-progress）。先按上方合法出边迁移再重跑；本次**未创建分支、未指派、未评论**"
+fi
+ok "迁移合法：${cur_state} → in-progress（发生在任何副作用之前）"
+
 info "推导分支名"
 title="$(gh issue view "$ISSUE" -R "$REPO" --json title --jq .title)"
 labels="$(gh issue view "$ISSUE" -R "$REPO" --json labels --jq '[.labels[].name] | join(",")')"
@@ -118,6 +141,7 @@ fi
 
 if [ "$DRY" -eq 1 ]; then
   info "[dry-run] 将要执行"
+  printf '  （已完成的只读预检：%s → in-progress 合法）\n' "$cur_state"
   printf '  gh issue develop %s -R %s --base %s --name %s --checkout\n' "$ISSUE" "$REPO" "$BASE_BRANCH" "$BRANCH"
   printf '  gh issue edit %s --add-assignee @me\n' "$ISSUE"
   printf '  gh issue comment %s --body-file <开工声明>\n' "$ISSUE"

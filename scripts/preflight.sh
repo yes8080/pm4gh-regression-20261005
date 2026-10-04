@@ -17,6 +17,19 @@ BASE_BRANCH="${BASE_BRANCH:-main}"
 # 这 5 个字符串是**必需检查的 context**（= 工作流里 job 的 name），一个字都不能差。
 REQUIRED_EXPECTED="ci/lint ci/test policy/linked-issue policy/branch-name policy/template"
 
+# ── 规则集全量比对判据（本仓库**唯一**的一份实现）──────────────────────────
+# 为什么是一整份 diff 而不是挑字段：曾经只比对 6 个字段，线上多出的
+# `require_extra_approval_for_unattributed_changes` / `required_reviewers` 静默通过了很久。
+# 本判据把线上与文件都投影成同一个规范形（canonical form）后逐字比较：
+#   ① 剔除文件内文档键（`_comment*`）与服务端只读元数据（id/node_id/source/...）；
+#   ② 其余**全量键**参与：缺键、多键、值不同都会让两个字符串不同；
+#   ③ 只做排序（rules 按 type、required_status_checks 按 context），不做任何取值裁剪。
+# 同一段文本也出现在 .github/workflows/required-checks.yml 的 ci/test 步骤里，由 ci/test
+# 断言两处**逐字一致** —— 比对方式只有这一套，不允许出现第二套。
+# RULESET_CANON_JQ:BEGIN
+RULESET_CANON_JQ='def canon: with_entries(select(.key|startswith("_comment")|not)) | del(.id,.node_id,.source_type,.source,.created_at,.updated_at,.current_user_can_bypass,._links) | .conditions.ref_name.include = ((.conditions.ref_name.include // [])|sort) | .conditions.ref_name.exclude = ((.conditions.ref_name.exclude // [])|sort) | .bypass_actors = ((.bypass_actors // [])|sort_by(.actor_id|tostring)) | .rules = ((.rules // []) | map(if (.type == "required_status_checks" and .parameters) then .parameters.required_status_checks = ((.parameters.required_status_checks // [])|sort_by(.context)) else . end) | sort_by(.type)); canon'
+# RULESET_CANON_JQ:END
+
 fail=0
 ok()   { printf '[ OK ] %s\n' "$*"; }
 warn() { printf '[WARN] %s\n' "$*" >&2; }
@@ -45,7 +58,7 @@ file_mode() {
 }
 
 info "1/9 基础命令"
-for c in git gh jq awk grep sed curl; do
+for c in git gh jq awk grep sed curl diff; do
   if command -v "$c" >/dev/null 2>&1; then ok "${c} 可用"; else bad "缺少命令 ${c}，请先安装"; fi
 done
 printf '  bash：%s\n' "$(bash --version | head -1)"
@@ -176,7 +189,7 @@ else
   warn "  实际：$(printf '%s' "$wf_actual" | tr '\n' ' ')"
 fi
 
-info "8/9 线上规则集 vs 仓库内定义"
+info "8/9 线上规则集 vs 仓库内定义（整份 diff，全量键）"
 if [ -z "$REPO" ]; then
   bad "仓库 slug 未知，跳过线上规则集比对"
 else
@@ -185,30 +198,23 @@ else
     bad "线上没有名为 main-protection 的规则集 —— 门禁未生效（属 dispatcher 权限，请报告）"
   else
     ok "线上规则集 id=${rid}"
-    live_ctx="$(gh api "repos/${REPO}/rulesets/${rid}" \
-      --jq '.rules[]|select(.type=="required_status_checks")|.parameters.required_status_checks[].context' 2>/dev/null | sort -u || true)"
-    file_ctx="$(jq -r '.rules[]|select(.type=="required_status_checks")|.parameters.required_status_checks[].context' "$RULESET_FILE" | sort -u)"
-    if [ "$live_ctx" = "$file_ctx" ]; then
-      ok "必需检查清单：线上 == 仓库内定义（5 项）"
+    live_json="$(gh api "repos/${REPO}/rulesets/${rid}" 2>/dev/null || true)"
+    if [ -z "$live_json" ]; then
+      bad "读不到线上规则集正文（权限？）—— 无法证明与仓库内定义一致，报告 dispatcher"
     else
-      bad "必需检查清单不一致（改名或降级会让 PR 永久 pending 或门禁失效）"
-      warn "  线上：$(printf '%s' "$live_ctx" | tr '\n' ' ')"
-      warn "  仓库：$(printf '%s' "$file_ctx" | tr '\n' ' ')"
+      # 唯一判据：同一个 jq 程序分别作用在线上与文件上，比较规范形（见文件头 RULESET_CANON_JQ）
+      live_canon="$(printf '%s' "$live_json" | jq -S "$RULESET_CANON_JQ" 2>/dev/null || true)"
+      file_canon="$(jq -S "$RULESET_CANON_JQ" "$RULESET_FILE" 2>/dev/null || true)"
+      if [ -z "$live_canon" ] || [ -z "$file_canon" ]; then
+        bad "规则集规范化失败（jq 判据报错）—— 不要自行修改，报告 dispatcher"
+      elif [ "$live_canon" = "$file_canon" ]; then
+        ok "整份 ruleset 一致（全量键；判据 RULESET_CANON_JQ）"
+      else
+        bad "整份 ruleset 不一致：线上与 ${RULESET_FILE} 有键差异（缺键 / 多键 / 值不同）"
+        warn "  下方 diff：'<' = 线上，'>' = 仓库内定义。改法只能是改文件（改线上属 dispatcher 权限）"
+        diff <(printf '%s\n' "$live_canon") <(printf '%s\n' "$file_canon") >&2 || true
+      fi
     fi
-    live_shape="$(gh api "repos/${REPO}/rulesets/${rid}" --jq '[
-      (.enforcement),
-      (.conditions.ref_name.include|join(",")),
-      (.bypass_actors|length),
-      ([.rules[]|select(.type=="pull_request")|.parameters.required_approving_review_count]|join("")),
-      ([.rules[]|select(.type=="pull_request")|.parameters.require_code_owner_review]|join("")),
-      ([.rules[]|select(.type=="pull_request")|.parameters.require_last_push_approval]|join(""))
-    ]|join(" | ")' 2>/dev/null || true)"
-    printf '  线上形态（enforcement | 目标 | bypass 数 | approvals | code-owner | last-push）：%s\n' "$live_shape"
-    case "$live_shape" in
-      "active | ~DEFAULT_BRANCH | 0 | 1 | true | true") ok "线上规则集形态符合预期" ;;
-      "") warn "读不到线上规则集形态（权限？）" ;;
-      *) bad "线上规则集形态与预期不符（应为 active | ~DEFAULT_BRANCH | 0 | 1 | true | true）—— 不要自行修改，报告 dispatcher" ;;
-    esac
   fi
 fi
 

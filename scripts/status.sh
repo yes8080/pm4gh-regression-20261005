@@ -5,6 +5,10 @@
 #   scripts/status.sh <issue#> <state> [--force]   # 迁移到指定状态
 #   scripts/status.sh <issue#> --show              # 查看当前状态
 #   scripts/status.sh --check                      # 扫**全部开放 Issue**：每个恰好 0 或 1 个合法 status/*
+#   scripts/status.sh --check-transition <from> <to>  # **只读**判定迁移是否合法（零副作用；不读网络）
+#
+# --check-transition 专供「副作用不可逆」的脚本（start.sh / deliver.sh）在动手前调用：
+# 非法时退出码 1 并打印 from 的合法出边与正确命令；合法时退出码 0，且绝不改动任何东西。
 #
 # 状态集（7）：backlog | ready | in-progress | in-review | rework | done | canceled
 #   - backlog = 无任何 status/* 标签且 Issue OPEN
@@ -50,6 +54,63 @@ BASE_LABEL_OF_STATE() {
   esac
 }
 
+# ── 转换表判定：合法 0 / 非法非 0 ────────────────────────────
+# 用「空格 + 整边 + 空格」做整词匹配，避免 backlog->read 之类的子串误判。
+# 为什么不用多行 case pattern：macOS 自带 bash 3.2 里「引号包裹的多行 case pattern」不可靠
+# （实测 `case "$v" in *"\n$1->$2\n"*)` 恒不匹配），用 grep -F 更稳且可读。
+# from == to 视为合法：幂等短路会先返回；只有「终态已 CLOSED 但仍有残留标签」会走到这里，
+# 那时需要继续执行清理（done -> done 必须放行，否则 closeout 的自动清理永远失败）。
+is_legal_transition() {
+  [ "$1" = "$2" ] && return 0
+  printf '%s' " ${TRANSITIONS} " | grep -qF " $1->$2 "
+}
+
+# 某个状态的合法出边（人类可读）；终态返回空
+out_edges_of() {
+  printf '%s' "$TRANSITIONS" | tr ' ' '\n' | grep -E "^$1->" | sed 's/->/ → /g' | tr '\n' ' ' | sed -E 's/[[:space:]]+$//'
+}
+
+# ── --check-transition <from> <to>：**只读**判定（零副作用）─────────────
+# 为什么要有它：start.sh / deliver.sh 的副作用（建分支、推送、建 PR）**不可逆**；
+# 若先动手再迁移状态，非法的迁移会把仓库留在半成品状态（见 Issue #90 的 F）。
+# 本分支在任何文件、网络、标签操作**之前**返回 —— 只读本脚本内的 TRANSITIONS。
+# 退出码：0 = 合法（含 from == to 的幂等）；1 = 非法（并打印该 from 的合法出边与对应命令）；2 = 用法/状态名错误
+if [ "${1:-}" = "--check-transition" ]; then
+  from="${2:-}"
+  to="${3:-}"
+  [ -n "$from" ] && [ -n "$to" ] \
+    || die "用法：scripts/status.sh --check-transition <from> <to>（合法状态：${VALID_STATES}）" 2
+  case " ${VALID_STATES} " in
+    *" ${from} "*) : ;;
+    *) die "未知状态 ${from}（合法值：${VALID_STATES}）" 2 ;;
+  esac
+  case " ${VALID_STATES} " in
+    *" ${to} "*) : ;;
+    *) die "未知状态 ${to}（合法值：${VALID_STATES}）" 2 ;;
+  esac
+  if [ "$from" = "$to" ]; then
+    ok "转换表允许：${from} → ${to}（同状态，幂等）"
+    exit 0
+  fi
+  if is_legal_transition "$from" "$to"; then
+    ok "转换表允许：${from} → ${to}"
+    exit 0
+  fi
+  printf '[FAIL] 非法迁移：%s → %s\n' "$from" "$to" >&2
+  targets="$(printf '%s' "$TRANSITIONS" | tr ' ' '\n' | grep -E "^${from}->" | sed 's/^.*->//')"
+  if [ -n "$targets" ]; then
+    printf '       %s 的合法出边与正确命令：\n' "$from" >&2
+    for t in $targets; do
+      printf '         scripts/status.sh <issue#> %s\n' "$t" >&2
+    done
+  else
+    printf '       %s 是终态，无出边；确需复活：gh issue reopen <issue#> 再迁移\n' "$from" >&2
+  fi
+  printf '       转换表见脚本头部 / docs/WORKFLOW.md §1；本命令只读，未改动任何东西\n' >&2
+  exit 1
+fi
+
+# ── 以下才需要仓库 / 凭据（--check-transition 已在上方返回，不读网络）──────
 [ -f .github/rulesets/main-protection.json ] || die "请在仓库根目录运行"
 REPO="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || true)"
 [ -n "$REPO" ] || die "无法确定仓库 slug（gh repo view 失败）"
@@ -67,22 +128,6 @@ platform_state() { gh issue view "$1" -R "$REPO" --json state --jq .state 2>/dev
 status_labels() {
   gh issue view "$1" -R "$REPO" --json labels \
     --jq '[.labels[].name | select(startswith("status/"))] | join(" ")' 2>/dev/null || true
-}
-
-# ── 转换表判定：合法 0 / 非法非 0 ────────────────────────────
-# 用「空格 + 整边 + 空格」做整词匹配，避免 backlog->read 之类的子串误判。
-# 为什么不用多行 case pattern：macOS 自带 bash 3.2 里「引号包裹的多行 case pattern」不可靠
-# （实测 `case "$v" in *"\n$1->$2\n"*)` 恒不匹配），用 grep -F 更稳且可读。
-# from == to 视为合法：幂等短路会先返回；只有「终态已 CLOSED 但仍有残留标签」会走到这里，
-# 那时需要继续执行清理（done -> done 必须放行，否则 closeout 的自动清理永远失败）。
-is_legal_transition() {
-  [ "$1" = "$2" ] && return 0
-  printf '%s' " ${TRANSITIONS} " | grep -qF " $1->$2 "
-}
-
-# 某个状态的合法出边（人类可读）；终态返回空
-out_edges_of() {
-  printf '%s' "$TRANSITIONS" | tr ' ' '\n' | grep -E "^$1->" | sed 's/->/ → /g' | tr '\n' ' ' | sed -E 's/[[:space:]]+$//'
 }
 
 # ── --check：扫描全部开放 Issue ──────────────────────────────
@@ -130,7 +175,7 @@ EOF
 fi
 
 ISSUE="${1:-}"
-[ -n "$ISSUE" ] || die "用法：scripts/status.sh <issue#> <state> [--force] | <issue#> --show | --check" 2
+[ -n "$ISSUE" ] || die "用法：scripts/status.sh <issue#> <state> [--force] | <issue#> --show | --check | --check-transition <from> <to>" 2
 case "$ISSUE" in *[!0-9]*) die "Issue 编号必须是数字：${ISSUE}" 2 ;; esac
 
 state_of() {
@@ -158,7 +203,7 @@ if [ "${2:-}" = "--show" ]; then
 fi
 
 STATE="${2:-}"
-[ -n "$STATE" ] || die "用法：scripts/status.sh <issue#> <state> [--force] | <issue#> --show | --check" 2
+[ -n "$STATE" ] || die "用法：scripts/status.sh <issue#> <state> [--force] | <issue#> --show | --check | --check-transition <from> <to>" 2
 FORCE=0
 case "${3:-}" in
   "") : ;;

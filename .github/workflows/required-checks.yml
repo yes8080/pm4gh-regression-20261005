@@ -148,6 +148,14 @@ jobs:
           if [ "$(pr required_approving_review_count)" != "1" ]; then echo "::error file=$f::required_approving_review_count 应为 1"; bad=1; fi
           if [ "$(pr require_code_owner_review)" != "true" ]; then echo "::error file=$f::require_code_owner_review 应为 true（三身份隔离靠它）"; bad=1; fi
           if [ "$(pr require_last_push_approval)" != "true" ]; then echo "::error file=$f::require_last_push_approval 应为 true"; bad=1; fi
+          if [ "$(pr require_extra_approval_for_unattributed_changes)" != "true" ]; then
+            echo "::error file=$f::require_extra_approval_for_unattributed_changes 应为 true（线上真实值；含无法归属到 GitHub 身份的提交时需额外批准）"
+            bad=1
+          fi
+          if [ "$(jq -rc '.rules[]|select(.type=="pull_request")|.parameters.required_reviewers' "$f")" != '[]' ]; then
+            echo "::error file=$f::required_reviewers 应为 []（线上真实值：不指定具体评审人）"
+            bad=1
+          fi
           if [ "$(pr dismiss_stale_reviews_on_push)" != "true" ]; then echo "::error file=$f::dismiss_stale_reviews_on_push 应为 true"; bad=1; fi
           if [ "$(jq -rc '.rules[]|select(.type=="pull_request")|.parameters.allowed_merge_methods' "$f")" != '["squash"]' ]; then
             echo "::error file=$f::allowed_merge_methods 只能是 [\"squash\"]"
@@ -159,6 +167,59 @@ jobs:
           fi
           if [ "$bad" -ne 0 ]; then exit 1; fi
           echo "✅ 规则集结构不变量通过"
+      - name: 规则集全量 diff 判据唯一 + 文件全量键齐备（与 preflight.sh 同一判据）
+        run: |
+          set -euo pipefail
+          sh=scripts/preflight.sh
+          f=.github/rulesets/main-protection.json
+          # 判据必须与 scripts/preflight.sh 里的 RULESET_CANON_JQ **逐字一致**：
+          # preflight.sh 用它对线上规则集做整份 diff，这里断言不存在第二套实现。
+          # 新增/删除线上键时，两个地方一起改（并同步下面的全量键集），这是有意的摩擦。
+          # RULESET_CANON_JQ:BEGIN
+          RULESET_CANON_JQ='def canon: with_entries(select(.key|startswith("_comment")|not)) | del(.id,.node_id,.source_type,.source,.created_at,.updated_at,.current_user_can_bypass,._links) | .conditions.ref_name.include = ((.conditions.ref_name.include // [])|sort) | .conditions.ref_name.exclude = ((.conditions.ref_name.exclude // [])|sort) | .bypass_actors = ((.bypass_actors // [])|sort_by(.actor_id|tostring)) | .rules = ((.rules // []) | map(if (.type == "required_status_checks" and .parameters) then .parameters.required_status_checks = ((.parameters.required_status_checks // [])|sort_by(.context)) else . end) | sort_by(.type)); canon'
+          # RULESET_CANON_JQ:END
+          sh_jq="$(sed -n '/RULESET_CANON_JQ:BEGIN/,/RULESET_CANON_JQ:END/p' "$sh" \
+            | sed -e '1d' -e '$d' | tr -d '\n' \
+            | sed -E "s/^[[:space:]]*RULESET_CANON_JQ='//; s/'[[:space:]]*\$//")"
+          bad=0
+          if [ -z "$sh_jq" ]; then
+            echo "::error file=$sh::未能从 preflight.sh 解析出 RULESET_CANON_JQ 判据"
+            bad=1
+          elif [ "$sh_jq" != "$RULESET_CANON_JQ" ]; then
+            echo "::error::preflight.sh 与 ci/test 的规则集比对判据不一致（必须逐字相同 —— 同一判据，不是两套实现）"
+            echo "--- preflight.sh ---"; printf '%s\n' "$sh_jq"
+            echo "--- ci/test ---"; printf '%s\n' "$RULESET_CANON_JQ"
+            bad=1
+          fi
+          # 判据本身必须能规范化本文件（否则 preflight 在线上拿到的判据是坏的）
+          if ! jq -S "$RULESET_CANON_JQ" "$f" > /tmp/ruleset-canon.json; then
+            echo "::error file=$f::RULESET_CANON_JQ 无法规范化本文件"
+            bad=1
+          fi
+          # 声明文件里不得混入服务端只读元数据（那是线上响应的一部分，不是声明）
+          if jq -e 'has("id") or has("node_id") or has("source") or has("source_type") or has("created_at") or has("updated_at") or has("current_user_can_bypass") or has("_links")' "$f" >/dev/null; then
+            echo "::error file=$f::出现服务端只读元数据键（id/node_id/source/source_type/created_at/updated_at/current_user_can_bypass/_links）"
+            bad=1
+          fi
+          # 全量键：两处参数键集必须与线上全量键**精确相等**（多一个、少一个都报错）
+          want_pr='allowed_merge_methods,dismiss_stale_reviews_on_push,require_code_owner_review,require_extra_approval_for_unattributed_changes,require_last_push_approval,required_approving_review_count,required_review_thread_resolution,required_reviewers'
+          pr_keys="$(jq -r '.rules[]|select(.type=="pull_request")|.parameters|keys_unsorted|sort|join(",")' "$f")"
+          if [ "$pr_keys" != "$want_pr" ]; then
+            echo "::error file=$f::pull_request 参数键集与线上全量键不符"
+            echo "--- 期望 ---"; printf '%s\n' "$want_pr"
+            echo "--- 实际 ---"; printf '%s\n' "$pr_keys"
+            bad=1
+          fi
+          want_rsc='do_not_enforce_on_create,required_status_checks,strict_required_status_checks_policy'
+          rsc_keys="$(jq -r '.rules[]|select(.type=="required_status_checks")|.parameters|keys_unsorted|sort|join(",")' "$f")"
+          if [ "$rsc_keys" != "$want_rsc" ]; then
+            echo "::error file=$f::required_status_checks 参数键集与线上全量键不符"
+            echo "--- 期望 ---"; printf '%s\n' "$want_rsc"
+            echo "--- 实际 ---"; printf '%s\n' "$rsc_keys"
+            bad=1
+          fi
+          if [ "$bad" -ne 0 ]; then exit 1; fi
+          echo "✅ 规则集判据唯一（与 preflight.sh 逐字一致）且文件全量键齐备"
       - name: 脚本有可执行位且自包含（无共享库）
         run: |
           set -euo pipefail

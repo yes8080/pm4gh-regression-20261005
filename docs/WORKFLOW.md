@@ -80,6 +80,11 @@ stateDiagram-v2
 
 体检：`scripts/status.sh --check` 扫全部开放 Issue，每个必须 0 或 1 个 `status/*`（0 = backlog）；`ci/test` 每次 PR 也跑同一不变量。
 
+**只读预检（副作用之前）**：`scripts/status.sh --check-transition <from> <to>` 只判定迁移合法性，
+**零副作用**（不读网络/凭据，不写任何东西；退出码 0 合法 / 1 非法 / 2 用法错）。非法时打印该
+`from` 的合法出边与对应命令。`start.sh`（建分支前）与 `deliver.sh`（推送/建 PR 前）**先读当前
+状态、再调用它**：非法就立即失败，不留半成品。`start.sh` 不再假定 Issue 在 `backlog`。
+
 ## 2. W0..W7 闭环
 
 ### 时序图（谁在什么时候触发）
@@ -128,7 +133,9 @@ sequenceDiagram
 
 ### W2 开工 — `scripts/start.sh <issue#> --as author`
 
-校验 Issue OPEN 且无未关闭阻塞 → `gh issue develop` 建分支并**绑定** Issue → 指派给作者 → 留开工声明 → `in-progress`。
+**先做只读状态预检**（读平台的当前状态 → `status.sh --check-transition <cur> in-progress`）；
+非法（例如 Issue 停在 `in-review`）→ **在创建分支之前**失败，绝不留下半成品。
+然后：校验 Issue OPEN 且无未关闭阻塞 → `gh issue develop` 建分支并**绑定** Issue → 指派给作者 → 留开工声明 → `in-progress`。
 分支名 `<type>/<issue#>-<slug>`，`type ∈ {slice,fix,hotfix,spike,chore}`，slug 只允许 `[a-z0-9-]`；`policy/branch-name` 会**逐字**校验这条正则，并要求 Issue OPEN 且已有 `status/*` 标签。
 
 ### W3 实现与提交
@@ -138,7 +145,8 @@ sequenceDiagram
 
 ### W4 交付 PR — `scripts/deliver.sh <issue#> --prepare --as author` → `scripts/deliver.sh <issue#> --as author`
 
-门禁（本地预演，与 `policy/*` 同一套）：正文含 `Closes #N`（**标题里的关键字无效**）／含 `## 1.` … `## 6.` 六段且每段有实质内容／分支名合规且分支里的 issue 号 = 传入的 issue 号。该分支**已有** PR（返修场景）时只推送并改用 REST PATCH 更新正文（§已知陷阱 7）。
+门禁（本地预演，与 `policy/*` 同一套）：**先做只读状态预检**（`--check-transition <cur> in-review`，
+非法则在**推送之前**失败，不写骨架、不推送、不建 PR）／正文含 `Closes #N`（**标题里的关键字无效**）／含 `## 1.` … `## 6.` 六段且每段有实质内容／分支名合规且分支里的 issue 号 = 传入的 issue 号。该分支**已有** PR（返修场景）时只推送并改用 REST PATCH 更新正文（§已知陷阱 7）。
 
 ### W5 必需检查（5 个，逐字）— `gh pr checks <pr#> --required`
 
@@ -185,6 +193,8 @@ sequenceDiagram
 10. **`blockedBy` 不会因对方关闭而自动清除。** 判定"是否真被阻塞"必须看 blocker 的 `state`。
 11. **squash 合并后 `git branch -d` 必然拒绝**（原始提交不在 `main` 上）。先验证 PR=MERGED，留锚点，再 `-D`；绝不无条件 `-D`。
 12. **流程只在仓库里。** `docs/WORKFLOW.md` + `AGENTS.md` + `.github/**` + `scripts/**` 就是全部权威流程描述；不引入第二套规范文档，也不发布"可移植治理套件"。元工具自身的代码量超过它服务的开发工作，就是失控信号。
+13. **规则集声明必须与线上「整份」一致，不是"挑几个字段"。** `.github/rulesets/main-protection.json` 的比对是**全量键 diff**：唯一判据是 `RULESET_CANON_JQ`（同一段文本同时出现在 `scripts/preflight.sh` 与 `ci/test`，由 `ci/test` 断言逐字一致）。挑字段比对曾让线上多出的 `require_extra_approval_for_unattributed_changes: true` / `required_reviewers: []` 静默漂移很久。语义：`require_extra_approval_for_unattributed_changes` = 含**无法归属到 GitHub 身份**的提交时需**额外批准**（本项目历史提交的作者邮箱 `wsmsn@msn.com`/`10019@outlook.com` 不可归属 → 这类 PR **可能要求多于 1 个批准**）。改这个文件属 dispatcher 权限；改键集时 `ci/test` 的全量键清单要同步改（有意的摩擦）。
+14. **状态迁移不是原子的（`status.sh` 先 remove 再 add），中间有「零 `status/*` 标签」窗口。** `deliver.sh` 的次序是「推送 → 建 PR → 迁 `in-review`」，而 PR 事件会**立刻**触发必需检查 —— `policy/branch-name` 若在窗口内读标签，会把 Issue 判成 Backlog 并**在该 SHA 上失败**（实测 PR #92 首 SHA `cc9cf14`：`2026-10-04T14:06:13Z` unlabeled → `14:06:16Z` labeled，检查在 `14:06:14.84Z` 读）。临时缓解：**重跑失败的 `policy/branch-name`**（同一 SHA 实测重跑后 5 项全 pass）。根治见 Issue #93。
 
 ## 5. 明确不做（边界）
 
