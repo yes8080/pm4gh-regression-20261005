@@ -44,11 +44,17 @@ jobs:
       - name: 脚本语法与 bash 3.2 兼容性
         run: |
           set -euo pipefail
-          shopt -s nullglob
-          files=(scripts/*.sh)
-          if [ ${#files[@]} -eq 0 ]; then
-            echo "没有脚本需要检查（scripts/*.sh 为空）"
-            exit 0
+          # 覆盖面 = **全部被跟踪的 shell 脚本**（Bug #51）：早期只 glob `scripts/*.sh`，
+          # toolkit/*.sh、toolkit/tests/*.sh 的 bash 3.2 兼容性完全没被检查（等于静默漏检）。
+          # 改用 git ls-files（与下方「JSON 文件有效性」同一惯例）后，新增脚本目录无需再改本文件。
+          files=()
+          while IFS= read -r f; do
+            [ -n "$f" ] || continue
+            files[${#files[@]}]="$f"
+          done < <(git ls-files '*.sh')
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "::error::git ls-files '*.sh' 未返回任何脚本 —— 覆盖面为空，检查形同虚设"
+            exit 1
           fi
           fail=0
 

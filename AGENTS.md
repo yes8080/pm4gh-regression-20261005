@@ -19,7 +19,7 @@ scripts/toolcheck.sh        # 10 项自检（含 git 工作区预检）；任何
 ## 2. 必须遵守
 
 1. **一次只做一个切片。** 先领 `Ready` 的切片（`gh issue list --search 'label:status/ready'`），不得同时开多个 `In Progress`。
-2. **一个切片 = 一个 Issue = 一个分支 = 一个 PR。** 用 `scripts/start.sh <issue#>` 建分支（它内部走 `gh issue develop`）。
+2. **一个切片 = 一个 Issue = 一个分支 = 一个 PR。** 用 `scripts/start.sh <issue#> --as author` 建分支（它内部走 `gh issue develop`，并以作者身份完成指派与开工声明）。
 3. **所有改动经 PR。** 禁止直推 `main`（会被规则集拒绝）；禁止用 `--admin` 绕过门禁。
 4. **PR 正文必须含 `Closes #<issue#>`**，并填写六段模板（摘要/影响面/回滚/验收证据/DoD 自查/风险）。
 5. **必须留可核对的验收证据**：命令、测试名、输出、运行链接。禁止"已测试通过"这类无证据断言。
@@ -46,31 +46,37 @@ scripts/toolcheck.sh        # 10 项自检（含 git 工作区预检）；任何
 ## 4. 标准工作循环
 
 ```bash
-# 1) 自检
+# 1) 自检（10 项；第 10 项包含作者 scope 必须是 repo + workflow，见 W0.4 / Bug #51）
 scripts/toolcheck.sh
 
 # 2) 领切片（找 Ready 且指派给自己的）
 gh issue list -R yes8080/pm4gh --state open --label role/dev --limit 20 \
   --json number,title,labels
 
-# 3) 开工（建分支 + 指派 + 开工声明）
-scripts/start.sh <issue#>
+# 3) 开工（建分支 + 指派 + 开工声明，全部记在作者身份名下；默认 --as main 保持向后兼容）
+scripts/start.sh <issue#> --as author
 
 # 4) 实现 + 自检（本地能跑什么就跑什么）
-bash -n scripts/*.sh                      # 若改了脚本
+bash -n scripts/*.sh                      # 若改了脚本（ci/lint 覆盖全部被跟踪的 *.sh）
 bash scripts/audit.sh                     # 漂移审计
-git commit -m "feat(scope): 说明 (#<issue#>)"
 
-# 5) 交付
-scripts/deliver.sh <issue#> --prepare     # 生成六段骨架
-#  填写骨架（必须写真实证据）
-scripts/deliver.sh <issue#>
+# 4b) 以作者身份提交：必须显式 -c（--as 只切 gh 的 API 身份，不改 git 身份）；
+#     提交信息必须用 -F 传文件，不要把带反引号/多行的信息内联到命令行
+printf '%s\n' "feat(scope): 说明 (#<issue#>)" > /tmp/msg.txt
+git -c user.name="yes8080-dev-bot" \
+    -c user.email="317173623+yes8080-dev-bot@users.noreply.github.com" \
+    commit -F /tmp/msg.txt
 
-# 6) 等检查 → 由授权身份评审
+# 5) 交付（推送 + 开 PR 都用作者身份；推送被拒时脚本会带服务端原文失败退出）
+scripts/deliver.sh <issue#> --prepare --as author   # 生成六段骨架
+#  填写骨架（必须写真实证据；关联 Bug 写 Fixes #NNN）
+scripts/deliver.sh <issue#> --as author
+
+# 6) 等检查 → 由授权身份评审（评审必须用 reviewer 身份，不加 --as）
 gh pr checks <pr#> --required
 scripts/review.sh <pr#> approve --body-file review.md
 
-# 7) 合并 + 收尾
+# 7) 合并 + 收尾（**只有 dispatcher 能做**：AI Agent 不得合并）
 gh pr merge <pr#> --squash --delete-branch
 scripts/closeout.sh <pr#>
 ```

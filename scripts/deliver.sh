@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
-# scripts/deliver.sh <issue#> [--prepare] [--title TITLE] [--body-file FILE] [--dry-run]
+# scripts/deliver.sh <issue#> [--prepare] [--title TITLE] [--body-file FILE] [--as author|main] [--dry-run]
+#
+# --as <author|main>：执行身份。**默认 main**（gh 登录的主体 = dispatcher，向后兼容）。
+#   author = 作者身份 yes8080-dev-bot（凭据 .secrets/developer.pat，决策 D1：推送分支/开 PR）
+#   author 模式先做身份自检（当前生效身份必须等于凭据里的身份），再用该身份推送与建 PR
 #
 # W5「交付 PR」：一条命令完成
 #   ① 校验分支名合规且对应当前 Issue（policy/branch-name 的本地预演）
@@ -21,6 +25,7 @@ ISSUE=""
 TITLE=""
 BODY_FILE=""
 PREPARE=0
+AS="main"
 DRY=0
 
 while [ $# -gt 0 ]; do
@@ -28,17 +33,31 @@ while [ $# -gt 0 ]; do
     --prepare)   PREPARE=1; shift ;;
     --title)     TITLE="${2:?--title 需要取值}"; shift 2 ;;
     --body-file) BODY_FILE="${2:?--body-file 需要取值}"; shift 2 ;;
+    --as)        AS="${2:?--as 需要取值 author|main}"; shift 2 ;;
     --dry-run)   DRY=1; shift ;;
-    -h|--help)   sed -n '2,18p' "$0"; exit 0 ;;
+    -h|--help)   sed -n '2,20p' "$0"; exit 0 ;;
     *) ISSUE="$1"; shift ;;
   esac
 done
 
-[ -n "$ISSUE" ] || die "用法：scripts/deliver.sh <issue#> [--prepare] [--title ...] [--body-file ...]"
+[ -n "$ISSUE" ] || die "用法：scripts/deliver.sh <issue#> [--prepare] [--title ...] [--body-file ...] [--as author|main]"
 case "$ISSUE" in *[!0-9]*) die "Issue 编号必须是数字：${ISSUE}" ;; esac
+case "$AS" in author|main) : ;; *) die "--as 只能是 author|main（当前：${AS}）" ;; esac
 
 require_repo_root
-use_main_identity
+case "$AS" in
+  author)
+    # 作者身份链路（决策 D1 / Bug #53）：推送分支与开 PR 都由作者身份完成
+    use_developer_identity
+    assert_developer_identity
+    ;;
+  main)
+    use_main_identity
+    who="$(current_gh_login)"
+    [ -n "$who" ] || die "无法读取当前 gh 身份（gh 未登录？见 docs/PLAYBOOK.md §3）"
+    ok "本次执行身份（--as main）：${who}"
+    ;;
+esac
 
 [ -z "$BODY_FILE" ] && BODY_FILE=".git/PR_BODY_${ISSUE}.md"
 
@@ -129,19 +148,27 @@ git rev-parse --abbrev-ref --symbolic-full-name '@{u}' >/dev/null 2>&1 || \
   log "  （分支尚无上游，将自动推送）"
 
 if [ "$DRY" -eq 1 ]; then
-  log "[dry-run] git push -u origin ${BRANCH}"
+  log "[dry-run] git -c credential.helper= -c credential.helper='!gh auth git-credential' push -u origin ${BRANCH}"
   log "[dry-run] gh pr create --base ${BASE_BRANCH} --title \"${TITLE} (#${ISSUE})\" --body-file ${BODY_FILE}"
   exit 0
 fi
 
-info "推送分支"
-git push -u origin "$BRANCH" 2>&1 | tail -2
+info "推送分支（身份：$(current_gh_login)）"
+# 必须捕获退出码：`git push … | tail -2` 的管道退出码取自 tail（本脚本未开 pipefail），
+# 会把"推送被服务端拒绝"吞掉，然后继续用**远端的旧分支**建出一个 PR（Bug #51 的旁支隐患）。
+push_out=""
+if ! push_out="$(push_branch_as_current_identity "$BRANCH" 2>&1)"; then
+  printf '%s\n' "$push_out" >&2
+  die "推送失败（上方为服务端原文）。若含 'without workflow scope'，按 docs/PLAYBOOK.md W0.4 重新签发带 workflow scope 的作者凭据；**不要**改用主身份推送、不要 --admin"
+fi
+printf '%s\n' "$push_out" | tail -2
 
 info "创建 PR"
 url="$(gh pr create -R "$REPO" --base "$BASE_BRANCH" --title "${TITLE} (#${ISSUE})" --body-file "$BODY_FILE")"
 ok "PR 已创建：${url}"
 
 num="${url##*/}"
+ok "PR 作者：@$(pr_author "$num")（本次执行身份：$(current_gh_login)，--as ${AS}）"
 
 info "状态迁移：→ in-review"
 "$(dirname "$0")/status.sh" "$ISSUE" in-review

@@ -34,24 +34,32 @@ scripts/toolcheck.sh          # 10 项自检：命令/gh 登录/规则集漂移/
 
 ## 3. 凭据（身份与权限）
 
-本项目用**两个身份**模拟真实团队的评审独立性（决策 D2）：
+本项目用**三个身份**模拟真实团队的作者/评审分离（决策 D1 + D2）：
 
 | 身份 | 用途 | 凭据形式 | 存放 |
 |---|---|---|---|
-| 主身份 `yes8080` | 实现、治理、合并、发布 | 本机 `gh auth login`（`repo` scope 足够） | 系统钥匙串 |
+| dispatcher / 主身份 `yes8080` | 治理、规则集、合并、发布 | 本机 `gh auth login` | 系统钥匙串 |
+| 作者身份 `yes8080-dev-bot` | 建分支、提交、开 PR、返修（`--as author`） | **classic PAT，`repo` + `workflow`** | `.secrets/developer.pat`（0600，已 gitignore） |
 | 评审/验收身份 `yes8080-reviewer-bot` | 独立评审、`/accept` 记录 | **classic PAT，只勾 `repo`** | `.secrets/reviewer.pat`（0600，已 gitignore） |
 
-> **D9 后已不再需要 `project` scope 的凭据**：Projects 已移除，主身份只用 `gh` 登录（`repo` scope）即可。
+> **D9 后已不再需要 `project` scope 的凭据**：Projects 已移除，主身份只用 `gh` 登录即可。
 > 若你此前签发过带 `project` 的 token（`.secrets/main.pat`），**建议立即在 GitHub 上撤销**（本仓库已删除该文件）。
+> 作者身份为什么必须含 `workflow`：见 W0.4（Bug #51 原文与 PM 裁定）。
 
 **为什么必须是 classic 而不是 fine-grained**（官方限制，见 附录 C.3）：
 fine-grained PAT **无法**用于"用户作为 repository collaborator 的仓库"，也**无法**访问"用户账号拥有的 Projects"—— 本项目两条都踩中。
 
 **使用方式**（脚本已封装，手工操作时照此）：
+`scripts/start.sh` / `scripts/deliver.sh` 的 `--as author|main` 会自动完成下面的切换与自检，**不要**再用 `GITHUB_TOKEN=` 迂回（Bug #53）。
 
 ```bash
-# 主身份（作者）：不要设置 GH_TOKEN
-unset GH_TOKEN
+# 主身份（dispatcher）：不要设置 GH_TOKEN / GITHUB_TOKEN
+unset GH_TOKEN GITHUB_TOKEN
+
+# 作者身份（建分支/提交/开 PR）
+export GH_TOKEN="$(cat .secrets/developer.pat)"
+gh api user --jq .login        # 应输出 yes8080-dev-bot
+unset GH_TOKEN                 # 用完立刻切回主身份
 
 # 评审身份
 export GH_TOKEN="$(cat .secrets/reviewer.pat)"
@@ -89,6 +97,10 @@ unset GH_TOKEN                 # 用完立刻切回主身份
 | **绕过 `start.sh` 直接建分支会被门禁拒绝** | 用 `gh issue develop` 手工建分支**跳过了状态迁移**：Issue 仍在 `Backlog`（无 `status/*` 标签）→ `policy/branch-name` 判定「从 Backlog 直接开 PR」并失败。**而且改标签不会重跑 `pull_request` 事件**，失败的必需检查会永久留在该 SHA 上（Bug #13 同型） | 一律走 `scripts/start.sh <issue#>`（它内部建分支并迁状态）；若已手工建分支，先执行 `scripts/status.sh <issue#> in-progress`，**再推一个新提交产生新 SHA** 触发重跑 |
 | **同一 workspace 只允许一个执行者** | 两个执行者并发会互相删分支/切 HEAD（本项目已实际发生：演练执行者的分支被我清理时被切走，它靠悬空 commit 恢复） | 交接必须显式"让出"：确认对方工作区干净且已切回 `main` 后再动手。**默认串行**：`/Users/ws/code/AGENTS.md` 明令禁止 `clone` / `worktree` / 隔离实现副本（走重复依赖与配置漂移），因此**不允许靠开副本并行**；`scripts/toolcheck.sh` 会检测 worktree 数量并拒绝继续 |
 | **环境里残留失效的 `GH_TOKEN` 会让所有脚本在 source 阶段就失败** | `lib.sh` 在 **source 时**（早于 `use_main_identity`）就用 `gh repo view` 解析 `REPO`，失效 token → 报"无法确定仓库" | 要强制主身份的脚本需在 `source lib.sh` **之前** `unset GH_TOKEN`（`scripts/report.sh` 已如此处理）；排查时先 `unset GH_TOKEN` |
+| **`GITHUB_TOKEN` 会悄悄顶掉"主身份"** | `gh` 的凭据回退链是 `GH_TOKEN` → `GITHUB_TOKEN` → 登录态。早期 `use_main_identity` 只清 `GH_TOKEN`，于是 `GITHUB_TOKEN=<作者 PAT> scripts/xxx.sh`（Bug #53 的临时绕过）会以**作者身份**跑"主身份脚本" | 两个 `use_*_identity` 现在都显式清理这两个变量；`--as main|author` 是**唯一**的文档化选择方式，不要再用环境变量迂回（Bug #53/#54） |
+| **作者身份推送 `.github/workflows/**` 需要 `workflow` scope** | 只有一个 `repo` 的 classic PAT 会让**整个 push** 被服务端拒绝：`refusing to allow a Personal Access Token to create or update workflow … without 'workflow' scope`（Bug #51，作者身份的 `--as author` 会告警，`scripts/toolcheck.sh` 第 10 项会直接失败） | 按 W0.4 重新签发作者 classic PAT：`repo` + `workflow`；**不要**改用主身份推、**不要** `--admin` |
+| **把命令输出接给 `tail` 会吞掉失败退出码** | 未开 `pipefail` 时管道退出码取自最后一个命令：旧版 `deliver.sh` 的 `git push … 2>&1` 接 `tail -2`，推送被服务端拒绝后仍继续执行，可能用**远端的旧分支**建出一个 PR | 需要"既看输出又判失败"时先赋值再判：`if ! out="$(cmd 2>&1)"; then …; fi`（`scripts/deliver.sh` 已如此处理） |
+| **作者身份（`repo` + `workflow`）用不了 `gh pr edit`** | `gh pr edit` 走 **GraphQL**，其查询取 `login` / `name` / `slug` 等字段、需要 `read:org`；作者 PAT 只有 `repo` + `workflow` → `GraphQL: Your token has not been granted the required scopes … 'read:org'`，**正文不会被更新**（#54 实测） | 改 PR 正文用 **REST**：`jq -Rs '{body:.}' 正文.md \| GH_TOKEN="$(cat .secrets/developer.pat)" gh api -X PATCH repos/{o}/{r}/pulls/<n> --input -`。`gh pr create` / `gh pr comment` / `gh pr view` 走 REST，不受影响。是否给作者 PAT 补 `read:org`（会降低最小权限）或封装 helper，属新切片，需 PM 裁定 |
 
 ---
 
@@ -112,16 +124,34 @@ scripts/sync-labels.sh                     # 标签即代码（幂等，不删�
 
 **角色 ↔ 账号 ↔ 凭据对照**
 
-| 角色 | 账号 | 凭据 | 权限 |
+| 角色 | 账号 | 凭据 | scope（classic PAT）与权限 |
 |---|---|---|---|
-| dispatcher（**唯一合并者** + 仓库/规则集管理） | `yes8080` | `gh` 登录态 | admin |
-| 作者（建分支 / 提交 / 开 PR / 返修） | `yes8080-dev-bot` | `.secrets/developer.pat` | write（**禁合并**） |
-| 评审 + 验收（approve、`/accept`） | `yes8080-reviewer-bot` | `.secrets/reviewer.pat` | write（**禁合并、禁改码**） |
+| dispatcher（**唯一合并者** + 仓库/规则集管理） | `yes8080` | `gh` 登录态 | `repo` + `workflow`（登录态）；仓库 admin |
+| 作者（建分支 / 提交 / 开 PR / 返修） | `yes8080-dev-bot` | `.secrets/developer.pat` | **`repo` + `workflow`**；write（**禁合并**） |
+| 评审 + 验收（approve、`/accept`） | `yes8080-reviewer-bot` | `.secrets/reviewer.pat` | 只勾 `repo`；write（**禁合并、禁改码**） |
 
 **为什么必须是 classic PAT（官方依据）**
 - **细粒度 PAT 不可用**：官方明确列为未支持缺口 —— "contribute to **repositories where the user is an outside or repository collaborator**"。我们的 bot 恰是协作者。
 - **GitHub App 不可用于评审**：CODEOWNERS 只接受"具有显式 `write` 权限的**用户名或团队名**"，App 不是协作者、不能成为 code owner → 会让 `require_code_owner_review` **永久无法满足**（Bug #13 同型死锁）。
 - 结论：**评审身份必须是"用户账号 + classic PAT"**。
+
+**为什么作者身份必须多勾一个 `workflow`（Bug #51 实测，2026-10-04 更正）**
+
+原文（旧版 W0.4）写的是"Scope **只勾 `repo`**"，**这是错的**。`repo` 单独不足以创建/更新
+`.github/workflows/**`：推送会被服务端**整体拒绝**（整个 push 失败，不是只跳过那个文件），原文：
+
+```text
+! [remote rejected] <branch> -> <branch>
+(refusing to allow a Personal Access Token to create or update workflow
+ `.github/workflows/required-checks.yml` without `workflow` scope)
+```
+
+判据与影响面：去掉该文件改动后**完全相同的推送命令**立即成功（`1b67b18..5dd89ec`），
+说明失败原因确定是 PAT scope，而不是网络/权限/分支保护（证据见 Bug #51）。
+`.github/workflows/**` 正是本套件"往目标仓库装策略"的核心目录（S4 的四项策略就是 workflow 文件），
+若只有 dispatcher 能推，等于把写权限重新集中回单一账号，与决策 D1 的身份分离目标相矛盾 ——
+因此 PM 裁定（#51）：**给作者身份补 `workflow` scope**，而不是"workflow 改动只能由 dispatcher 推"。
+`scripts/toolcheck.sh` 第 10 项会硬校验作者 scope（缺 `workflow` 直接失败，不会静默跳过）。
 
 **开通流程（对每个角色重复）**
 
@@ -129,7 +159,7 @@ scripts/sync-labels.sh                     # 标签即代码（幂等，不删�
    - **必须先用目标账号登录浏览器**（建议无痕窗口）。登错账号会生成属于别人的 token —— 本项目实测踩过。
    - https://github.com/settings/tokens → `Generate new token (classic)`
    - Note：`<repo>-<role>`（如 `pm4gh-dev`）；Expiration：建议 90 天
-   - Scope **只勾 `repo`**
+   - **Scope：作者 = `repo` + `workflow`；评审 = 只勾 `repo`**（作者的 `workflow` 不可省，见上一节原文）
 2. **保存进项目**（绝不进版本库）
    ```bash
    printf '%s' '<token>' > .secrets/developer.pat
@@ -155,9 +185,9 @@ scripts/sync-labels.sh                     # 标签即代码（幂等，不删�
    ```
 6. **等初始化并回读验证**（权限生效不是瞬时的，**必须**回读确认而不是假定成功）
    ```bash
-   scripts/toolcheck.sh      # 第 10 项校验两个 bot 身份与权限
+   scripts/toolcheck.sh      # 第 10 项校验两个 bot 身份、权限**与 scope**
    ```
-   期望：`push=true`、`admin=false`、读 Issue 返回 200。
+   期望：`push=true`、`admin=false`、读 Issue 返回 200；**作者凭据 scope 含 `repo` + `workflow`**（缺 `workflow` 该项直接失败）。
 
 > **典型症状**：身份与 scope 都正确、却访问仓库 **404** —— 说明第 4/5 步没做（私有仓库对无权限者隐藏存在性）。
 > **登记要求**：新增协作者属**持久权限**，必须在套件 `manifest.json` 中登记；卸载时**询问式**处理（默认保留并报告，`--force` 才撤销）。
@@ -280,29 +310,51 @@ gh issue edit <issue#> --add-label "prio/P1,size/3"
 
 ### W3 领取与开工
 ```bash
-scripts/start.sh <issue#>                      # 推荐
-# 等价手工命令：
+scripts/start.sh <issue#> --as author          # 推荐：决策 D1 —— 建分支/指派/开工评论都记在作者名下
+# 若确实要以 dispatcher 身份开工（默认值，向后兼容）：
+scripts/start.sh <issue#> --as main
+# 等价手工命令（执行身份由 GH_TOKEN 决定，见 §3）：
 gh issue develop <issue#> --base main --name slice/<issue#>-<slug> --checkout
 gh issue edit <issue#> --add-assignee @me
 scripts/status.sh <issue#> in-progress      # 状态迁移（start.sh 已自动执行）
 ```
 **必须用 `gh issue develop`**：手工 `git checkout -b` 不会建立 Issue ↔ 分支绑定，Issue 的 Development 区块不显示分支。
 
+`--as author|main`（Bug #53 PM 裁定）：
+- **默认 `main`**（`gh` 登录的 dispatcher 身份），保持向后兼容；`author` 用 `.secrets/developer.pat`。
+- `--as author` 会调用 `use_developer_identity()` 并做**两道自检**：① 当前生效身份 == 凭据里的作者身份；
+  ② **身份分离**（作者 ≠ 评审、作者 ≠ `gh` 登录的主身份）。任一不满足即失败退出 ——
+  这样 Issue 指派、开工评论、分支、提交、PR 的作者全部是 `yes8080-dev-bot`（D1），
+  也堵住"token 放错文件 / 登错浏览器账号导致作者身份静默变成主身份"的坑（W0.4 实测踩过）。
+- **状态标签迁移仍由 `status.sh` 以主身份执行**：状态机是共享记账动作，不属于"作者身份上链"的四处。
+- 早期为了以作者身份开工，只能用**未文档化**的 `GITHUB_TOKEN="$(cat .secrets/developer.pat)"` 迂回；
+  现在 `--as author` 是唯一文档化入口，`GITHUB_TOKEN` 迂回**不再需要也不可靠**（`use_main_identity` 会清掉它）。
+
 ### W4 开发与提交
 ```bash
-# Conventional Commits + Issue 号
-git commit -m "feat(scope): 说明 (#123)"
-bash -n scripts/*.sh        # 若改了脚本
+# Conventional Commits + Issue 号；**提交信息用 -F 传文件**（带反引号/多行的信息不要内联到命令行）
+printf '%s\n' "feat(scope): 说明 (#123)" > /tmp/msg.txt
+git -c user.name="yes8080-dev-bot" \
+    -c user.email="317173623+yes8080-dev-bot@users.noreply.github.com" \
+    commit -F /tmp/msg.txt
+
+bash -n scripts/*.sh                        # 若改了脚本（CI 的 ci/lint 现在覆盖全部被跟踪的 *.sh）
+bash toolkit/tests/self-test.sh             # 若改了 toolkit/
 ```
+**为什么提交要显式 `-c`**：`--as author` 只切换 `gh` 的 API 身份（`GH_TOKEN`），**不会**改 git 的 `user.name/user.email`。
+不显式指定时，提交会记在本地全局 git 配置（通常是主身份）名下 → 四处身份不一致（D1 落空）。
+两个值可直接复制 `scripts/start.sh <issue#> --as author` 结尾打印的那一行。
 
 ### W5 交付 PR
 ```bash
-scripts/deliver.sh <issue#> --prepare    # 生成六段正文骨架到 .git/PR_BODY_<n>.md
-# 填写骨架（六段都要有实质内容）
-scripts/deliver.sh <issue#>              # 校验并创建 PR
+scripts/deliver.sh <issue#> --prepare --as author   # 生成六段正文骨架到 .git/PR_BODY_<n>.md
+# 填写骨架（六段都要有实质内容；关联 Bug 时写 Fixes #NNN）
+scripts/deliver.sh <issue#> --as author             # 推送分支 + 创建 PR（作者身份）
 ```
 判定：正文含 `Closes #<issue#>`；六段齐备；工作区干净；分支名合规。
-`deliver.sh` 会自动把状态迁到 `in-review`。
+`deliver.sh` 会自动把状态迁到 `in-review`，并回显 `PR 作者：@<身份>`（与本次 `--as` 对照即可发现身份串位）。
+推送失败时脚本会**带服务端原文失败退出**（不再被 `tail` 吞掉）；若原文是 `without 'workflow' scope`，按 W0.4 重签凭据，
+**不要**改用主身份推、**不要** `--admin`。
 
 ### W6 独立评审
 ```bash
@@ -339,6 +391,7 @@ scripts/closeout.sh <pr#>         # 五项核验：已合并 / Issue 已关 / �
 2. 新提交会**驳回已有批准**（`dismiss_stale_reviews_on_push`）→ 必须重新评审。
 3. 挂 `src/rework` 标签用于统计返修率。
 4. **返修上限 2 次**；第 3 次打回必须升级为"切片重切"或"需求澄清"，由 PM 决策并记录。
+5. 返修时若要改 **PR 正文**：不要用 `gh pr edit`（作者凭据缺 `read:org`，见 §4 环境陷阱），用 REST `gh api -X PATCH repos/{o}/{r}/pulls/<n>`。
 
 ### W10 Bug 修复
 | 场景 | 处理 |
@@ -409,7 +462,7 @@ gh api repos/{o}/{r}/commits/<head-sha>/check-runs --jq '.check_runs[] | "\(.nam
 | 步骤 | 为什么必须人工 | 具体做法 |
 |---|---|---|
 | 接受 collaborator 邀请 | 需以被邀请账号登录 | 用 `yes8080-reviewer-bot` 打开 `https://github.com/yes8080/pm4gh/invitations` |
-| 签发/轮换 PAT | 需在目标账号的浏览器会话中操作 | classic token；reviewer 勾 `repo`；main 勾 `repo`+`project`；写入 `.secrets/<name>.pat` 后 `chmod 600` |
+| 签发/轮换 PAT | 需在目标账号的浏览器会话中操作 | classic token；**作者（`yes8080-dev-bot`）勾 `repo` + `workflow`**；评审（`yes8080-reviewer-bot`）勾 `repo`；主身份（`yes8080`）用 `gh auth login`（D9 后不再需要 `project`）。写入 `.secrets/<name>.pat` 后 `chmod 600`，并跑 `scripts/toolcheck.sh` 第 10 项核对身份/权限/scope |
 | **规则集分阶段应用** | 一把覆盖会让所有 PR 卡死 | 见下 |
 | **规则集应急回退** | 唯一的"开门"手段 | `gh api -X DELETE repos/yes8080/pm4gh/rulesets/24442991` |
 | **必需检查改名** | 改名会让所有 PR 永久 pending | ①规划新名 ②同时改工作流 job 名与规则集 context（先加后删，避免空窗）③合并后立刻验证新检查上报 ④更新本文与 `.github/rulesets/README.md` |

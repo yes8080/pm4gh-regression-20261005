@@ -7,9 +7,13 @@
 #   2. 变量后紧跟中文等多字节字符时必须写 ${VAR}，否则 bash 3.2 会把字节序列并入变量名，
 #      报 "unbound variable"（同一坑已踩到三次）
 #
-# 身份约定（方案 §6.2 D2）：
-#   · 主身份 = gh 已登录账号（作者/实现者）→ 用 use_main_identity
+# 身份约定（决策 D1/D2，W0.4）：
+#   · 主/dispatcher 身份 = gh 已登录账号（yes8080：治理、合并）→ 用 use_main_identity
+#   · 作者身份 = .secrets/developer.pat（yes8080-dev-bot：建分支/提交/开 PR/返修）→ 用 use_developer_identity
 #   · 评审/验收身份 = .secrets/reviewer.pat（授权清单里的账号）→ 用 use_reviewer_identity
+#   脚本级入口：scripts/start.sh|deliver.sh 的 `--as author|main`（Bug #53）。
+#   gh 的凭据回退链是 GH_TOKEN → GITHUB_TOKEN → 登录态，所以两个 use_* 都必须把两个环境变量都定死，
+#   否则环境里残留的变量会让"作者身份"或"主身份"静默变成另一个身份（Bug #53 / #54）。
 #
 # 用法：. "$(dirname "$0")/lib.sh"
 
@@ -57,8 +61,31 @@ RULESET_FILE="${RULESET_FILE:-.github/rulesets/main-protection.json}"
 BASE_BRANCH="${BASE_BRANCH:-main}"
 
 # ── 身份切换 ────────────────────────────────────────────────
+# 主身份 = gh 登录态。必须**同时**清掉 GH_TOKEN 与 GITHUB_TOKEN：
+# gh 的优先级是 GH_TOKEN > GITHUB_TOKEN > 登录态，早期只清 GH_TOKEN 时，
+# `GITHUB_TOKEN=<作者 PAT> scripts/xxx.sh`（Bug #53 的临时绕过）会让主身份脚本静默变成作者身份。
 use_main_identity() {
   unset GH_TOKEN || true
+  unset GITHUB_TOKEN || true
+}
+
+# 当前生效身份（GH_TOKEN / GITHUB_TOKEN 或 gh 登录态）—— 用于把"身份到底是谁"做成可核对输出
+current_gh_login() { gh api user --jq .login 2>/dev/null || true; }
+
+# 读取 classic PAT 的 OAuth scope 列表（只读响应头，不打印凭据本身）。
+# 官方格式：`x-oauth-scopes: repo, workflow`（逗号 + 空格分隔）。
+# 返回空 = 拿不到 scope 头（凭据失效，或不是 classic PAT）→ 调用方必须按"未知/失败"处理，
+# 不得当成"没有 scope 要求"而跳过（Bug #51 的教训：缺 scope 会在服务端整体拒绝推送）。
+pat_scopes() {
+  local file="${1:-}"
+  [ -s "$file" ] || return 0
+  command -v curl >/dev/null 2>&1 || return 0
+  curl -sS -I -H "Authorization: token $(cat "$file")" https://api.github.com/user 2>/dev/null \
+    | grep -i '^x-oauth-scopes:' \
+    | sed -E 's/^[Xx]-[Oo][Aa]uth-[Ss]copes:[[:space:]]*//' \
+    | tr -d '\r' | tr ',' '\n' \
+    | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' \
+    | grep -v '^$' || true
 }
 
 # 作者身份（决策 D1）：建分支、提交、开 PR、返修用 dev-bot；合并权不在此身份
@@ -66,16 +93,77 @@ use_developer_identity() {
   [ -s "$DEVELOPER_PAT_FILE" ] || die "找不到作者身份凭据 ${DEVELOPER_PAT_FILE}（开通流程见 docs/PLAYBOOK.md W0.4）"
   GH_TOKEN="$(cat "$DEVELOPER_PAT_FILE")"
   export GH_TOKEN
+  # GH_TOKEN 优先于 GITHUB_TOKEN，这里只是为了不留歧义（见 use_main_identity 注释）
+  unset GITHUB_TOKEN || true
   local who
-  who="$(gh api user --jq .login 2>/dev/null || true)"
+  who="$(current_gh_login)"
   [ -n "$who" ] || die "作者身份凭据无效（无法读取身份）"
   ok "已切换作者身份：${who}"
+
+  # scope 自检（Bug #51 / W0.4）：缺 workflow 时服务端会整体拒绝推送 .github/workflows/**。
+  # 这里只**告警不阻断**（不碰 workflows 的切片仍可用作者身份干活）；
+  # 硬门禁在 scripts/toolcheck.sh 第 10 项 —— 那里缺 workflow 直接失败。
+  local scopes
+  scopes="$(pat_scopes "$DEVELOPER_PAT_FILE" | tr '\n' ' ' | sed -E 's/[[:space:]]+$//')"
+  case " ${scopes} " in
+    *" workflow "*) ok "作者凭据 scope 含 workflow（可推送 .github/workflows/**）" ;;
+    *) warn "作者凭据 scope 不含 workflow（实测 scope：${scopes:-读取不到}）—— 触碰 .github/workflows/** 的推送会被服务端整体拒绝（原文见 docs/PLAYBOOK.md W0.4）；scripts/toolcheck.sh 第 10 项会直接失败" ;;
+  esac
 }
 
 use_reviewer_identity() {
   [ -s "$REVIEWER_PAT_FILE" ] || die "找不到评审身份凭据 ${REVIEWER_PAT_FILE}（见 docs/PLAYBOOK.md 凭据章节）"
   GH_TOKEN="$(cat "$REVIEWER_PAT_FILE")"
   export GH_TOKEN
+  unset GITHUB_TOKEN || true
+}
+
+# 身份自检：① 当前生效身份必须与作者凭据文件里的身份一致（防止 GH_TOKEN 没真正生效而静默退回主身份）；
+#          ② 身份分离（D1）：作者身份不得等于评审身份，也不得等于 gh 登录的主身份。
+# 为什么需要 ②：W0.4 实测教训 —— 登错浏览器账号 / 把 token 复制进错误文件，都会让"作者身份"静默变成
+# 主身份或评审身份，D1 就名存实亡，而工具链完全看不出来。
+assert_developer_identity() {
+  local want me reviewer main_login
+  want="$(GH_TOKEN="$(cat "$DEVELOPER_PAT_FILE")" gh api user --jq .login 2>/dev/null || true)"
+  me="$(current_gh_login)"
+  [ -n "$want" ] || die "无法从 ${DEVELOPER_PAT_FILE} 读取作者身份（凭据失效？见 docs/PLAYBOOK.md W0.4）"
+  [ "$me" = "$want" ] || die "身份自检失败：当前生效身份是 ${me}，期望作者身份 ${want}（不要用未文档化的 GITHUB_TOKEN 迂回，见 Bug #53）"
+  ok "身份自检通过：当前生效身份 = 作者身份 ${me}"
+
+  if [ -s "$REVIEWER_PAT_FILE" ]; then
+    reviewer="$(GH_TOKEN="$(cat "$REVIEWER_PAT_FILE")" gh api user --jq .login 2>/dev/null || true)"
+    if [ -n "$reviewer" ]; then
+      [ "$me" != "$reviewer" ] || die "身份分离自检失败：当前生效身份 ${me} 与评审身份相同 —— 检查 ${DEVELOPER_PAT_FILE} 与 ${REVIEWER_PAT_FILE} 是否拿错（作者不得等于评审）"
+      ok "身份分离自检：作者 ${me} ≠ 评审 ${reviewer}"
+    fi
+  fi
+
+  main_login="$(env -u GH_TOKEN -u GITHUB_TOKEN gh api user --jq .login 2>/dev/null || true)"
+  if [ -n "$main_login" ]; then
+    [ "$me" != "$main_login" ] || die "身份分离自检失败：当前生效身份 ${me} 与 gh 登录的主身份相同 —— ${DEVELOPER_PAT_FILE} 很可能误放了主身份的 token（W0.4 实测踩过：登错浏览器账号）"
+    ok "身份分离自检：作者 ${me} ≠ 主身份 ${main_login}"
+  else
+    warn "读不到 gh 登录的主身份，跳过「作者 ≠ 主身份」这一条自检（gh 未登录？见 docs/PLAYBOOK.md §3）"
+  fi
+}
+
+# 作者身份的 git 提交者信息（运行时从凭据推导；不硬编码账号与数字 ID）
+# 输出一行：<login> <id>+<login>@users.noreply.github.com
+developer_git_identity() {
+  local login id
+  login="$(current_gh_login)"
+  id="$(gh api user --jq .id 2>/dev/null || true)"
+  [ -n "$login" ] && [ -n "$id" ] || return 1
+  printf '%s %s+%s@users.noreply.github.com' "$login" "$id" "$login"
+}
+
+# 以**当前生效身份**推送分支。
+# 为什么必须清空本地 credential.helper：macOS 钥匙串等 helper 里缓存的主身份凭据会优先命中，
+# 让"作者身份推送"静默变成主身份推送（身份分离失效）；换成 gh 的凭据助手则跟随 GH_TOKEN。
+# 这条命令就是 Bug #51 复现时用的等价命令，现在收进脚本，不再需要手工拼。
+push_branch_as_current_identity() {
+  local branch="$1"
+  git -c credential.helper= -c credential.helper='!gh auth git-credential' push -u origin "$branch"
 }
 
 # ── 查询helper ──────────────────────────────────────────────

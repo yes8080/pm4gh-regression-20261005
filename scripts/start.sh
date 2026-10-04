@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
-# scripts/start.sh <issue#> [--type slice|fix|hotfix|spike|chore] [--slug SLUG] [--dry-run]
+# scripts/start.sh <issue#> [--type slice|fix|hotfix|spike|chore] [--slug SLUG] [--as author|main] [--dry-run]
+#
+# --as <author|main>：执行身份。**默认 main**（gh 登录的主体 = dispatcher，向后兼容）。
+#   author = 作者身份 yes8080-dev-bot（凭据 .secrets/developer.pat，决策 D1：建分支/指派/开工评论/提交/开 PR）
+#   author 模式先做身份自检（当前生效身份必须等于凭据里的身份），再执行；结尾会打印作者身份的提交命令
 #
 # W3「领取与开工」：一条命令完成
 #   ① 校验 Issue 可开工（OPEN、无未关闭阻塞、未被他人占用）
@@ -15,24 +19,39 @@ set -eu
 ISSUE=""
 TYPE="slice"
 SLUG=""
+AS="main"
 DRY=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --type)  TYPE="${2:?--type 需要取值}"; shift 2 ;;
     --slug)  SLUG="${2:?--slug 需要取值}"; shift 2 ;;
+    --as)    AS="${2:?--as 需要取值 author|main}"; shift 2 ;;
     --dry-run) DRY=1; shift ;;
-    -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,14p' "$0"; exit 0 ;;
     *) ISSUE="$1"; shift ;;
   esac
 done
 
-[ -n "$ISSUE" ] || die "用法：scripts/start.sh <issue#> [--type ...] [--slug ...] [--dry-run]"
+[ -n "$ISSUE" ] || die "用法：scripts/start.sh <issue#> [--type ...] [--slug ...] [--as author|main] [--dry-run]"
 case "$ISSUE" in *[!0-9]*) die "Issue 编号必须是数字：${ISSUE}" ;; esac
 case "$TYPE" in slice|fix|hotfix|spike|chore) : ;; *) die "type 只能是 slice|fix|hotfix|spike|chore" ;; esac
+case "$AS" in author|main) : ;; *) die "--as 只能是 author|main（当前：${AS}）" ;; esac
 
 require_repo_root
-use_main_identity
+case "$AS" in
+  author)
+    # 作者身份链路（决策 D1 / Bug #53）：建分支、指派、开工评论、开 PR 全部由作者身份完成
+    use_developer_identity
+    assert_developer_identity
+    ;;
+  main)
+    use_main_identity
+    who="$(current_gh_login)"
+    [ -n "$who" ] || die "无法读取当前 gh 身份（gh 未登录？见 docs/PLAYBOOK.md §3）"
+    ok "本次执行身份（--as main）：${who}"
+    ;;
+esac
 
 info "校验 Issue #${ISSUE}"
 state="$(issue_state "$ISSUE")"
@@ -76,7 +95,7 @@ gh issue comment "$ISSUE" -R "$REPO" --body "$(cat <<EOF
 **开工声明**
 
 - 分支：\`${BRANCH}\`（由 \`gh issue develop\` 创建并绑定）
-- 执行者：@$(gh api user --jq .login)
+- 执行者：@$(current_gh_login)（\`--as ${AS}\`；作者身份 = 决策 D1）
 - 预计交付：
 - 依赖状态：无未关闭阻塞
 
@@ -91,4 +110,15 @@ info "状态迁移：backlog/ready → in-progress"
 echo
 log "下一步："
 log "  1) 实现并用 scripts/selfcheck 或本地测试自检"
-log "  2) scripts/deliver.sh ${ISSUE} 交付 PR"
+if [ "$AS" = "author" ]; then
+  gi="$(developer_git_identity || true)"
+  log "  2) 以作者身份提交（提交者身份必须显式指定；提交信息用 -F 传文件，不要把带反引号的信息内联到命令行）："
+  if [ -n "$gi" ]; then
+    log "     git -c user.name=\"${gi%% *}\" -c user.email=\"${gi#* }\" commit -F <msg-file>"
+  else
+    log "     git -c user.name=<作者账号> -c user.email=<账号ID>+<作者账号>@users.noreply.github.com commit -F <msg-file>"
+  fi
+  log "  3) scripts/deliver.sh ${ISSUE} --prepare --as author   然后   scripts/deliver.sh ${ISSUE} --as author"
+else
+  log "  2) scripts/deliver.sh ${ISSUE} 交付 PR"
+fi

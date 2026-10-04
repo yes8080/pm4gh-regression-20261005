@@ -18,7 +18,7 @@ fail=0
 note_fail() { warn "$1"; fail=$((fail + 1)); }
 
 info "1/8 基础命令"
-for c in git gh jq awk grep sed; do
+for c in git gh jq awk grep sed curl; do
   if command -v "$c" >/dev/null 2>&1; then ok "${c} 可用"; else note_fail "缺少命令 ${c}，请先安装"; fi
 done
 
@@ -182,16 +182,16 @@ else
   fi
 fi
 
-echo
-if [ "$fail" -eq 0 ]; then
-  info "10/10 两个 bot 凭据（作者 / 评审）"
+info "10/10 两个 bot 凭据（作者 / 评审）"
+# 注意：本项**不再**被 `if [ "$fail" -eq 0 ]` 包住 —— 凭据与 scope 的失败必须始终暴露，
+# 不能因为前面某一项失败就整段静默跳过（PM 裁定 #51：「失败要暴露，不要静默跳过」）。
 for pair in "developer:${DEVELOPER_PAT_FILE:-.secrets/developer.pat}:作者" "reviewer:${REVIEWER_PAT_FILE:-.secrets/reviewer.pat}:评审"; do
   role="${pair%%:*}"; rest="${pair#*:}"; file="${rest%%:*}"; label="${rest#*:}"
   if [ ! -s "$file" ]; then
     note_fail "${label}身份凭据缺失：${file}（开通流程见 docs/PLAYBOOK.md W0.4）"
     continue
   fi
-  mode="$(stat -f '%Lp' "$file" 2>/dev/null || stat -c '%a' "$file" 2>/dev/null || echo '?')"
+  mode="$(file_mode "$file")"
   [ "$mode" = "600" ] && ok "${label}凭据权限 600" || warn "${label}凭据权限为 ${mode}（建议 600）"
   git ls-files --error-unmatch "$file" >/dev/null 2>&1 && note_fail "${label}凭据已进入版本库：${file}" || ok "${label}凭据未进入版本库"
   tok="$(cat "$file")"
@@ -203,9 +203,33 @@ for pair in "developer:${DEVELOPER_PAT_FILE:-.secrets/developer.pat}:作者" "re
     none)       note_fail "${label}身份 ${login} 对本仓库无访问权（404）—— 是否漏做 W0.4 第 4/5 步（邀请+同意）？" ;;
     *)          warn "${label}身份 ${login} 权限异常：push/admin=${perms}" ;;
   esac
+
+  # ── scope 校验（Bug #51 / W0.4）────────────────────────────
+  # classic PAT 的 scope 只在响应头 `x-oauth-scopes: repo, workflow`（逗号 + **空格**分隔；别写成无空格匹配）。
+  # 作者身份必须含 workflow：单独 `repo` 不足以创建/更新 `.github/workflows/**` —— 服务端会**整体拒绝**推送，原文：
+  #   refusing to allow a Personal Access Token to create or update workflow
+  #   '.github/workflows/required-checks.yml' without 'workflow' scope
+  # 拿不到 scope 头（凭据失效 / 不是 classic PAT）必须按**失败**处理，不得静默跳过（PM 裁定 #51）。
+  scopes="$(pat_scopes "$file" | tr '\n' ' ' | sed -E 's/[[:space:]]+$//')"
+  if [ -z "$scopes" ]; then
+    note_fail "${label}凭据读不到 OAuth scope 头（已失效，或不是 classic PAT）—— 无法证明 scope 合规；作者需 repo + workflow，见 docs/PLAYBOOK.md W0.4"
+  else
+    case " ${scopes} " in
+      *" repo "*) ok "${label}凭据 scope 含 repo（实测：${scopes}）" ;;
+      *)          note_fail "${label}凭据 scope 不含 repo（实测：${scopes}）—— 无法推送/建 PR" ;;
+    esac
+    if [ "$role" = "developer" ]; then
+      case " ${scopes} " in
+        *" workflow "*) ok "作者凭据 scope 含 workflow（可推送 .github/workflows/**）" ;;
+        *) note_fail "作者凭据 scope 缺 workflow（实测：${scopes}）—— 推送任何 .github/workflows/** 改动都会被服务端整体拒绝：refusing to allow a Personal Access Token to create or update workflow ... without 'workflow' scope。修法：按 docs/PLAYBOOK.md W0.4 重新签发 classic PAT，scope = repo + workflow" ;;
+      esac
+    fi
+  fi
 done
 
-ok "全部通过，可以开始工作"
+echo
+if [ "$fail" -eq 0 ]; then
+  ok "全部通过，可以开始工作"
   exit 0
 fi
 warn "共有 ${fail} 项未通过 —— 修好再开始（不要跳过：门禁失效或凭据失效都会让 PR 卡死）"
