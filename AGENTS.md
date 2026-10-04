@@ -56,7 +56,7 @@ GitHub 禁止自我批准；规则集另有 `require_last_push_approval`（新�
 |---|---|
 | `preflight.sh` 失败 | 停下，把失败项**原文**报告给 dispatcher |
 | 必需检查永久 pending | 核对 job `name` 是否被改名、工作流是否被 `paths` 过滤（WORKFLOW.md §已知陷阱） |
-| `mergeStateStatus=BLOCKED` 但 `reviewDecision=APPROVED` | 同一 SHA 上很可能有**失败过**的必需检查（不可逆）→ 报告，不要绕过 |
+| `mergeStateStatus=BLOCKED` 但 `reviewDecision=APPROVED` | 该 SHA 上留有**失败结论**的必需检查（不可逆）→ 报告，不要绕过 |
 | 发现流程缺陷 | 开 Bug Issue（复现 / 期望 / 实际 / 影响版本 / 缓解），不要顺手改掉 |
 | 发现需求歧义 | 停下请求澄清，不要自行扩大范围 |
 
@@ -66,4 +66,4 @@ GitHub 禁止自我批准；规则集另有 `require_last_push_approval`（新�
 - [ ] 分支已推送，PR 已开，正文含 `Closes #N` 与六段
 - [ ] 5 个必需检查状态已核对并记录
 - [ ] 若已合并：`scripts/closeout.sh` 五项全过（含「无残留状态标签」）
-- [ ] 踩到的新坑已写进 `docs/WORKFLOW.md` §已知陷阱
+- [ ] 新发现的坑已写进 `docs/WORKFLOW.md` §已知陷阱

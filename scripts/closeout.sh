@@ -4,7 +4,7 @@
 # W7「合并与收尾」的五项核验（合并由 dispatcher 完成后运行）：
 #   ① PR 已 MERGED（squash）
 #   ② 关联 Issue 已自动关闭
-#   ③ 远程头分支已删除
+#   ③ 远程不存在头分支
 #   ④ 本地头分支已清理（**先**把可恢复锚点写进 Issue，**再** git branch -D）
 #   ⑤ 关闭后无残留 status/* 标签
 #
@@ -69,13 +69,13 @@ else
   done
 fi
 
-info "③ 远程头分支是否已删除"
+info "③ 远端是否存在头分支"
 if [ -z "$branch" ]; then
   check_fail "无法确定 PR 的头分支名"
 elif git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
-  check_fail "远程分支 ${branch} 仍存在：git push origin --delete ${branch}"
+  check_fail "远端分支 ${branch} 仍存在：git push origin --delete ${branch}"
 else
-  check_ok "远程分支 ${branch} 已删除"
+  check_ok "远端无分支 ${branch}"
 fi
 
 info "④ 本地头分支清理（先留锚点，再删除）"
@@ -108,7 +108,7 @@ else
         cat > "$rec_file" <<REC
 **收尾记录（可恢复锚点）**
 
-- 分支：\`${branch}\`（已删除）
+- 分支：\`${branch}\`
 - 本地 tip SHA：\`${tip_sha:-未知}\`
 - PR head SHA：\`${head_sha:-未知}\`（**权威锚点**：GitHub 侧保留该提交，PR 页可 "Restore branch"）
 - 合并提交（squash）：\`${merge_sha:-未知}\`
@@ -127,7 +127,7 @@ REC
         check_fail "无法写入可恢复锚点 —— 按规则**不得**再删除本地分支（先修复写入权限）"
       fi
       if [ "$problems" -eq 0 ] && git branch -D "$branch" >/dev/null 2>&1; then
-        check_ok "本地分支 ${branch} 已删除（已确认 MERGED 且已留锚点）"
+        check_ok "本地分支 ${branch} 已清理（确认 MERGED 且留锚点后才执行）"
       elif [ "$problems" -ne 0 ]; then
         check_fail "存在未通过项，**拒绝**删除本地分支 ${branch}（先保全）"
       else
@@ -147,14 +147,14 @@ else
     if [ -z "$leftover" ]; then
       check_ok "Issue #${n} 无残留状态标签（Done 由 Issue 开关状态承载）"
     else
-      check_fail "Issue #${n} 关闭后仍带状态标签 ${leftover} —— 用 scripts/status.sh ${n} done 修正"
+      check_fail "Issue #${n} 关闭后仍带状态标签 ${leftover} —— 运行 scripts/status.sh ${n} done 清理（它会在不重开 Issue 的前提下移除残留标签）"
     fi
   done
 fi
 
 echo
 if [ "$problems" -eq 0 ]; then
-  ok "收尾五项全过：① 已合并 ② Issue 已关 ③ 远程分支已删 ④ 本地已清理+已留锚点 ⑤ 状态标签已清理"
+  ok "收尾五项全过：① 已合并 ② Issue 已关 ③ 远端无头分支 ④ 本地无头分支+已留锚点 ⑤ 无残留状态标签"
   exit 0
 fi
 warn "收尾存在 ${problems} 项未通过 —— 逐条修复后重跑本脚本"

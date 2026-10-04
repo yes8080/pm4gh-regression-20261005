@@ -2,7 +2,7 @@
 #
 # 生效前提：规则集 main-protection 里 require_code_owner_review=true（见 .github/rulesets/main-protection.json）。
 #
-# ★ 铁律（曾造成 P0 死锁）：**每个会被改动的路径都必须至少有一个"非作者"owner**。
+# ★ 铁律：**每个会被改动的路径都必须至少有一个"非作者"owner**。
 #   若某路径的 owner 只有作者本人，而 require_code_owner_review=true，则该路径的改动
 #   **永久无法合并** —— 因为 GitHub 禁止自我批准。且 CODEOWNERS **取自目标分支**：
 #   在某个 PR 里改本文件，无法为该 PR 自己解锁。

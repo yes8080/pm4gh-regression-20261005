@@ -176,7 +176,7 @@ jobs:
           done
           if git grep -nE '(^|[^A-Za-z0-9_])lib\.sh' -- scripts >/dev/null 2>&1; then
             git grep -nE '(^|[^A-Za-z0-9_])lib\.sh' -- scripts
-            echo "::error::scripts/ 引用了共享库 lib.sh —— v2 的脚本必须自包含（见 README）"
+            echo "::error::scripts/ 引用了共享库 lib.sh —— 脚本必须自包含（见 README.md）"
             fail=1
           fi
           if [ "$fail" -ne 0 ]; then exit 1; fi

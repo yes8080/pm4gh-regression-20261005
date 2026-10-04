@@ -34,6 +34,8 @@ Backlog(无 status/* 标签) → ready → in-progress → in-review → accepta
 | done / canceled | Issue CLOSED（`state_reason` = completed / not planned），并**清空**状态标签 |
 
 - 迁移**只能**走 `scripts/status.sh <issue#> <state>`。
+- `done` / `canceled` 有两个载体：Issue `CLOSED` **且**无任何 `status/*` 标签。`status.sh` 的幂等判断两者都核 ——
+  已关闭但仍有残留标签时，它会继续清理而不是短路返回。
 - 体检：`scripts/status.sh --check` 扫全部开放 Issue，每个必须 0 或 1 个 `status/*`；`ci/test` 每次 PR 也跑同一不变量。
 
 ---
@@ -133,7 +135,7 @@ gh pr merge <pr#> --squash --delete-branch     # 只有 @yes8080 能做
 scripts/closeout.sh <pr#>                      # 五项核验
 ```
 
-`closeout.sh` 五项：① PR 已 MERGED ② 关联 Issue 已关 ③ 远程头分支已删 ④ 本地头分支已清理 ⑤ 无残留状态标签。
+`closeout.sh` 五项：① PR 已 MERGED ② 关联 Issue 已关 ③ 远端无头分支 ④ 本地无头分支已清理 ⑤ 无残留状态标签。
 其中第 ④ 项**先**把「分支名 + 本地 tip SHA + PR head SHA + squash 提交」写进 Issue 作为可恢复锚点，**再**用
 `git branch -D` 删除（squash 合并后原始提交不在 `main` 上，`-d` 必然拒绝；但绝不允许无条件 `-D`）。
 
@@ -163,7 +165,8 @@ scripts/closeout.sh <pr#>                      # 五项核验
    把失败的必需项移出必需清单后立刻可合并）。→ 因此验收门禁只用**原生规则**
    （`required_approving_review_count: 1` + `require_last_push_approval` + `dismiss_stale_reviews_on_push`），
    不做成"先必然失败、批准后才通过"的检查。
-2. **必需检查的 context = 工作流里 job 的 `name:`**，不是文件名、不是 workflow `name:`。改名 = 所有 PR 永久 pending。
+2. **必需检查的 context = 工作流里 job 的 `name:`**，不是文件名、不是 workflow `name:`。
+   把 job 的 `name:` 改名 = 所有 PR 永久 pending。
    也不要给必需检查工作流加 `paths`/`branches` 过滤：被跳过的工作流 = 检查永久 pending。
    更不要用 `issue_comment` 触发：官方只认 `push`/`pull_request`/`pull_request_review`/`pull_request_target`/
    `deployment`/`deployment_status`（合并队列另加 `merge_group`）。
@@ -184,18 +187,18 @@ scripts/closeout.sh <pr#>                      # 五项核验
    `git -c credential.helper= -c credential.helper='!gh auth git-credential' push -u origin <branch>`
    —— 否则 macOS 钥匙串里缓存的主身份凭据会优先命中，"作者身份推送"会静默变成主身份推送。
 9. **macOS 自带 bash 是 3.2。** 禁 `mapfile`/`readarray`/`declare -A`/`${var,,}`；`$VAR` 后紧跟中文等多字节
-   字符必须写 `${VAR}`，否则字节序列被并入变量名 → `unbound variable`（本项目已踩过三次）。
+   字符必须写 `${VAR}`，否则字节序列被并入变量名 → `unbound variable`。
    `sed` 是 BSD 版：扩展正则要用 `sed -E`（BRE 的 `\+` 会被当字面量）。
 10. **`blockedBy` 不会因对方关闭而自动清除。** 判定"是否真被阻塞"必须看 blocker 的 `state`。
 11. **squash 合并后 `git branch -d` 必然拒绝**（原始提交不在 `main` 上）。先验证 PR=MERGED，留锚点，再 `-D`；
     绝不无条件 `-D`（那会掩盖"PR 未合并就删分支"的真实错误）。
-12. **不要把 `TOOLING.md`/`GOVERNANCE.md`/`PLAYBOOK.md` 那套找回来。** v2 的项目主体是"多 agent 用 GitHub 跑开发"，
-    不是发布一个可移植治理套件（Epic #43 的教训：元工具代码量超过被服务的工作就是失控信号）。
+12. **流程只在仓库里。** `docs/WORKFLOW.md` + `AGENTS.md` + `.github/**` + `scripts/**` 就是全部权威流程描述；
+    不引入第二套规范文档，也不发布"可移植治理套件"。元工具自身的代码量超过它服务的开发工作，就是失控信号。
 
 ---
 
-## 5. v2 明确不做
+## 5. 明确不做（边界）
 
 不做「装到别人仓库」（无安装器/卸载器）｜不做 Projects｜不做度量报表｜不做跨模型评审留痕｜不做能力开关｜
-不做共享库（`lib.sh` 已删）｜不做要求审批才能通过的自定义验收检查。
+不做共享库（每个脚本自包含）｜不做要求审批才能通过的自定义验收检查。
 **理由：本项目的价值是"多 agent 用 GitHub 跑开发"，不是发布工具。**

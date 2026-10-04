@@ -1,12 +1,12 @@
 # pm4gh
 
-**本项目的本质只有两条：多 agent + GitHub 工作流。**
+**本项目只做两件事：多 agent + GitHub 工作流。**
 
 - **多 agent**：作者 ≠ 评审 ≠ 合并。三者身份独立，**由 GitHub 平台强制**（不是靠自觉）
 - **GitHub 工作流**：Issue → 分支 → PR → 必需检查 → 独立评审 → squash 合并 → 收尾
 
-状态只存在 GitHub（`status/*` 标签 + Issue 开关状态）。没有本地状态文件、没有安装器、没有度量报表、
-没有"可移植治理套件"——那些是 2026-10 被 PM 裁定停掉的弯路（Epic #43）。
+状态只存在 GitHub（`status/*` 标签 + Issue 开关状态）：没有本地状态文件、没有安装器、没有度量报表、
+没有"可移植治理套件"。
 
 ## 三个身份
 
@@ -57,13 +57,12 @@ Backlog(无标签) → ready → in-progress → in-review → acceptance → Do
 |---|---|---|
 | `preflight.sh` | 开工前预检 | 三身份互不相同；线上规则集与仓库内定义一致 |
 | `start.sh` | Issue → 分支 | 分支名必须匹配 `^(slice\|fix\|hotfix\|spike\|chore)/\d+-[a-z0-9-]+$` |
-| `status.sh` | **唯一**状态迁移入口 | 开放 Issue 恰好 0 或 1 个 `status/*` |
+| `status.sh` | **唯一**状态迁移入口 | 开放 Issue 恰好 0 或 1 个 `status/*`；Done/Canceled 还要求无任何 `status/*` |
 | `deliver.sh` | 推送 + 开/更新 PR | 正文含 `Closes #N` + 六段 |
 | `review.sh` | 独立评审 | 评审身份 ≠ 作者身份 |
 | `closeout.sh` | 合并后核验 | 写分支 tip SHA + PR head SHA 到 Issue 再删分支 |
 
-> 早期版本有一个 288 行的 `scripts/lib.sh` 共享库。v2 删掉了它：每脚本自带那 20 行身份/工具函数，
-> 换来"单文件可读、可独立复制"。**不要再引入共享库。**
+> 每个脚本自带所需的身份/工具函数，不依赖共享库 —— 单文件可读、可独立复制。**不要引入共享库。**
 
 ## 铁律（违反会让 PR 永久卡住）
 

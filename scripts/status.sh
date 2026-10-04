@@ -7,7 +7,9 @@
 #   scripts/status.sh --check              # 扫**全部开放 Issue**：每个恰好 0 或 1 个合法 status/*
 #
 # 状态：backlog（无标签）| ready | in-progress | in-review | acceptance | rework | done | canceled
-# 不变量：开放 Issue 至多一个 status/* 标签；Migration 只允许走本脚本。
+# 不变量：开放 Issue 至多一个 status/* 标签；迁移只允许走本脚本。
+# done / canceled 有两个载体：Issue CLOSED **且**无任何 status/* 标签。幂等判断两者都核 ——
+# 「已关闭但仍带残留标签」会继续清理，不短路返回。
 # 退出码：0 成功；1 校验/迁移失败；2 参数错误
 
 set -eu
@@ -42,6 +44,12 @@ if [ -z "$ACTOR" ]; then
   ACTOR="$(gh api user --jq .login 2>/dev/null || true)"
 fi
 [ -n "$ACTOR" ] || die "无法认证：检查环境里的 GH_TOKEN 与 gh auth login（见 docs/WORKFLOW.md §0）"
+
+platform_state() { gh issue view "$1" -R "$REPO" --json state --jq .state 2>/dev/null || true; }
+status_labels() {
+  gh issue view "$1" -R "$REPO" --json labels \
+    --jq '[.labels[].name | select(startswith("status/"))] | join(" ")' 2>/dev/null || true
+}
 
 # ── --check：扫描全部开放 Issue ──────────────────────────────
 if [ "${1:-}" = "--check" ]; then
@@ -92,7 +100,7 @@ ISSUE="${1:-}"
 case "$ISSUE" in *[!0-9]*) die "Issue 编号必须是数字：${ISSUE}" 2 ;; esac
 
 state_of() {
-  st="$(gh issue view "$1" -R "$REPO" --json state --jq .state 2>/dev/null || true)"
+  st="$(platform_state "$1")"
   if [ "$st" = "CLOSED" ]; then
     reason="$(gh issue view "$1" -R "$REPO" --json stateReason --jq '.stateReason // "COMPLETED"' 2>/dev/null || echo COMPLETED)"
     case "$reason" in NOT_PLANNED|not_planned) printf 'canceled' ;; *) printf 'done' ;; esac
@@ -123,38 +131,69 @@ case " ${VALID_STATES} " in
   *) die "未知状态 ${STATE}（合法值：${VALID_STATES}）" 2 ;;
 esac
 
+terminal=0
+case "$STATE" in done|canceled) terminal=1 ;; esac
+
 cur="$(state_of "$ISSUE")"
+raw_state="$(platform_state "$ISSUE")"
+leftover="$(status_labels "$ISSUE")"
 info "Issue #${ISSUE}：${cur} → ${STATE}"
 
+# 幂等短路只在目标状态的**全部载体**都已满足时成立：
+#   - 非终态：状态标签已是目标值
+#   - done/canceled：Issue CLOSED 且无任何 status/* 标签 —— 有残留标签就必须继续清理
+short_circuit=0
 if [ "$cur" = "$STATE" ]; then
+  short_circuit=1
+  if [ "$terminal" -eq 1 ] && [ -n "$leftover" ]; then
+    short_circuit=0
+    warn "Issue #${ISSUE} 已关闭为 ${STATE}，但仍有残留状态标签：${leftover} —— 继续清理（不短路）"
+  fi
+fi
+if [ "$short_circuit" -eq 1 ]; then
   ok "已是 ${STATE}（幂等，无需改动）"
   exit 0
 fi
 
-# 先移除已有的全部 status/* 标签，保证互斥
-rm_args=""
-for l in $(gh issue view "$ISSUE" -R "$REPO" --json labels \
-  --jq '[.labels[].name | select(startswith("status/"))] | .[]' 2>/dev/null || true); do
-  rm_args="${rm_args} ${l}"
+# 先移除已有的全部 status/* 标签，保证互斥（含 done/canceled 的残留标签）
+for l in $leftover; do
+  gh issue edit "$ISSUE" -R "$REPO" --remove-label "$l" >/dev/null
 done
 
 case "$STATE" in
-  backlog|done|canceled)
-    for l in $rm_args; do gh issue edit "$ISSUE" -R "$REPO" --remove-label "$l" >/dev/null; done
-    case "$STATE" in
-      backlog) ok "已置为 backlog（无状态标签）" ;;
-      done)    gh issue close "$ISSUE" -R "$REPO" --reason completed >/dev/null; ok "已关闭（state_reason=completed）→ done" ;;
-      canceled) gh issue close "$ISSUE" -R "$REPO" --reason "not planned" >/dev/null; ok "已关闭（state_reason=not_planned）→ canceled" ;;
-    esac
+  backlog)
+    ok "已置为 backlog（无状态标签）" ;;
+  done|canceled)
+    if [ "$raw_state" = "CLOSED" ]; then
+      ok "Issue 已由平台关闭（保留平台置位的开关状态，只清理残留标签）"
+    elif [ "$STATE" = "done" ]; then
+      gh issue close "$ISSUE" -R "$REPO" --reason completed >/dev/null
+      ok "已关闭（state_reason=completed）→ done"
+    else
+      gh issue close "$ISSUE" -R "$REPO" --reason "not planned" >/dev/null
+      ok "已关闭（state_reason=not_planned）→ canceled"
+    fi
     ;;
   *)
     target="$(BASE_LABEL_OF_STATE "$STATE")"
     [ -n "$target" ] || die "内部错误：${STATE} 没有对应标签"
-    for l in $rm_args; do gh issue edit "$ISSUE" -R "$REPO" --remove-label "$l" >/dev/null; done
     gh issue edit "$ISSUE" -R "$REPO" --add-label "$target" >/dev/null
     ok "已置为 ${STATE}（标签 ${target}）"
     ;;
 esac
+
+# 迁移后校验：done/canceled 核两个载体（CLOSED + 无标签），其余核标签唯一
+if [ "$terminal" -eq 1 ]; then
+  now_state="$(platform_state "$ISSUE")"
+  now_labels="$(status_labels "$ISSUE")"
+  [ "$now_state" = "CLOSED" ] || die "迁移后校验失败：${STATE} 要求 Issue CLOSED，实际 ${now_state:-未知}"
+  [ -z "$now_labels" ] || die "迁移后 Issue #${ISSUE} 仍有状态标签：${now_labels} —— ${STATE} 要求清空"
+  now_derived="$(state_of "$ISSUE")"
+  [ "$now_derived" = "$STATE" ] \
+    || warn "平台 state_reason 解析为 ${now_derived}（与 ${STATE} 不同）—— 本脚本保证的是 CLOSED + 无标签"
+  ok "迁移校验通过：${cur} → ${STATE}（Issue CLOSED + 无状态标签）"
+  exit 0
+fi
 
 now="$(state_of "$ISSUE")"
 [ "$now" = "$STATE" ] || die "迁移后校验失败：期望 ${STATE}，实际 ${now}"
