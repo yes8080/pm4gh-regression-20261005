@@ -455,15 +455,34 @@ else
   exit 1
 fi
 
-# 先移除已有的全部 status/* 标签，保证互斥（含 done/canceled 的残留标签）
+# ── 迁移：**一次** `gh issue edit` 完成「移除旧标签 + 加目标标签」────────────
+# 为什么必须合并成一次调用（Issue #93，v2 重写引入的回归）：两次调用（先 remove、再 add）
+# 之间存在「零 status/* 标签」窗口（实测约 3 秒），而 `policy/branch-name` 要求 OPEN 的
+# Issue **至少 1 个** status/* —— PR 事件在该窗口内触发检查，就会把 Issue 判成 Backlog，
+# 并在这个 SHA 上留下**不可逆**的 FAILURE（§已知陷阱 1：必需检查不能"先失败后通过"）。
+# 三类迁移的判据不同，不要一刀切：
+#   - 带标签 → 带标签（ready / in-progress / in-review）：**必须原子** —— 同一次调用里
+#     同时带上全部 `--remove-label`（旧）与 `--add-label`（新），任何观察者都看不到 0 个标签。
+#   - → backlog：载体就是「无标签」，移除即结果，**不需要**保留标签。
+#   - → done / canceled：载体是 Issue CLOSED **且**无标签，标签移除与关闭之间**没有**
+#     「必须保留标签」的要求（且合并/收尾不触发 `pull_request: opened|synchronize`）。
+remove_args=""
 for l in $leftover; do
-  gh issue edit "$ISSUE" -R "$REPO" --remove-label "$l" >/dev/null
+  remove_args="${remove_args} --remove-label ${l}"
 done
 
 case "$STATE" in
   backlog)
+    if [ -n "$remove_args" ]; then
+      # shellcheck disable=SC2086  # 故意分词：拼成一次调用里的多个 --remove-label（标签名不含空白）
+      gh issue edit "$ISSUE" -R "$REPO" $remove_args >/dev/null
+    fi
     ok "已置为 backlog（无状态标签）" ;;
   done|canceled)
+    if [ -n "$remove_args" ]; then
+      # shellcheck disable=SC2086  # 同上：残留标签一次清完（终态无「保留标签」要求）
+      gh issue edit "$ISSUE" -R "$REPO" $remove_args >/dev/null
+    fi
     if [ "$raw_state" = "CLOSED" ]; then
       ok "Issue 已由平台关闭（保留平台置位的开关状态，只清理残留标签）"
     elif [ "$STATE" = "done" ]; then
@@ -477,8 +496,11 @@ case "$STATE" in
   *)
     target="$(BASE_LABEL_OF_STATE "$STATE")"
     [ -n "$target" ] || die "内部错误：${STATE} 没有对应标签"
-    gh issue edit "$ISSUE" -R "$REPO" --add-label "$target" >/dev/null
-    ok "已置为 ${STATE}（标签 ${target}）"
+    # 原子迁移：**同一次**调用里带上全部旧标签的 --remove-label 与目标标签的 --add-label。
+    # 断言这一点的证据是 stub gh 记录的调用次数与参数（见 PR #93），不是"看起来很原子"。
+    # shellcheck disable=SC2086  # 故意的分词：$remove_args 是多个 --remove-label 的拼接
+    gh issue edit "$ISSUE" -R "$REPO" $remove_args --add-label "$target" >/dev/null
+    ok "已置为 ${STATE}（标签 ${target}，原子迁移：一次 issue edit）"
     ;;
 esac
 

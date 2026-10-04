@@ -14,7 +14,7 @@
 
 ## 1. 状态机（唯一源）
 
-> 状态 = `status/*` 标签 + Issue 开关；**没有本地状态文件**。迁移只能走 `scripts/status.sh <issue#> <state>`。
+> 状态 = `status/*` 标签 + Issue 开关；**没有本地状态文件**。迁移只能走 `scripts/status.sh <issue#> <state>`，且**迁移必须原子**（带标签→带标签只能 1 次 `gh issue edit`；见 §4 陷阱 10）。
 > 状态集 **6 个**：`backlog | ready | in-progress | in-review | done | canceled`；`in-review` = 「评审中 / 已批准待合并」（没有单独的「验收」状态，批准本身就是验收门禁）。「被打回」**不设独立状态** —— 平台已免费提供 `reviewDecision=CHANGES_REQUESTED`，打回 = `in-review → in-progress`。
 
 ### 状态迁移表（**唯一表权威**：6 个状态、14 条边；与 `scripts/status.sh` 的 `TRANSITIONS` 由 `ci/test` 断言**逐字一致**）
@@ -176,7 +176,7 @@ W0..W7 只覆盖「一路顺风」。`canceled` 是**既有终态**（无出边�
 7. **macOS 自带 bash 是 3.2。** 禁 `mapfile`/`readarray`/`declare -A`/`${var,,}`；`$VAR` 后紧跟中文等多字节字符必须写 `${VAR}`，否则字节序列被并入变量名 → `unbound variable`。`sed` 是 BSD 版：扩展正则要用 `sed -E`。
 8. **`blockedBy` 不会因对方关闭而自动清除。** 判定"是否真被阻塞"必须看 blocker 的 `state`。
 9. **squash 合并后 `git branch -d` 必然拒绝**（原始提交不在 `main` 上）。先验证 PR=MERGED，留锚点，再 `-D`；绝不无条件 `-D`。
-10. **状态迁移不是原子的（`status.sh` 先 remove 再 add），中间有「零 `status/*` 标签」窗口。** `deliver.sh` 的次序是「推送 → 建 PR → 迁 `in-review`」，而 PR 事件会**立刻**触发必需检查 —— `policy/branch-name` 若在窗口内读标签，会把 Issue 判成 Backlog 并**在该 SHA 上失败**（实测 PR #92 首 SHA `cc9cf14`：`2026-10-04T14:06:13Z` unlabeled → `14:06:16Z` labeled，检查在 `14:06:14.84Z` 读）。临时缓解：**重跑失败的 `policy/branch-name`**（同一 SHA 实测重跑后 5 项全 pass）。根治见 Issue #93。
+10. **状态迁移必须原子：`status.sh` 里「带标签 → 带标签」的迁移只能有 1 次 `gh issue edit` 调用（同一次里带全部 `--remove-label` 旧标签 + `--add-label` 新标签）。** 拆成「先 remove、再 add」两次调用就出现「零 `status/*` 标签」窗口（v1 本是原子的一次调用，v2 重写拆成两步 → 回归：PR #92 首 SHA `cc9cf14` 实测 `14:06:13Z` unlabeled → `14:06:16Z` labeled，约 3 秒）。代价特别大：`deliver.sh` 的次序是「推送 → 建 PR → 迁 `in-review`」，PR 事件**立刻**触发必需检查，`policy/branch-name` 在窗口内读到 0 个标签 → 把 Issue 判成 Backlog → **该 SHA 留下不可逆的 FAILURE**（陷阱 1），只能重推 SHA；曾靠「重跑 `policy/branch-name`」兜底，但那是在赌，不可依赖。三类迁移的判据不同，别一刀切：带标签→带标签（`ready`/`in-progress`/`in-review`）**必须原子**；→ `backlog` 的载体就是无标签，移除即结果，不保留；→ `done`/`canceled` 的载体是 CLOSED + 无标签，标签移除与关闭之间没有「必须保留标签」的要求。**判据**（`#93` 起）：用 stub `gh` 记录调用次数与参数，断言该迁移只发生 **1 次** `issue edit` 且同一次同时含 `--remove-label`(旧) 与 `--add-label`(新)；反向样本 = 把实现改回两次调用时该断言**必须失败**。**已知残余（别过度相信这一步）**：`gh issue edit` 内部把 add 与 remove 发成**两个并发** GraphQL mutation（`cli/cli` v2.102.0 `pkg/cmd/pr/shared/editable_http.go:13,17-36,91`，`addLabelsToLabelable` / `removeLabelsFromLabelable`），所以「1 次 CLI 调用」把窗口从约 3 秒压到毫秒级、但**严格意义上未归零**（中间态可能是 0 或 2 个标签，`policy/branch-name` 两者都判失败）。真要消窗只能用**单次 HTTP 的整份替换**（REST `PUT /repos/{owner}/{repo}/issues/{n}/labels`，需读-改-写、要带上非 `status/*` 标签）；那超出 `#93` 的边界，留作后续项。
 11. **脚本里用 tab 当字段分隔符会静默吞掉空字段。** `IFS="$(printf '\t')" read -r a b c` 遇到连续 tab（中间字段为空）时后面的字段会**左移** —— tab 属于 IFS 空白，连续空白只算一个分隔符。`--check-cross` 的早期实现因此在「按行分类」时静默失配（Issue 的 `stateReason` 空字段把标签字段顶位）。脚本内部的记录分隔改用**非空白字符**（本仓库用 `|`）或给空值写占位符；这类差别必须能用反向样本抓到（见 W8 与 §1 交叉体检）。
 12. **Issue 表单不会打标签，标签也没有清单。** `bug.yml` 的「轨道」下拉选「线上故障」**不会**给 Issue 打 `type/hotfix`（表单只有固定的 `labels:` 数组），而 `start.sh` 靠 `type/*` 推导分支类型 —— 漏打标签就让热修**静默退化成 `fix/`**（Issue #103）。线上故障一律用 `scripts/start.sh <issue#> --type hotfix --as author`。标签是仓库级对象（`status.sh --add-label` 遇不存在的标签直接失败），所以机器消费的标签由 `preflight.sh` 与 `ci/test` 用同一判据 `LABEL_ASSERT` 断言存在，`ci/test` 里还留了反向样本（删掉 `type/hotfix` 后断言必须失败），防止判据退化成空断言。
 
