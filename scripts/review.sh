@@ -121,7 +121,7 @@ unset GITHUB_TOKEN || true
 REVIEWER="$(gh api user --jq .login 2>/dev/null || true)"
 # 失败时 gh 会把错误正文（JSON）留在 stdout —— 登录名只可能是 [A-Za-z0-9-]，据此把它判成"无效"
 case "$REVIEWER" in
-  ''|*[!A-Za-z0-9-]*) die "评审凭据无效（无法认证）：读不到登录名（过期 / 被撤销 / 不是 classic PAT）—— 见 references/workflow.md §0" ;;
+  ''|*[!A-Za-z0-9-]*) die "评审凭据无效（无法认证）：读不到登录名（过期 / 被撤销 / 不是 classic PAT）—— 见 references/identity.md" ;;
 esac
 ok "评审身份：${REVIEWER}"
 

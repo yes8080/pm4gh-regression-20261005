@@ -40,7 +40,7 @@ REPO="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || true)
 unset GH_TOKEN || true
 unset GITHUB_TOKEN || true
 ACTOR="$(gh api user --jq .login 2>/dev/null || true)"
-[ -n "$ACTOR" ] || die "gh 未登录或读不到身份（收尾用 gh 登录身份，见 references/workflow.md §0）"
+[ -n "$ACTOR" ] || die "gh 未登录或读不到身份（收尾用 gh 登录身份，见 references/identity.md）"
 ok "收尾身份（dispatcher）：${ACTOR}"
 
 problems=0

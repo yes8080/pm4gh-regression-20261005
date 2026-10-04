@@ -1,92 +1,59 @@
 ---
 name: pm4gh
-version: 1.0.0
-description: "多 agent 用 GitHub 跑开发闭环：认领 Issue → 开工 → 交付 PR → 独立评审 → squash 合并 → 收尾。当你要在本仓库（yes8080/pm4gh）接手、推进或评审任何一个 Issue/PR 时使用。不负责：其他仓库的安装与治理、Projects、度量报表、跨模型评审留痕、能力开关。"
+description: "在本仓库（yes8080/pm4gh）把一个开发切片推完 GitHub 闭环：scripts/preflight.sh 预检 → 认领 Issue（DoR 五项）→ scripts/start.sh 开工建分支 → 提交 → scripts/deliver.sh 开 PR → 5 个必需检查 → scripts/review.sh 独立评审 → dispatcher squash 合并 → scripts/closeout.sh 收尾；并含 scripts/status.sh 状态迁移与 scripts/abort.sh 终止。当你要在本仓库接手某个 Issue、把改动交付成 PR、评审或合并某个 PR、推进或终止某个 Issue 的状态、排查本流程卡住或脚本报错，或要判断某项 GitHub 操作在本仓库是否被允许（能否直推 main、能否增删本仓库标签体系 `status/*`、`type/*` 等流程标签，*不是* release tag）时使用。在本仓库会话中，未点名的开工/交付/合并/收尾默认指本流程。不用于：其他仓库的安装与治理、GitHub Projects 与度量报表、跨模型评审留痕、能力开关、与本仓库无关的通用 Git/GitHub 操作。"
+compatibility: "macOS（系统自带 bash 3.2）；需要 git、gh、jq（脚本另用 awk/sed/curl/diff）；GitHub 凭据必须在工作区之外，固定放 $HOME/.config/pm4gh/{developer,reviewer}.pat；改动线上规则集需要仓库 admin（属 dispatcher 权限）。"
 metadata:
+  version: "1.0.0"
+  short-description: "多 agent + GitHub 开发闭环：认领→开工→交付→评审→合并→收尾"
   requires:
     bins: ["git", "gh", "jq"]
 ---
 
-# pm4gh — 多 agent + GitHub 开发闭环
+# pm4gh
 
-**本仓库只做两件事：多 agent + GitHub 工作流。** 状态只存在 GitHub（`status/*` 标签 + Issue 开关）：没有本地状态文件、没有安装器、没有度量报表。
-**细节权威 = [references/workflow.md](references/workflow.md)**（两张表、W0..W8 细则、DoD、已知陷阱）；冲突时**以平台实际行为为准**。
+本仓库只做一件事：**多 agent 用 GitHub 把一个开发切片跑完闭环**。状态只存在 GitHub（`status/*` 标签 + Issue 开关），没有本地状态文件。
 
-## 0. 安装（本仓库根目录就是 skill 包）
+## 输入
 
-```bash
-ln -s /Users/ws/code/pm4gh ~/.claude/skills/pm4gh
-```
+- **一个 Issue 号（或 PR 号）+ 你要做的事**。缺号先问 dispatcher，**禁止**推断，也**禁止**"先干着看"。
+- 命令一律在**仓库根目录**执行；占位符 `<n>` / `<pr#>` 只填数字（不带 `#`，脚本会拒绝）。
+- 身份：作者 = `--as author`（`developer.pat`）；评审 = 不传 `--as`（脚本自取 `reviewer.pat`）；合并 = 本机 `gh` 登录态。**不得读取其他身份的凭据**，**不得自批**。
+- **用户显式指令优先于本 skill**；与本文件冲突时先停下确认。
 
-凭据固定放 `$HOME/.config/pm4gh/developer.pat` / `$HOME/.config/pm4gh/reviewer.pat`。
-若把仓库装到别处（克隆副本），**只要不在 `$HOME/.config/pm4gh` 之内**，凭据仍在仓库之外。
+## 工作流程
 
-## 1. 身份（平台强制；作者 ≠ 评审 ≠ 合并）
+1. **预检**（每次接手第一步）：`scripts/preflight.sh` → 全 `[ OK ]` 且退出码 `0`；任一 `[FAIL]` → 贴原文报 dispatcher，**禁止**继续。
+2. **开工**：DoR 五项齐备才 `scripts/status.sh <n> ready`；再 `scripts/start.sh <n> --as author`（线上故障加 `--type hotfix`）。
+3. **交付**：提交用 `-F <文件>` + 作者 git 身份；`scripts/deliver.sh <n> --prepare --as author` 生成六段 → 填写 → `scripts/deliver.sh <n> --as author`。
+4. **检查**：`gh pr checks <pr#> --required` —— 5 个必需检查在**最新 SHA** 上全 `pass` 才进下一步。
+5. **评审**：`scripts/review.sh <pr#> approve|request-changes --body-file <文件>`（评审身份）；打回 → 状态 `in-progress`，**同一分支**返修。
+6. **合并收尾**：只有 dispatcher 能 `gh pr merge <pr#> --squash --delete-branch`；随后 `scripts/closeout.sh <pr#>` 五项全过。
+7. **终止**：只在"不做"时 `scripts/abort.sh <issue#>`（先 `--dry-run`）；删分支前必须能证明内容不会丢。
 
-| 角色 | 账号 | 凭据（**必须在工作区之外**） | 干什么 |
-|---|---|---|---|
-| 作者 | `@yes8080-dev-bot` | `$HOME/.config/pm4gh/developer.pat`（`repo, workflow`） | `start.sh` / `deliver.sh` / `abort.sh` —— 只接受 `--as author` |
-| 评审 | `@yes8080-reviewer-bot` | `$HOME/.config/pm4gh/reviewer.pat`（`repo`） | `review.sh <pr#> approve\|request-changes` —— **不加** `--as`，不得合并 |
-| 合并 | `@yes8080` | 本机 `gh auth login` 登录态 | `gh pr merge --squash`、改仓库设置、`closeout.sh` |
+## 输出
 
-## 2. 闭环（顺序只有 W0..W8；每步「命令 → 判据」）
+- **一个 PR**：正文含 `Closes #N` + `## 1.`..`## 6.` 六段；Issue 状态随 W2..W7 迁移，关键节点在 Issue 留**简短**进度评论，终止时留可恢复锚点。
+- **证据**：命令 + 真实输出 / 检查名 / 运行链接。**禁止**"已测试通过"这类无证据断言。
 
-| 步 | 命令 | 判据（全过才进下一步） |
-|---|---|---|
-| W0 预检 | `scripts/preflight.sh` | 全 `[ OK ]`；任一 `[FAIL]` → 贴原文报 dispatcher，**禁止**"先干着看" |
-| W1 领片 | `gh issue list --state open --label status/ready --limit 20 --json number,title,labels` | DoR 五项齐备（价值 / 可判定验收标准 / 边界 / 依赖 / 规模）才 `scripts/status.sh <n> ready` |
-| W2 开工 | `scripts/start.sh <issue#> --as author`（线上故障加 `--type hotfix`） | 分支 `<type>/<issue#>-<slug>` 已建并绑定 Issue；状态 `in-progress` |
-| W3 实现 | `bash -n scripts/*.sh`；提交 `git -c user.name="yes8080-dev-bot" -c user.email="317173623+yes8080-dev-bot@users.noreply.github.com" commit -F <文件>` | 工作区干净（`deliver.sh` 会拦）；提交者身份 = 作者 |
-| W4 交付 | `scripts/deliver.sh <issue#> --prepare --as author` → 填六段 → `scripts/deliver.sh <issue#> --as author` | 正文含 `Closes #N` + `## 1.`..`## 6.`；状态 `in-review` |
-| W5 检查 | `gh pr checks <pr#> --required` | `ci/lint`、`ci/test`、`policy/linked-issue`、`policy/branch-name`、`policy/template` 全 `pass` |
-| W6 评审 | `scripts/review.sh <pr#> approve --body-file review.md`（评审身份） | `reviewDecision=APPROVED`；打回 → 状态 `in-progress`，**同一分支**返修 |
-| W7 合并收尾 | `gh pr merge <pr#> --squash --delete-branch` → `scripts/closeout.sh <pr#>` | 只有 dispatcher 能合并；closeout 五项全过 |
-| W8 取消 | `scripts/abort.sh <issue#>` | 只在「不做」时用；删分支前**必须**能证明内容不会丢 |
+## 完成标准
 
-分支类型 `type ∈ {slice,fix,hotfix,spike,chore}`；PR 标题 = Issue 标题，无覆盖开关。
+[references/dod.md](references/dod.md) 六项全过（验收标准逐条有证据；必需检查最新 SHA 全绿 + 非作者 code owner 批准；未越界；`closeout.sh` 五项全过）。
 
-## 3. 状态机（6 状态；唯一权威 = `scripts/status.sh` 的 `TRANSITIONS`，逐字表见 references/workflow.md §1）
+**必要约束（不回退）**：15 边 / 6 状态｜状态迁移 = REST `PUT …/labels` **单请求**｜5 个必需检查 job `name:` 一字不改｜凭据必须在**工作区之外**｜一个切片 = 一个 Issue = 一个分支 = 一个 PR。
 
-| 状态 | 载体 / 含义 | 合法出边 |
-|---|---|---|
-| `backlog` | Issue OPEN 且无 `status/*` | `ready` `in-progress` `done` `canceled` |
-| `ready` | `status/ready` | `in-progress` `backlog` `canceled` |
-| `in-progress` | `status/in-progress` | `in-review` `ready` `backlog` `canceled` |
-| `in-review` | `status/in-review`（评审中 / 已批准待合并） | `in-progress` `done` `backlog` `canceled` |
-| `done` | Issue CLOSED + `state_reason=completed`，无 `status/*` | 终态，无出边 |
-| `canceled` | Issue CLOSED + `state_reason=not_planned`，无 `status/*` | 终态，无出边 |
+## 支持资料
 
-迁移只能走 `scripts/status.sh <issue#> <state>`；动手前用只读的 `scripts/status.sh --check-transition <from> <to>` 判定（退出码 0 合法 / 1 非法）。**判据是「HTTP 层单请求」**（REST `PUT …/labels` 整份替换）—— **禁止**改回 `gh issue edit`。表外迁移一律失败，**没有跳过开关**。
+按当前阶段**只读对应的一个文件**，不要预先全读。
 
-## 4. 必须
-
-1. 所有改动经 PR：分支 → PR → 5 个必需检查 → 独立评审 → dispatcher 合并；**一个切片 = 一个 Issue = 一个分支 = 一个 PR**，同时只允许一个 `status/in-progress`
-2. 留**可核对**证据：命令、输出、检查名、运行链接；**禁止**"已测试通过"这类无证据断言
-3. 状态**只能**通过 `scripts/status.sh` 迁移；迁移前先跑 `--check-transition`
-4. 提交用 `-F <文件>` + 作者身份（`--as author` 只切 `gh` 身份，不改 git 身份）；合并后**必须**跑 `scripts/closeout.sh <pr#>`
-5. 关键节点在 Issue 留**简短**进度评论（分支已建 / 改动完成 / 遇到阻塞）
-6. 脚本自包含、兼容 macOS bash 3.2：禁 `mapfile`/`readarray`/`declare -A`/`${var,,}`；`$VAR` 后紧跟中文必须写 `${VAR}`
-
-## 5. 禁止
-
-| 禁止 | 后果 |
+| 何时读 | 文件 |
 |---|---|
-| 直推 / 强推 `main`、删 `main`；`gh pr merge --admin` 或任何绕过门禁的手段 | 规则集拒绝；bypass 名单为空 |
-| 改 5 个必需检查的 job `name:`，或给必需检查工作流加 `paths`/`branches` 过滤 | 所有 PR 永久 pending |
-| 改线上规则集或 `main-protection.json` | 属 dispatcher 权限；写错会让所有 PR 卡住 |
-| 读取其他身份的凭据（作者读 `reviewer.pat` / `main.pat`）、打印 / 提交任何凭据 | 越过身份；`ci/test` 扫描凭据 |
-| 绕过 `status.sh` 改状态标签、把状态写进本地文件、自建流程（TODO 文件 / 自造状态机 / 分支策略 / 共享库） | 状态分裂；流程只在仓库里 |
-| 自批（作者批准自己的 PR）、作者代跑 W7 合并、评审身份合并 | 平台直接拒绝 |
-| 引用或重建 `src/*`、`size/*` 标签，引用 `status/rework` | 这些标签在本仓库已删除，不存在 |
+| 开工 / 交付 / 返修的每步命令与判据 | [references/flow.md](references/flow.md) |
+| 任何一次状态迁移之前 | [references/status-machine.md](references/status-machine.md)（15 边 / 6 状态的唯一表权威） |
+| 首次开通身份凭据，或身份 / 凭据报错 | [references/identity.md](references/identity.md) |
+| 现象对得上某条坑（检查永久 pending、推送变了身份…） | [references/traps.md](references/traps.md) |
+| 写 PR 第 5 节 DoD 自查，或合并前核验 | [references/dod.md](references/dod.md) |
+| 填 PR 六段 / 建 Issue 表单 | [assets/README.md](assets/README.md) → `.github/` 里的平台强制模板 |
+| 确定性、多步、有副作用的 GitHub 操作 | [scripts/](scripts/)（7 个脚本，自包含；**不得新增脚本**） |
+| 安装到客户端 | 主推 `mkdir -p ~/.agents/skills && ln -s /Users/ws/code/pm4gh ~/.agents/skills/pm4gh`；兼容 `mkdir -p ~/.claude/skills && ln -s /Users/ws/code/pm4gh ~/.claude/skills/pm4gh` |
 
-## 6. 异常处理
-
-| 情况 | 正确反应 |
-|---|---|
-| `preflight.sh` 有 `[FAIL]` | 停下，把失败项**原文**报告 dispatcher |
-| 必需检查永久 pending | 核对 job `name` 是否被改名、工作流是否被 `paths` 过滤（references/workflow.md §4 陷阱 2） |
-| `mergeStateStatus=BLOCKED` 但 `reviewDecision=APPROVED` | 该 SHA 上留有**失败结论**的必需检查（不可逆）→ 报告，不要绕过 |
-| 发现流程缺陷 | 开 Bug Issue（复现 / 期望 / 实际 / 影响版本 / 缓解），**禁止**顺手改掉 |
-| 发现需求歧义 | 停下请求澄清，**禁止**自行扩大范围 |
-
-完成标准（DoD）与全部陷阱：**[references/workflow.md](references/workflow.md)** §3、§4。
+**明确不做**：其他仓库的安装 / 治理、Projects、度量报表、跨模型评审留痕、能力开关、共享库；**不引入第二套规范文档** —— `SKILL.md` + `references/**` + `.github/**` + `scripts/**` 就是全部权威。

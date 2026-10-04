@@ -1,7 +1,7 @@
 <!--
   六段结构由 policy/template 必需检查强制；第一行的关闭关键字由 policy/linked-issue 强制。
   注意：关闭关键字只在 PR **正文或提交信息**里生效，**PR 标题无效**。
-  判据与步骤见 SKILL.md 与 references/workflow.md。
+  判据与步骤见 SKILL.md 与 references/flow.md。
 -->
 
 Closes #

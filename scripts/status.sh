@@ -18,18 +18,18 @@
 #   - 「被打回」**不设独立状态**：平台已免费提供 reviewDecision=CHANGES_REQUESTED，
 #     打回 = in-review -> in-progress（review.sh request-changes）
 #
-# 转换表（合法迁移的**唯一**定义；references/workflow.md 里的表由 ci/test 断言与本表**逐字一致**）：
+# 转换表（合法迁移的**唯一**定义；references/status-machine.md 里的表由 ci/test 断言与本表**逐字一致**）：
 #   backlog     -> ready | in-progress | done | canceled
 #   ready       -> in-progress | backlog | canceled
 #   in-progress -> in-review | ready | backlog | canceled
 #   in-review   -> in-progress | done | backlog | canceled
 #   done        -> （终态；无出边）
 #   canceled    -> （终态；无出边）
-# done 有三层语义（详见 references/workflow.md §1）：切片 = in-review -> done（已评审并合并）；
+# done 有三层语义（详见 references/status-machine.md）：切片 = in-review -> done（已评审并合并）；
 #   非切片（Epic / Audit / 提案）= backlog -> done（其待办项已全部关闭，**不表示任何工作被完成**）；
 #   不做 = -> canceled（NOT_PLANNED）。in-review -> done 仍是唯一表达「经过评审并合并」的路径。
 # 表外的 from -> to 一律**失败**（含 done/canceled 出边、跨级跳跃）—— **没有跳过开关**：
-# 需要例外就开 Issue 补一条边（改本文件的 TRANSITIONS + references/workflow.md 的表，两处由 ci/test 断言集合相等）。
+# 需要例外就开 Issue 补一条边（改本文件的 TRANSITIONS + references/status-machine.md 的表，两处由 ci/test 断言集合相等）。
 # 幂等：from == to 且载体齐备时不迁移（终态还要求无残留标签，否则继续清理）。
 #
 # 不变量：开放 Issue 至多一个 status/* 标签；迁移只允许走本脚本。
@@ -111,7 +111,7 @@ if [ "${1:-}" = "--check-transition" ]; then
   else
     printf '       %s 是终态，无出边；确需复活：gh issue reopen <issue#> 再迁移\n' "$from" >&2
   fi
-  printf '       转换表见脚本头部 / references/workflow.md §1；本命令只读，未改动任何东西\n' >&2
+  printf '       转换表见脚本头部 / references/status-machine.md；本命令只读，未改动任何东西\n' >&2
   exit 1
 fi
 
@@ -127,7 +127,7 @@ if [ -z "$ACTOR" ]; then
   unset GITHUB_TOKEN || true
   ACTOR="$(gh api user --jq .login 2>/dev/null || true)"
 fi
-[ -n "$ACTOR" ] || die "无法认证：检查环境里的 GH_TOKEN 与 gh auth login（见 references/workflow.md §0）"
+[ -n "$ACTOR" ] || die "无法认证：检查环境里的 GH_TOKEN 与 gh auth login（见 references/identity.md）"
 
 platform_state() { gh issue view "$1" -R "$REPO" --json state --jq .state 2>/dev/null || true; }
 status_labels() {
@@ -140,7 +140,7 @@ status_labels() {
 # **禁止**改用 `gh issue edit`：后者在 **CLI 层**是 1 次调用，但在 **HTTP 层**是
 #   add 与 remove 两个**并发** mutation，中间态可能是 **0 个或 2 个** `status/*`，
 #   而 `policy/branch-name` 对两者都判失败，失败的 SHA **不可逆**
-#   （references/workflow.md §4 陷阱 1：必需检查不能"先失败后通过"）。
+#   （references/traps.md 陷阱 1：必需检查不能"先失败后通过"）。
 # 判据是「**HTTP 层单请求**」，不是「一次 CLI 调用」。
 # 两条硬约束：
 #   ① 载荷**必须**带上读到的**全部非 `status/*` 标签**（`type/*`、`role/*`、`prio/*`、`area/*` …）——
@@ -506,7 +506,7 @@ else
   fi
   printf '[FAIL] 非法迁移：%s → %s\n' "$cur" "$STATE" >&2
   printf '       %s\n' "$edges_hint" >&2
-  printf '       转换表见 scripts/status.sh 头部 / references/workflow.md §1。表外迁移**一律拒绝**（没有跳过开关）：\n' >&2
+  printf '       转换表见 scripts/status.sh 头部 / references/status-machine.md。表外迁移**一律拒绝**（没有跳过开关）：\n' >&2
   printf '       需要例外就在 Issue 里补一条边 —— 同时改 TRANSITIONS 与文档表，再重跑\n' >&2
   exit 1
 fi

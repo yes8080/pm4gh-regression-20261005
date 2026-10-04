@@ -144,7 +144,7 @@ if gh auth status >/dev/null 2>&1; then
   main_login="$(env -u GH_TOKEN -u GITHUB_TOKEN gh api user --jq .login 2>/dev/null || true)"
   if [ -n "$main_login" ]; then ok "gh 已登录：${main_login}"; else bad "gh 已登录但读不到账号（gh api user 失败）"; fi
 else
-  bad "gh 未登录：运行 gh auth login（合并身份靠它，见 references/workflow.md §0）"
+  bad "gh 未登录：运行 gh auth login（合并身份靠它，见 references/identity.md）"
 fi
 
 info "3/10 仓库形态与 cwd"
@@ -203,7 +203,7 @@ info "5/10 三身份凭据（作者 / 评审 / 合并）"
 # ① 作者凭据 = **本身份**凭据 → 允许读取内容（用它做本身份动作）
 dev_login="$(login_via_pat "$DEVELOPER_PAT_FILE")"
 if [ ! -s "$DEVELOPER_PAT_FILE" ]; then
-  bad "作者凭据缺失或为空：${DEVELOPER_PAT_FILE}（见 references/workflow.md §0）"
+  bad "作者凭据缺失或为空：${DEVELOPER_PAT_FILE}（见 references/identity.md）"
 else
   mode="$(file_mode "$DEVELOPER_PAT_FILE")"
   [ "$mode" = "600" ] && ok "作者凭据权限 600" || bad "作者凭据权限为 ${mode}，应为 600：chmod 600 ${DEVELOPER_PAT_FILE}"

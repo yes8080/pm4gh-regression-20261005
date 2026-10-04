@@ -40,7 +40,7 @@ ACTOR=""
 use_identity() {
   case "${1:-}" in
     author)
-      [ -s "$DEVELOPER_PAT_FILE" ] || die "缺少作者凭据 ${DEVELOPER_PAT_FILE}（见 references/workflow.md §0）"
+      [ -s "$DEVELOPER_PAT_FILE" ] || die "缺少作者凭据 ${DEVELOPER_PAT_FILE}（见 references/identity.md）"
       GH_TOKEN="$(cat "$DEVELOPER_PAT_FILE")"
       export GH_TOKEN
       unset GITHUB_TOKEN || true
@@ -304,7 +304,7 @@ anchor="$TMP/anchor.md"
     done < "$rows"
   fi
   printf -- '- 恢复方式：远端分支删除后，GitHub 仍保留 PR 中的提交（PR 页可 "Restore branch"）；本地可用 `git branch <名字> <tip>` 从对象库恢复（reflog 未过期前）。\n'
-  printf -- '\n> 由 `scripts/abort.sh` 自动生成；判据与执行者见 `references/workflow.md`（终止/取消）。\n'
+  printf -- '\n> 由 `scripts/abort.sh` 自动生成；判据与执行者见 `references/flow.md`（W8 终止/取消）。\n'
 } > "$anchor"
 
 if ! gh issue comment "$ISSUE" -R "$REPO" --body-file "$anchor" >/dev/null 2>&1; then

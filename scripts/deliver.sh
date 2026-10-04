@@ -8,7 +8,7 @@
 #   ② 校验正文六段齐备且含 Closes 关键字（policy/linked-issue / policy/template 的本地预演）
 #   ③ 用当前身份推送分支（清掉本地 credential helper，否则会静默变成主身份推送）
 #   ④ 建 PR；若该分支已有 PR（返修）则用 **REST PATCH** 更新正文 —— `gh pr edit` 走 GraphQL，
-#      作者凭据没有 read:org，会报错且**静默不更新**（见 references/workflow.md §4 陷阱 5）
+#      作者凭据没有 read:org，会报错且**静默不更新**（见 references/traps.md 陷阱 5）
 #   ⑤ 迁到 status/in-review
 #
 # 用法：
@@ -31,7 +31,7 @@ ACTOR=""
 use_identity() {
   case "${1:-}" in
     author)
-      [ -s "$DEVELOPER_PAT_FILE" ] || die "缺少作者凭据 ${DEVELOPER_PAT_FILE}（见 references/workflow.md §0）"
+      [ -s "$DEVELOPER_PAT_FILE" ] || die "缺少作者凭据 ${DEVELOPER_PAT_FILE}（见 references/identity.md）"
       GH_TOKEN="$(cat "$DEVELOPER_PAT_FILE")"
       export GH_TOKEN
       unset GITHUB_TOKEN || true

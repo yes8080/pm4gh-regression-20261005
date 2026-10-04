@@ -6,7 +6,7 @@ name: required-checks
 #   2. 本文件**不得**配置 paths / branches 过滤：被跳过的工作流，其检查会永久 pending。
 #   3. 只监听 pull_request —— 官方认可的必需检查事件之一（`issue_comment` 等不算）。
 #   4. 不要在这里加"先失败后通过"的检查：必需检查一旦在某个 SHA 上留下失败结论，
-#      后续同名检查通过也无法解除阻塞（见 references/workflow.md §4 陷阱 1）。
+#      后续同名检查通过也无法解除阻塞（见 references/traps.md 陷阱 1）。
 #   5. 若将来启用 Merge Queue，必须同时给这 5 个 job 接上 merge_group 事件。
 on:
   pull_request:
@@ -373,14 +373,14 @@ jobs:
           fi
           if [ "$bad" -ne 0 ]; then exit 1; fi
           echo "✅ 机器消费的标签全部存在；判据与 preflight.sh 逐字一致；反向样本（缺 type/hotfix）按预期失败"
-      - name: references/workflow.md 状态机转换表与 scripts/status.sh 逐字一致（防文档漂移）
+      - name: references/status-machine.md 状态机转换表与 scripts/status.sh 逐字一致（防文档漂移）
         run: |
           set -euo pipefail
-          # 转换表只有一处权威定义（status.sh）；references/workflow.md 的表由本步断言逐字一致：
+          # 转换表只有一处权威定义（status.sh）；references/status-machine.md 的表由本步断言逐字一致：
           # 状态集（VALID_STATES vs 转换表首列）与边集（TRANSITIONS vs 标记区每行的 to 列）都逐字比对。
           # 表是唯一权威，**禁止**画图（图带语法开销、隐式节点易漏）。
           sh=scripts/status.sh
-          md=references/workflow.md
+          md=references/status-machine.md
           sh_states="$(grep -m1 '^VALID_STATES=' "$sh" | sed -E 's/^VALID_STATES="//; s/"$//' | tr ' ' '\n' | sort -u)"
           sh_edges="$(sed -nE 's/^TRANSITIONS="(.*)"$/\1/p' "$sh" | tr ' ' '\n' \
             | grep -E '^[a-z-]+->[a-z-]+$' | sort -u)"
@@ -414,13 +414,13 @@ jobs:
           if [ "$sh_states" != "$md_states" ]; then
             echo "::error file=$md::状态集与 scripts/status.sh 不一致"
             echo "--- status.sh ---"; printf '%s\n' "$sh_states"
-            echo "--- references/workflow.md ---"; printf '%s\n' "$md_states"
+            echo "--- references/status-machine.md ---"; printf '%s\n' "$md_states"
             bad=1
           fi
           if [ "$sh_edges" != "$md_edges" ]; then
             echo "::error file=$md::转换表与 scripts/status.sh 不一致（文档漂移）"
             echo "--- status.sh 独有 ---"; comm -23 <(printf '%s\n' "$sh_edges") <(printf '%s\n' "$md_edges")
-            echo "--- references/workflow.md 独有 ---"; comm -13 <(printf '%s\n' "$sh_edges") <(printf '%s\n' "$md_edges")
+            echo "--- references/status-machine.md 独有 ---"; comm -13 <(printf '%s\n' "$sh_edges") <(printf '%s\n' "$md_edges")
             bad=1
           fi
           # 自检：终态不得有出边（done/canceled 是终态；迁出只能靠 gh issue reopen 后走合法边）

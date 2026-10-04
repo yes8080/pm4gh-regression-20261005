@@ -27,7 +27,7 @@ ACTOR=""
 use_identity() {
   case "${1:-}" in
     author)
-      [ -s "$DEVELOPER_PAT_FILE" ] || die "缺少作者凭据 ${DEVELOPER_PAT_FILE}（见 references/workflow.md §0）"
+      [ -s "$DEVELOPER_PAT_FILE" ] || die "缺少作者凭据 ${DEVELOPER_PAT_FILE}（见 references/identity.md）"
       GH_TOKEN="$(cat "$DEVELOPER_PAT_FILE")"
       export GH_TOKEN
       unset GITHUB_TOKEN || true
