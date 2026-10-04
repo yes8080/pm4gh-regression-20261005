@@ -26,7 +26,7 @@
 # ① 克隆
 git clone https://github.com/yes8080/pm4gh.git && cd pm4gh
 
-# ② 环境与凭据自检（8 项）
+# ② 环境与凭据自检（10 项；见 docs/PLAYBOOK.md §2）
 scripts/toolcheck.sh
 
 # ③ 读三份文档（顺序不要变）

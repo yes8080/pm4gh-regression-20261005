@@ -11,12 +11,21 @@
 #   STUB_WRITES  写操作流水（断言「零写入」用）
 #   STUB_REPO / STUB_BRANCH / STUB_AUTHOR / STUB_REVIEWER
 #   STUB_FAIL_LABEL_NAME   指定该标签的 create「报错但对象已创建」（模拟 D6 事故）
+#   STUB_FAIL_DELETE       包含该子串的删除动作「报错且不生效」（模拟卸载中途失败 → 验证可续跑）
 set -eu
 : "${STUB_STATE:?stub-gh 需要 STUB_STATE}"
 : "${STUB_LOG:?stub-gh 需要 STUB_LOG}"
 
 printf '%s\n' "$*" >> "$STUB_LOG"
 write_log() { if [ -n "${STUB_WRITES:-}" ]; then printf '%s\n' "$*" >> "$STUB_WRITES"; fi; }
+# 注入失败：写日志后以非零退出，**不执行**真实删除（模拟"卸载中途失败"）
+maybe_fail() {
+  if [ -n "${STUB_FAIL_DELETE:-}" ]; then
+    case "$1" in
+      *"${STUB_FAIL_DELETE}"*) echo "HTTP 500: unexpected error（注入的删除失败）" >&2; exit 1 ;;
+    esac
+  fi
+}
 save() { local t; t="$(mktemp)"; jq "$@" "$STUB_STATE" > "$t"; mv "$t" "$STUB_STATE"; }
 arg_value() {  # $1 = 旗标名 → 输出其后的取值
   local flag="$1"; shift
@@ -64,7 +73,21 @@ case "$cmd" in
         write_log "label edit $name"
         save --arg n "$name" --arg c "$color" --arg d "$desc" \
           '.labels = [.labels[] | if .name == $n then .color = $c | .description = $d else . end]' ;;
+      delete)
+        name="${1:-}"; shift || true
+        maybe_fail "label delete $name"
+        write_log "label delete $name"
+        save --arg n "$name" '.labels = [.labels[] | select(.name != $n)]' ;;
       *) echo "stub-gh: 未实现 label $sub" >&2; exit 2 ;;
+    esac ;;
+  issue)
+    sub="${1:-}"; shift || true
+    case "$sub" in
+      comment)
+        n="${1:-}"; shift || true
+        write_log "issue comment $n"
+        printf 'https://example.invalid/issue/%s#issuecomment-1\n' "$n" ;;
+      *) echo "stub-gh: 未实现 issue $sub" >&2; exit 2 ;;
     esac ;;
   api)
     method="GET"
@@ -82,8 +105,15 @@ case "$cmd" in
       *"/collaborators?per_page=100")
         jq -r '.collaborators[] | "\(.login)\t\(.push)"' "$STUB_STATE" ;;
       */collaborators/*)
-        acct="${path##*/}"; write_log "collaborator put $acct"
-        save --arg a "$acct" '.collaborators = ([.collaborators[] | select(.login != $a)] + [{login:$a,push:true}])' ;;
+        acct="${path##*/}"
+        if [ "$method" = "DELETE" ]; then
+          maybe_fail "collaborator delete $acct"
+          write_log "collaborator delete $acct"
+          save --arg a "$acct" '.collaborators = [.collaborators[] | select(.login != $a)]'
+        else
+          write_log "collaborator put $acct"
+          save --arg a "$acct" '.collaborators = ([.collaborators[] | select(.login != $a)] + [{login:$a,push:true}])'
+        fi ;;
       */rulesets)
         if [ "$method" = "POST" ]; then
           f="$(arg_value --input "$@" || true)"; write_log "ruleset create"
@@ -93,7 +123,11 @@ case "$cmd" in
         fi ;;
       */rulesets/*)
         rid="${path##*/}"
-        if [ "$method" = "PUT" ]; then
+        if [ "$method" = "DELETE" ]; then
+          maybe_fail "ruleset delete $rid"
+          write_log "ruleset delete $rid"
+          save --arg id "$rid" '.rulesets = [.rulesets[] | select((.id|tostring) != $id)]'
+        elif [ "$method" = "PUT" ]; then
           f="$(arg_value --input "$@" || true)"; write_log "ruleset update $rid"
           save --argjson body "$(cat "$f")" --arg id "$rid" \
             '.rulesets = [.rulesets[] | if (.id|tostring) == $id then .body = $body | .name = $body.name else . end]'

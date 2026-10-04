@@ -2,9 +2,29 @@
   "manifest_version": 1,
   "kit": {
     "name": "portable-governance-toolkit",
-    "version": "0.1.0",
-    "slice": "E2-S1",
-    "description": "可移植治理套件：manifest.json 是唯一的归属依据。install.sh 以「先读线上实况再决定」的方式规划/校验/安装受管对象；本套件创建的对象记为 owned=true，装机前已存在的对象只报告、不覆盖、不接管。"
+    "version": "0.2.0",
+    "slice": "E2-S2",
+    "description": "可移植治理套件：manifest.json 是唯一的归属依据。install.sh 以「先读线上实况再决定」的方式规划/校验/安装受管对象；eject.sh 以同一份判据（toolkit/lib.sh）只移除 owned=true 且未漂移的对象，漂移默认保留（--force 才删），协作者属持久权限（默认保留、需 --revoke-collaborators 才撤销），并在任何不可逆动作前先落 tombstone + 可恢复锚点（可中断续跑）。本套件创建的对象记为 owned=true，装机前已存在的对象只报告、不覆盖、不接管。"
+  },
+  "eject": {
+    "description": "卸载语义（E2-S2）：与 install 共用 toolkit/lib.sh 的归属/漂移判据；--dry-run/--check 零写入。",
+    "only_owned_and_undrifted": "只删 manifest.ledger 里 owned=true（或留有 create 意图）且内容/参数与期望一致的对象",
+    "drift_default_keep": "漂移对象默认保留并报告；显式 --force 才删（--apply 此时退出码 1 = 需人工决定）",
+    "collaborators_ask": "协作者属持久权限：默认保留 + 报告 + 打印手动撤销命令；只有显式 --revoke-collaborators 才撤销，绝不静默撤销",
+    "tombstone": "<root>/.git/toolkit-eject-tombstone.json（计划 + 装机前 baseline + 可恢复锚点）+ 同名 .oplog/.backup + …-record.md；任何删除之前写入，中断后重跑即续跑",
+    "resume": "续跑依据是每次重新读线上实况（不是上次运行的记账，D6）；baseline 沿用首次 tombstone 的，不重新打底",
+    "delete_order": [
+      "files",
+      "workflows",
+      "codeowners",
+      "labels",
+      "rulesets",
+      "collaborators"
+    ],
+    "admin_required": [
+      "rulesets",
+      "collaborators"
+    ]
   },
   "parameters": {
     "REPO": {

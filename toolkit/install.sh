@@ -39,11 +39,13 @@ ROOT="$(cd "${KIT_DIR}/.." && pwd)"
 MANIFEST=""            # 未显式指定时，参数解析完再按 KIT_DIR 推导
 MODE="dry-run"          # dry-run | check | apply
 
-log()  { printf '%s\n' "$*"; }
-info() { printf '[INFO] %s\n' "$*"; }
-ok()   { printf '[ OK ] %s\n' "$*"; }
-warn() { printf '[WARN] %s\n' "$*" >&2; }
 die()  { local m="${1:-}"; local c="${2:-2}"; printf '[FAIL] %s\n' "$m" >&2; exit "$c"; }
+
+# 公共 helper（log/info/ok/warn、占位符渲染、线上实况探测、规则集语义比对、
+# 归属判定 ledger_owned 等）。**必须与 eject.sh 同源**：归属与漂移的判据若有第二份实现，
+# 就会出现"install 认为 owned、eject 认为不是"的静默不一致（见 toolkit/lib.sh 头注释）。
+# die 留在本脚本：install 的参数/环境错误用退出码 2，eject 用 1。
+. "${KIT_DIR}/lib.sh"
 
 usage() { sed -n '2,37p' "$0"; }
 
@@ -103,11 +105,7 @@ OWNER="${OWNER_OPT:-${OWNER:-}}"
 [ -n "$OWNER" ] || OWNER="${REPO%%/*}"
 
 # 身份账号：优先显式参数 → 环境变量 → 读凭据文件对应身份（绝不打印凭据内容）
-identity_from_pat() {
-  local f="$1"
-  [ -s "$f" ] || return 1
-  ( GH_TOKEN="$(cat "$f")"; export GH_TOKEN; gh api user --jq .login 2>/dev/null ) || return 1
-}
+# identity_from_pat 在 toolkit/lib.sh
 AUTHOR_PAT="${DEVELOPER_PAT_FILE:-${ROOT}/.secrets/developer.pat}"
 REVIEWER_PAT="${REVIEWER_PAT_FILE:-${ROOT}/.secrets/reviewer.pat}"
 AUTHOR_ACCOUNT="${AUTHOR_OPT:-${AUTHOR_ACCOUNT:-}}"
@@ -117,87 +115,8 @@ REVIEWER_ACCOUNT="${REVIEWER_OPT:-${REVIEWER_ACCOUNT:-}}"
 if [ -z "$REVIEWER_ACCOUNT" ]; then REVIEWER_ACCOUNT="$(identity_from_pat "$REVIEWER_PAT" || true)"; fi
 [ -n "$REVIEWER_ACCOUNT" ] || die "无法确定评审账号：用 --reviewer-account 指定，或提供凭据 ${REVIEWER_PAT}"
 
-# ── 占位符替换（@@NAME@@）─────────────────────────────────────
-# 注意：渲染必须走 sed 流，不能用 "$(cat ...)" —— 命令替换会吃掉文件末尾换行，
-# 会让"渲染结果"与仓库内文件永久差一个换行（本地实测踩到）。
-# 两类账号占位符：@@OWNER@@/@@REVIEWER_ACCOUNT@@ = 裸登录名；@@OWNER_MENTION@@/@@REVIEWER_MENTION@@ = @登录名
-render_stream() {
-  sed -E \
-    -e "s|@@OWNER_MENTION@@|@${OWNER}|g" \
-    -e "s|@@REVIEWER_MENTION@@|@${REVIEWER_ACCOUNT}|g" \
-    -e "s|@@REPO@@|${REPO}|g" \
-    -e "s|@@DEFAULT_BRANCH@@|${DEFAULT_BRANCH}|g" \
-    -e "s|@@OWNER@@|${OWNER}|g" \
-    -e "s|@@AUTHOR_ACCOUNT@@|${AUTHOR_ACCOUNT}|g" \
-    -e "s|@@REVIEWER_ACCOUNT@@|${REVIEWER_ACCOUNT}|g" "$1"
-}
-render_str() { printf '%s' "$1" | render_stream /dev/stdin; }
-render_to() {
-  if [ "$3" = "true" ]; then render_stream "$1" > "$2"; else cp "$1" "$2"; fi
-}
-jget() { printf '%s' "$1" | jq -r "$2"; }
-
-# ── 归属记账（manifest.json 的 ledger 段）───────────────────────
-ledger_owned() {
-  [ "$(jq -r --arg id "$1" '((.ledger[$id] // {}).owned // false) or (((.ledger[$id] // {}).intent // "") == "create")' "$MANIFEST")" = "true" ]
-}
-# 写前落账：先登记 create 意图，再执行；即使命令报错/进程中断，下次运行仍能正确归属（D6）
-ledger_mark_intent() {
-  local tmp
-  tmp="$(mktemp "${TMP_DIR}/mf.XXXXXX")"
-  jq --arg id "$1" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-     '.ledger[$id] = {phase:"planned", intent:"create", observed:"unknown", owned:false, pre_existing:false, recorded_at:$ts}' \
-     "$MANIFEST" > "$tmp" && mv "$tmp" "$MANIFEST"
-}
-
-# ── 线上实况探测（每次运行都重新读，绝不信任上一次的记账）──────────
-probe_labels() {
-  gh label list -R "$REPO" -L 200 --json name,color,description \
-    --jq '.[] | "\(.name)\t\(.color|ascii_downcase)\t\(.description)"' > "${TMP_DIR}/live_labels.tsv" 2>/dev/null || : > "${TMP_DIR}/live_labels.tsv"
-}
-probe_collaborators() {
-  gh api "repos/${REPO}/collaborators?per_page=100" \
-    --jq '.[] | "\(.login)\t\(.permissions.push)"' > "${TMP_DIR}/live_collab.tsv" 2>/dev/null || : > "${TMP_DIR}/live_collab.tsv"
-}
-probe_ruleset_ids() {
-  gh api "repos/${REPO}/rulesets" --jq '.[] | "\(.name)\t\(.id)"' > "${TMP_DIR}/live_rulesets.tsv" 2>/dev/null || : > "${TMP_DIR}/live_rulesets.tsv"
-}
-ruleset_id_by_name() { awk -F '\t' -v n="$1" '$1 == n { print $2; exit }' "${TMP_DIR}/live_rulesets.tsv"; }
-ruleset_fetch() { gh api "repos/${REPO}/rulesets/$1" 2>/dev/null; }
-# 写入线上前先剥掉仅供本地阅读的 _comment* 字段（GitHub API 不接受未知字段）
-ruleset_body() {  # $1 = payload 文件 → 输出可提交的 JSON
-  jq 'with_entries(select(.key | startswith("_") | not))' "$1"
-}
-
-# 规则集语义比对：期望的参数必须与线上一致；线上多出的字段/规则只报告（平台默认值会多出字段）
-ruleset_diff() {
-  jq -r -n --slurpfile W "$1" --slurpfile L "$2" '
-    ($W[0]) as $w | ($L[0]) as $l |
-    ( if $w.name != $l.name then "name|\($w.name)|\($l.name)" else empty end ),
-    ( if $w.target != $l.target then "target|\($w.target)|\($l.target)" else empty end ),
-    ( if $w.enforcement != $l.enforcement then "enforcement|\($w.enforcement)|\($l.enforcement)" else empty end ),
-    ( if (($w.conditions.ref_name.include // [])|sort|join(",")) != (($l.conditions.ref_name.include // [])|sort|join(","))
-      then "ref_include|\(($w.conditions.ref_name.include // [])|sort|join(","))|\(($l.conditions.ref_name.include // [])|sort|join(","))" else empty end ),
-    ( if (($w.bypass_actors // [])|length) != (($l.bypass_actors // [])|length)
-      then "bypass|\(($w.bypass_actors // [])|length)|\(($l.bypass_actors // [])|length)" else empty end ),
-    ( $w.rules[] | .type as $t |
-        ( if ([ $l.rules[] | select(.type == $t) ] | length) == 0 then "rule_missing|\($t)|" else empty end ) ),
-    ( $w.rules[] | select(.type != "required_status_checks") | .type as $t | (.parameters // {}) | to_entries[] |
-        .key as $k | .value as $v |
-        ( [ $l.rules[] | select(.type == $t) ] | .[0].parameters[$k] ) as $lv |
-        ( if ($lv != $v) then "param|\($t).\($k)|期望 \($v|tojson) / 实际 \($lv|tojson)" else empty end ) ),
-    ( $l.rules[] | select(.type != "required_status_checks") | .type as $t | (.parameters // {}) | to_entries[] |
-        .key as $k |
-        ( if ((([ $w.rules[] | select(.type == $t) ] | .[0].parameters) // {}) | has($k)) then empty
-          else "extra_param|\($t).\($k)|线上多出（平台默认值，仅报告）" end ) ),
-    ( $w.rules[] | select(.type == "required_status_checks") |
-        ( [.parameters.required_status_checks[].context] | sort | join(",") ) as $wc |
-        ( [ $l.rules[] | select(.type=="required_status_checks") | .parameters.required_status_checks[].context ] | sort | join(",") ) as $lc |
-        ( if $wc != $lc then "contexts|\($wc)|\($lc)" else empty end ) ),
-    ( $l.rules[] | .type as $t |
-        ( if ([ $w.rules[] | select(.type == $t) ] | length) == 0 then "extra_rule|\($t)|线上多出（非本套件声明，仅报告）" else empty end ) )
-  '
-}
+# ── 公共 helper（渲染 / 线上实况探测 / 规则集语义比对 / 归属判定 / 标签解析 / CODEOWNERS 归一化）
+#     全部在 toolkit/lib.sh —— 与 eject.sh 共用同一份判据，避免归属逻辑出现第二实现。
 
 # ── ① 文件 ────────────────────────────────────────────────────
 decide_files() {
@@ -252,20 +171,7 @@ decide_files() {
 }
 
 # ── ② 标签 ────────────────────────────────────────────────────
-parse_label_source() {  # $1 = labels.yml → TSV(name color description)
-  awk '
-    function val(line,   p, s) {
-      p = index(line, ":"); if (p == 0) return ""
-      s = substr(line, p + 1); gsub(/^[ \t]+/, "", s); gsub(/[ \t]+$/, "", s)
-      gsub(/^"/, "", s); gsub(/"$/, "", s); return s
-    }
-    /^[ \t]*-[ \t]*name:/ { if (n != "") print n "\t" c "\t" d; n = val($0); c = ""; d = ""; next }
-    /^[ \t]*color:/       { c = val($0); next }
-    /^[ \t]*description:/ { d = val($0); next }
-    END                   { if (n != "") print n "\t" c "\t" d }
-  ' "$1"
-}
-label_want() { awk -F '\t' -v n="$1" '$1 == n { print tolower($2) "\t" $3; exit }' "${TMP_DIR}/want_labels.tsv"; }
+# parse_label_source / label_want 在 toolkit/lib.sh（与 eject.sh 同源）
 
 decide_labels() {
   local entry id name lv rcolor rdesc wcolor wdesc act
@@ -446,7 +352,7 @@ EOF
 }
 
 # ── ⑤ CODEOWNERS 行 ───────────────────────────────────────────
-normalize_co() { sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//' "$1" | grep -vE '^[[:space:]]*(#|$)' || true; }
+# normalize_co 在 toolkit/lib.sh（与 eject.sh 同源）
 
 decide_codeowners() {
   local entry id path pattern owners owned_line found act f

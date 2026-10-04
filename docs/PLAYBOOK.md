@@ -100,7 +100,8 @@ unset GH_TOKEN                 # 用完立刻切回主身份
 | **`GITHUB_TOKEN` 会悄悄顶掉"主身份"** | `gh` 的凭据回退链是 `GH_TOKEN` → `GITHUB_TOKEN` → 登录态。早期 `use_main_identity` 只清 `GH_TOKEN`，于是 `GITHUB_TOKEN=<作者 PAT> scripts/xxx.sh`（Bug #53 的临时绕过）会以**作者身份**跑"主身份脚本" | 两个 `use_*_identity` 现在都显式清理这两个变量；`--as main|author` 是**唯一**的文档化选择方式，不要再用环境变量迂回（Bug #53/#54） |
 | **作者身份推送 `.github/workflows/**` 需要 `workflow` scope** | 只有一个 `repo` 的 classic PAT 会让**整个 push** 被服务端拒绝：`refusing to allow a Personal Access Token to create or update workflow … without 'workflow' scope`（Bug #51，作者身份的 `--as author` 会告警，`scripts/toolcheck.sh` 第 10 项会直接失败） | 按 W0.4 重新签发作者 classic PAT：`repo` + `workflow`；**不要**改用主身份推、**不要** `--admin` |
 | **把命令输出接给 `tail` 会吞掉失败退出码** | 未开 `pipefail` 时管道退出码取自最后一个命令：旧版 `deliver.sh` 的 `git push … 2>&1` 接 `tail -2`，推送被服务端拒绝后仍继续执行，可能用**远端的旧分支**建出一个 PR | 需要"既看输出又判失败"时先赋值再判：`if ! out="$(cmd 2>&1)"; then …; fi`（`scripts/deliver.sh` 已如此处理） |
-| **作者身份（`repo` + `workflow`）用不了 `gh pr edit`** | `gh pr edit` 走 **GraphQL**，其查询取 `login` / `name` / `slug` 等字段、需要 `read:org`；作者 PAT 只有 `repo` + `workflow` → `GraphQL: Your token has not been granted the required scopes … 'read:org'`，**正文不会被更新**（#54 实测） | 改 PR 正文用 **REST**：`jq -Rs '{body:.}' 正文.md \| GH_TOKEN="$(cat .secrets/developer.pat)" gh api -X PATCH repos/{o}/{r}/pulls/<n> --input -`。`gh pr create` / `gh pr comment` / `gh pr view` 走 REST，不受影响。是否给作者 PAT 补 `read:org`（会降低最小权限）或封装 helper，属新切片，需 PM 裁定 |
+| **作者身份（`repo` + `workflow`）用不了 `gh pr edit`** | `gh pr edit` 走 **GraphQL**，其查询取 `login` / `name` / `slug` 等字段、需要 `read:org`；作者 PAT 只有 `repo` + `workflow` → `GraphQL: Your token has not been granted the required scopes … 'read:org'`，**正文不会被更新**（#54 实测） | PM 裁定（#54）：**不给作者扩权**（`read:org` 与 D1 最小权限冲突），改为用 `scripts/lib.sh` 的 `pr_edit_body <pr#> <正文文件>`（REST `PATCH /repos/{o}/{r}/pulls/{n}` + 回读校验，失败直接暴露；随 #47 交付）。`gh pr create` / `gh pr comment` / `gh pr view` 走 REST，不受影响 |
+| **`printf '%s'` 不带换行 → 循环里逐行输出被拼成一行** | `render_str`（本套件占位符渲染）用 `printf '%s'`，把 `render_str … \| sed …` 放进 `while` 循环直接输出时，多个结果会**首尾相连成一行**，下游 `grep -Fxq` 全部失配（S2 实测：`eject --check` 误报"CODEOWNERS 原有行被动了"，`wc -l` 为 0） | 循环里逐行输出必须自己补换行：`printf '%s\n' "$(render_str … \| sed …)"`。**注意**：这个脚本在 `set -eu` 下不会报错，只会静默给出错误数据 —— 复核判据脚本时优先看"输出行数对不对" |
 
 ---
 
@@ -391,7 +392,8 @@ scripts/closeout.sh <pr#>         # 五项核验：已合并 / Issue 已关 / �
 2. 新提交会**驳回已有批准**（`dismiss_stale_reviews_on_push`）→ 必须重新评审。
 3. 挂 `src/rework` 标签用于统计返修率。
 4. **返修上限 2 次**；第 3 次打回必须升级为"切片重切"或"需求澄清"，由 PM 决策并记录。
-5. 返修时若要改 **PR 正文**：不要用 `gh pr edit`（作者凭据缺 `read:org`，见 §4 环境陷阱），用 REST `gh api -X PATCH repos/{o}/{r}/pulls/<n>`。
+5. 返修时若要改 **PR 正文**：不要用 `gh pr edit`（作者凭据缺 `read:org`，见 §4 环境陷阱），
+   用 `scripts/lib.sh` 的 `pr_edit_body <pr#> <正文文件>`（REST 实现 + 回读校验 + 失败暴露）。
 
 ### W10 Bug 修复
 | 场景 | 处理 |

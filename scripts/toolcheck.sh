@@ -17,12 +17,12 @@ set -eu
 fail=0
 note_fail() { warn "$1"; fail=$((fail + 1)); }
 
-info "1/8 基础命令"
+info "1/10 基础命令"
 for c in git gh jq awk grep sed curl; do
   if command -v "$c" >/dev/null 2>&1; then ok "${c} 可用"; else note_fail "缺少命令 ${c}，请先安装"; fi
 done
 
-info "2/8 bash 版本与兼容性"
+info "2/10 bash 版本与兼容性"
 bash_ver="$(bash --version | head -1 | sed 's/.*version //; s/ .*//')"
 log "  当前 bash：${bash_ver}"
 case "$bash_ver" in
@@ -30,7 +30,7 @@ case "$bash_ver" in
   *)    log '  → bash 4+：本地不会暴露 bash 3.2 的兼容问题，但 CI 仍会检查' ;;
 esac
 
-info "3/8 gh 登录状态"
+info "3/10 gh 登录状态"
 if gh auth status >/dev/null 2>&1; then
   who="$(gh api user --jq .login 2>/dev/null || true)"
   ok "gh 已登录：${who}"
@@ -38,12 +38,12 @@ else
   note_fail "gh 未登录：运行 gh auth login"
 fi
 
-info "4/8 仓库与规则集文件"
+info "4/10 仓库与规则集文件"
 require_repo_root
 ok "仓库根目录正确，仓库为 ${REPO}"
 [ -f "$RULESET_FILE" ] || note_fail "缺少规则集定义 ${RULESET_FILE}"
 
-info "5/8 规则集：线上与仓库内定义是否一致"
+info "5/10 规则集：线上与仓库内定义是否一致"
 rid="$(live_ruleset_id)"
 if [ -z "$rid" ]; then
   note_fail "线上没有名为 main-protection 的规则集 —— 门禁未生效（应用方式见 .github/rulesets/README.md）"
@@ -64,7 +64,7 @@ else
   log "  require_code_owner_review = ${code_owner}（true 时，评审身份凭据是硬依赖）"
 fi
 
-info "6/8 必需检查是否都有对应工作流 job"
+info "6/10 必需检查是否都有对应工作流 job"
 missing=""
 while IFS= read -r ctx; do
   [ -n "$ctx" ] || continue
@@ -78,7 +78,7 @@ else
   ok "规则集引用的必需检查全部有对应 job"
 fi
 
-info "7/8 评审/验收身份凭据"
+info "7/10 评审/验收身份凭据"
 if [ ! -e "$REVIEWER_PAT_FILE" ]; then
   note_fail "找不到 ${REVIEWER_PAT_FILE} —— 没有它就无法提交独立评审/验收（见 docs/PLAYBOOK.md）"
 else

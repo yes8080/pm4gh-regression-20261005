@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # scripts/closeout.sh <pr#> [--dry-run]
 #
-# W8「合并与收尾」的四项核验，一条命令跑完：
+# W8「合并与收尾」的五项核验，一条命令跑完：
 #   ① PR 已合并（squash）
 #   ② 关联 Issue 已自动关闭
 #   ③ 远程头分支已删除
 #   ④ 本地头分支已清理
+#   ⑤ 关闭后无残留 status/* 标签（Done 的载体必须干净）
 #
 # ★ 本脚本承担 Bug #10 的修复要求（squash 合并的固有副作用）：
 #   squash 合并后，原始提交在 main 上不存在，git 基于祖先关系的"已合并"判定必然失败，

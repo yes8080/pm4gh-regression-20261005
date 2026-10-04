@@ -166,6 +166,32 @@ push_branch_as_current_identity() {
   git -c credential.helper= -c credential.helper='!gh auth git-credential' push -u origin "$branch"
 }
 
+# PR 正文改写（作者身份必须走 REST）—— #54 的 PM 裁定：
+# `gh pr edit` 走 **GraphQL**，其查询取 login/name/slug 等字段、需要 `read:org`；
+# 作者 PAT 只有 `repo` + `workflow` → `GraphQL: Your token has not been granted the required
+# scopes … 'read:org'`，**正文不会被更新**（#54 实测，坑见 docs/PLAYBOOK.md §4）。
+# 裁定：不给作者扩权（read:org 与 D1 最小权限冲突），改为封装 REST PATCH。
+# 失败必须暴露：① gh api 非零退出 → 打印服务端原文并非零退出；② 回读正文不一致（静默不更新）也判失败。
+pr_edit_body() {
+  local pr="${1:-}" file="${2:-}" want got rc=0 out=""
+  [ -n "$pr" ] || die "pr_edit_body：缺少 PR 编号"
+  case "$pr" in *[!0-9]*) die "pr_edit_body：PR 编号必须是数字：${pr}" ;; esac
+  [ -f "$file" ] || die "pr_edit_body：找不到正文文件 ${file}"
+  require_cmd jq
+
+  want="$(cat "$file")"
+  out="$(jq -Rs '{body:.}' "$file" | gh api -X PATCH "repos/${REPO}/pulls/${pr}" --input - 2>&1)" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    printf '%s\n' "$out" >&2
+    die "改 PR #${pr} 正文失败（上方为服务端原文；REST PATCH repos/${REPO}/pulls/${pr}）。不要改用 gh pr edit —— 作者凭据缺 read:org（见 docs/PLAYBOOK.md §4）" "$rc"
+  fi
+  got="$(gh api "repos/${REPO}/pulls/${pr}" --jq .body 2>/dev/null || true)"
+  if [ "$got" != "$want" ]; then
+    die "改 PR #${pr} 正文后回读不一致（疑似静默未更新）—— 请检查正文文件与服务端权限（不要假定成功）"
+  fi
+  ok "已更新 PR #${pr} 正文（REST PATCH；回读校验一致）"
+}
+
 # ── 查询helper ──────────────────────────────────────────────
 issue_json()  { gh issue view "$1" -R "$REPO" --json "$2" --jq "$3"; }
 issue_state() { gh issue view "$1" -R "$REPO" --json state --jq .state; }
