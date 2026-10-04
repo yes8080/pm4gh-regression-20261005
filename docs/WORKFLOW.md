@@ -30,10 +30,10 @@ chmod 600 "$HOME/.config/pm4gh/developer.pat" "$HOME/.config/pm4gh/reviewer.pat"
 > 状态 = `status/*` 标签 + Issue 开关；**没有本地状态文件**。迁移只能走 `scripts/status.sh <issue#> <state>`，且**判据是「HTTP 层单请求」**（标签改动只有一条 REST `PUT …/labels` 整份替换 —— 不是「一次 `gh issue edit`」；见 §4 陷阱 10）。
 > 状态集 **6 个**：`backlog | ready | in-progress | in-review | done | canceled`；`in-review` = 「评审中 / 已批准待合并」（没有单独的「验收」状态，批准本身就是验收门禁）。「被打回」**不设独立状态** —— 平台已免费提供 `reviewDecision=CHANGES_REQUESTED`，打回 = `in-review → in-progress`。
 
-### 状态迁移表（**唯一表权威**：6 个状态、14 条边；与 `scripts/status.sh` 的 `TRANSITIONS` 由 `ci/test` 断言**逐字一致**）
+### 状态迁移表（**唯一表权威**：6 个状态、15 条边；与 `scripts/status.sh` 的 `TRANSITIONS` 由 `ci/test` 断言**逐字一致**）
 
 > 这里**没有图**（Issue #107）：AI 读的是 token 不是像素 —— 表一行一条边、可 grep/awk 校验；图带语法开销、隐式节点易漏，还要额外断言才不漂移。
-> `类型` 取值：`正常` = 主路径推进；`异常` = 回退 / 打回 / 终止；`终态` = 进入 `done`（合并关单）或终态本身（无出边）。
+> `类型` 取值：`正常` = 主路径推进；`异常` = 回退 / 打回 / 终止；`终态` = 进入 `done`（切片 = 合并关单；非切片 = 待办项全部关闭，见下方「`done` 的三层语义」）或终态本身（无出边）。
 
 <!-- TRANSITIONS:BEGIN（机器可读；与 scripts/status.sh 的 TRANSITIONS 逐字一致，由 ci/test 断言；首列 = 状态集，其余反引号 token = 出边） -->
 
@@ -41,6 +41,7 @@ chmod 600 "$HOME/.config/pm4gh/developer.pat" "$HOME/.config/pm4gh/reviewer.pat"
 |---|---|---|---|---|
 `backlog` | `ready` | 人/PM | W1 DoR 五项齐备 | 正常
 `backlog` | `in-progress` | dev-bot | W2 start.sh 直接开工（不假定 Issue 在 backlog） | 正常
+`backlog` | `done` | 人/PM·dispatcher | 非切片 Issue（Epic / Audit / 提案）收尾：待办项已**全部**关闭 → `scripts/status.sh <n> done` | 终态
 `backlog` | `canceled` | 人/PM | 不做（dispatcher 确认） | 异常
 `ready` | `in-progress` | dev-bot | W2 start.sh 开工 | 正常
 `ready` | `backlog` | 人/PM | 收回（DoR 不再齐备） | 异常
@@ -60,6 +61,19 @@ chmod 600 "$HOME/.config/pm4gh/developer.pat" "$HOME/.config/pm4gh/reviewer.pat"
 
 `done` / `canceled` 无出边。**转换表是强制的**：表外 `from → to` → `status.sh` 失败（退出码 1），**没有跳过开关** ——
 需要例外就开 Issue 补一条边（同时改 `status.sh` 的 `TRANSITIONS` 与本表，两处由 `ci/test` 断言**逐字一致**）。
+
+#### `done` 的三层语义（`backlog → done` 的边界）
+
+`done` 是三种**收尾方式**共用的一个状态载体（Issue `CLOSED` + `state_reason=completed`），不是一个含义：
+
+| 场景 | 合法路径 | 含义 |
+|---|---|---|
+| 切片（Issue → 分支 → PR） | `in-review → done` | **已经过评审并合并**、收尾完成（W7 + `closeout.sh`） |
+| 非切片（Epic / Audit / 提案） | `backlog → done` | 该 Issue 的**待办项已全部关闭**（它自己不产出 PR） |
+| 不做（任意非终态状态） | `→ canceled` | **不做**（`state_reason=not_planned`）—— 与 `done` 的区别正是 `state_reason` |
+
+- **`in-review → done` 仍是唯一表达「经过评审并合并」的路径**：切片要进 `done`，`in-review` 是**必经**状态 —— 该边**不能**被 `backlog → done` 替代。
+- **`backlog → done` 不表示任何工作被完成**，只表示「这类 Issue 的收尾方式」。用它之前必须逐项确认：① 该 Issue **不是切片**（切片走 W2..W7）② **无未关闭的待办子项** ③ 无关联 PR。滥用它 = 让 `state_reason=completed` 说谎。
 
 ### 状态载体与体检
 

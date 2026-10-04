@@ -19,12 +19,15 @@
 #     打回 = in-review -> in-progress（review.sh request-changes）
 #
 # 转换表（合法迁移的**唯一**定义；docs/WORKFLOW.md 里的表由 ci/test 断言与本表**逐字一致**）：
-#   backlog     -> ready | in-progress | canceled
+#   backlog     -> ready | in-progress | done | canceled
 #   ready       -> in-progress | backlog | canceled
 #   in-progress -> in-review | ready | backlog | canceled
 #   in-review   -> in-progress | done | backlog | canceled
 #   done        -> （终态；无出边）
 #   canceled    -> （终态；无出边）
+# done 有三层语义（详见 docs/WORKFLOW.md §1）：切片 = in-review -> done（已评审并合并）；
+#   非切片（Epic / Audit / 提案）= backlog -> done（其待办项已全部关闭，**不表示任何工作被完成**）；
+#   不做 = -> canceled（NOT_PLANNED）。in-review -> done 仍是唯一表达「经过评审并合并」的路径。
 # 表外的 from -> to 一律**失败**（含 done/canceled 出边、跨级跳跃）—— **没有跳过开关**：
 # 需要例外就开 Issue 补一条边（改本文件的 TRANSITIONS + docs/WORKFLOW.md 的表，两处由 ci/test 断言集合相等）。
 # 幂等：from == to 且载体齐备时不迁移（终态还要求无残留标签，否则继续清理）。
@@ -45,7 +48,7 @@ info() { printf '\n== %s ==\n' "$*"; }
 
 STATUS_LABELS="status/ready status/in-progress status/in-review"
 VALID_STATES="backlog ready in-progress in-review done canceled"
-TRANSITIONS="backlog->ready backlog->in-progress backlog->canceled ready->in-progress ready->backlog ready->canceled in-progress->in-review in-progress->ready in-progress->backlog in-progress->canceled in-review->in-progress in-review->done in-review->backlog in-review->canceled"
+TRANSITIONS="backlog->ready backlog->in-progress backlog->done backlog->canceled ready->in-progress ready->backlog ready->canceled in-progress->in-review in-progress->ready in-progress->backlog in-progress->canceled in-review->in-progress in-review->done in-review->backlog in-review->canceled"
 
 BASE_LABEL_OF_STATE() {
   case "$1" in
