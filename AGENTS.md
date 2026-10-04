@@ -9,7 +9,7 @@
 ## 1. 开工前必须做（缺一不可）
 
 ```bash
-scripts/toolcheck.sh        # 9 项自检（含 git 工作区预检）；任何一项失败就停下来报告，不要"先干着看"
+scripts/toolcheck.sh        # 10 项自检（含 git 工作区预检）；任何一项失败就停下来报告，不要"先干着看"
 ```
 
 然后读三份文档：`docs/PLAYBOOK.md`（怎么做）、`docs/GOVERNANCE.md`（什么算做完）、`TOOLING.md`（怎么交接）。
@@ -23,7 +23,7 @@ scripts/toolcheck.sh        # 9 项自检（含 git 工作区预检）；任何�
 3. **所有改动经 PR。** 禁止直推 `main`（会被规则集拒绝）；禁止用 `--admin` 绕过门禁。
 4. **PR 正文必须含 `Closes #<issue#>`**，并填写六段模板（摘要/影响面/回滚/验收证据/DoD 自查/风险）。
 5. **必须留可核对的验收证据**：命令、测试名、输出、运行链接。禁止"已测试通过"这类无证据断言。
-6. **不得自我批准**（平台也会拒绝）。评审与验收由 `@yes8080-reviewer-bot` 以 `scripts/review.sh` 执行。
+6. **身份分离（决策 D1）**：作者 = `@yes8080-dev-bot`（建分支/提交/开 PR）、评审与验收 = `@yes8080-reviewer-bot`（`scripts/review.sh`）、**合并权仅 `@yes8080`（dispatcher）**。三者都不得越权，平台也会拒绝自我批准。
 7. **遇到门禁阻塞时报告，不要绕过。** 如果门禁本身有缺陷，按 §5 开 Bug Issue 并附证据。
 
 ---

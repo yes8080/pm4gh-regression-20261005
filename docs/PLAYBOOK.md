@@ -20,7 +20,7 @@
 
 ```bash
 git clone https://github.com/yes8080/pm4gh.git && cd pm4gh
-scripts/toolcheck.sh          # 9 项自检：命令/gh 登录/规则集漂移/必需检查/凭据/git 远端/git 工作区预检
+scripts/toolcheck.sh          # 10 项自检：命令/gh 登录/规则集漂移/必需检查/凭据/git 远端/git 工作区预检
 ```
 
 **任何一项未通过都不要开始干活。** 最常见的两类失败：
@@ -86,6 +86,7 @@ unset GH_TOKEN                 # 用完立刻切回主身份
 | **source 阶段残留失效 `GH_TOKEN`** | `GH_TOKEN=bogus bash scripts/audit.sh` 会在 `source lib.sh` 时直接失败（`[FAIL] 无法确定仓库`），因为 `REPO` 在 source 阶段解析 | 已在 `lib.sh` 修复：解析时临时清空 `GH_TOKEN` 再恢复。**排查时**注意"脚本还没开始跑就失败"通常属这类 source 阶段问题 |
 | **BSD `grep` 不支持 `-P`** | 本机复现 `ci/lint` 的 `grep -nHP` 检查时会报非法选项 | 本地用 Python 等价正则复算，最终以 CI 的 `ci/lint` 结果为准；不要因本地跑不了就跳过 |
 | **陈旧的 remote-tracking ref** | 合并后 `git branch -a` 仍列出已删除的远程分支 | `git fetch --prune`。判定远程分支是否存在**必须用 `git ls-remote`**（`closeout.sh` 即如此），不要看 `git branch -r` |
+| **绕过 `start.sh` 直接建分支会被门禁拒绝** | 用 `gh issue develop` 手工建分支**跳过了状态迁移**：Issue 仍在 `Backlog`（无 `status/*` 标签）→ `policy/branch-name` 判定「从 Backlog 直接开 PR」并失败。**而且改标签不会重跑 `pull_request` 事件**，失败的必需检查会永久留在该 SHA 上（Bug #13 同型） | 一律走 `scripts/start.sh <issue#>`（它内部建分支并迁状态）；若已手工建分支，先执行 `scripts/status.sh <issue#> in-progress`，**再推一个新提交产生新 SHA** 触发重跑 |
 | **同一 workspace 只允许一个执行者** | 两个执行者并发会互相删分支/切 HEAD（本项目已实际发生：演练执行者的分支被我清理时被切走，它靠悬空 commit 恢复） | 交接必须显式"让出"：确认对方工作区干净且已切回 `main` 后再动手。**默认串行**：`/Users/ws/code/AGENTS.md` 明令禁止 `clone` / `worktree` / 隔离实现副本（走重复依赖与配置漂移），因此**不允许靠开副本并行**；`scripts/toolcheck.sh` 会检测 worktree 数量并拒绝继续 |
 | **环境里残留失效的 `GH_TOKEN` 会让所有脚本在 source 阶段就失败** | `lib.sh` 在 **source 时**（早于 `use_main_identity`）就用 `gh repo view` 解析 `REPO`，失效 token → 报"无法确定仓库" | 要强制主身份的脚本需在 `source lib.sh` **之前** `unset GH_TOKEN`（`scripts/report.sh` 已如此处理）；排查时先 `unset GH_TOKEN` |
 
@@ -103,6 +104,63 @@ gh repo edit --delete-branch-on-merge --enable-auto-merge \
 scripts/sync-labels.sh                     # 标签即代码（幂等，不删存量）
 # 规则集：见 §9「规则集分阶段应用」
 ```
+
+### W0.4 身份开通：为每个角色开通一个账号（**可复用到任意项目**）
+
+> **官方硬限制**：**PAT 只能在浏览器创建 —— GitHub 没有创建 PAT 的 API**（classic 与 fine-grained 都没有）。
+> 因此第 1 步必须人工完成一次，其余步骤可脚本化。
+
+**角色 ↔ 账号 ↔ 凭据对照**
+
+| 角色 | 账号 | 凭据 | 权限 |
+|---|---|---|---|
+| dispatcher（**唯一合并者** + 仓库/规则集管理） | `yes8080` | `gh` 登录态 | admin |
+| 作者（建分支 / 提交 / 开 PR / 返修） | `yes8080-dev-bot` | `.secrets/developer.pat` | write（**禁合并**） |
+| 评审 + 验收（approve、`/accept`） | `yes8080-reviewer-bot` | `.secrets/reviewer.pat` | write（**禁合并、禁改码**） |
+
+**为什么必须是 classic PAT（官方依据）**
+- **细粒度 PAT 不可用**：官方明确列为未支持缺口 —— "contribute to **repositories where the user is an outside or repository collaborator**"。我们的 bot 恰是协作者。
+- **GitHub App 不可用于评审**：CODEOWNERS 只接受"具有显式 `write` 权限的**用户名或团队名**"，App 不是协作者、不能成为 code owner → 会让 `require_code_owner_review` **永久无法满足**（Bug #13 同型死锁）。
+- 结论：**评审身份必须是"用户账号 + classic PAT"**。
+
+**开通流程（对每个角色重复）**
+
+1. **创建 token（人工，唯一的人工步骤）**
+   - **必须先用目标账号登录浏览器**（建议无痕窗口）。登错账号会生成属于别人的 token —— 本项目实测踩过。
+   - https://github.com/settings/tokens → `Generate new token (classic)`
+   - Note：`<repo>-<role>`（如 `pm4gh-dev`）；Expiration：建议 90 天
+   - Scope **只勾 `repo`**
+2. **保存进项目**（绝不进版本库）
+   ```bash
+   printf '%s' '<token>' > .secrets/developer.pat
+   chmod 600 .secrets/developer.pat
+   git check-ignore .secrets/developer.pat      # 必须输出路径 = 已被忽略
+   ```
+3. **核对身份**（发错账号会在此暴露）
+   ```bash
+   curl -sS -H "Authorization: token $(cat .secrets/developer.pat)" \
+     https://api.github.com/user | jq -r .login     # 必须等于该角色预期账号
+   ```
+4. **邀请为协作者**（仓库 owner 执行；`push` = write）
+   ```bash
+   gh api -X PUT repos/<owner>/<repo>/collaborators/<account> -f permission=push
+   ```
+5. **由该账号接受邀请**（不接受的邀请不产生任何权限）
+   ```bash
+   TOK="$(cat .secrets/developer.pat)"
+   INV="$(curl -sS -H "Authorization: token $TOK" https://api.github.com/user/repository_invitations \
+         | jq -r '.[] | select(.repository.full_name=="<owner>/<repo>") | .id' | head -1)"
+   curl -sS -X PATCH -H "Authorization: token $TOK" \
+     "https://api.github.com/user/repository_invitations/$INV"    # 204 = 成功
+   ```
+6. **等初始化并回读验证**（权限生效不是瞬时的，**必须**回读确认而不是假定成功）
+   ```bash
+   scripts/toolcheck.sh      # 第 10 项校验两个 bot 身份与权限
+   ```
+   期望：`push=true`、`admin=false`、读 Issue 返回 200。
+
+> **典型症状**：身份与 scope 都正确、却访问仓库 **404** —— 说明第 4/5 步没做（私有仓库对无权限者隐藏存在性）。
+> **登记要求**：新增协作者属**持久权限**，必须在套件 `manifest.json` 中登记；卸载时**询问式**处理（默认保留并报告，`--force` 才撤销）。
 
 ### W0.5 状态机与视图（决策 D9：Projects 已移除）
 

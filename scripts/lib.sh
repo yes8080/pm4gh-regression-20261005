@@ -51,6 +51,7 @@ if [ -n "${_resolve_saved_token}" ]; then export GH_TOKEN="${_resolve_saved_toke
 unset _resolve_saved_token || true
 SECRETS_DIR="${SECRETS_DIR:-.secrets}"
 REVIEWER_PAT_FILE="${REVIEWER_PAT_FILE:-${SECRETS_DIR}/reviewer.pat}"
+DEVELOPER_PAT_FILE="${DEVELOPER_PAT_FILE:-${SECRETS_DIR}/developer.pat}"
 AUTH_IDENTITIES_FILE="${AUTH_IDENTITIES_FILE:-.github/authorized-identities.txt}"
 RULESET_FILE="${RULESET_FILE:-.github/rulesets/main-protection.json}"
 BASE_BRANCH="${BASE_BRANCH:-main}"
@@ -58,6 +59,17 @@ BASE_BRANCH="${BASE_BRANCH:-main}"
 # ── 身份切换 ────────────────────────────────────────────────
 use_main_identity() {
   unset GH_TOKEN || true
+}
+
+# 作者身份（决策 D1）：建分支、提交、开 PR、返修用 dev-bot；合并权不在此身份
+use_developer_identity() {
+  [ -s "$DEVELOPER_PAT_FILE" ] || die "找不到作者身份凭据 ${DEVELOPER_PAT_FILE}（开通流程见 docs/PLAYBOOK.md W0.4）"
+  GH_TOKEN="$(cat "$DEVELOPER_PAT_FILE")"
+  export GH_TOKEN
+  local who
+  who="$(gh api user --jq .login 2>/dev/null || true)"
+  [ -n "$who" ] || die "作者身份凭据无效（无法读取身份）"
+  ok "已切换作者身份：${who}"
 }
 
 use_reviewer_identity() {

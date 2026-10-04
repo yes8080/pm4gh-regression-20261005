@@ -106,7 +106,7 @@ else
   fi
 fi
 
-info "8/9 git 与远端可用性"
+info "8/10 git 与远端可用性"
 if git ls-remote --heads origin >/dev/null 2>&1; then
   ok "可访问远端 origin"
 else
@@ -115,7 +115,7 @@ fi
 current="$(git branch --show-current 2>/dev/null || true)"
 log "  当前分支：${current:-（游离或空）}"
 
-info "9/9 git 工作区预检（工作区规则：/Users/ws/code/AGENTS.md 第 2 条）"
+info "9/10 git 工作区预检（工作区规则：/Users/ws/code/AGENTS.md 第 2 条）"
 toplevel="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 if [ -z "$toplevel" ]; then
   note_fail "当前不在 git 仓库内"
@@ -184,7 +184,28 @@ fi
 
 echo
 if [ "$fail" -eq 0 ]; then
-  ok "全部通过，可以开始工作"
+  info "10/10 两个 bot 凭据（作者 / 评审）"
+for pair in "developer:${DEVELOPER_PAT_FILE:-.secrets/developer.pat}:作者" "reviewer:${REVIEWER_PAT_FILE:-.secrets/reviewer.pat}:评审"; do
+  role="${pair%%:*}"; rest="${pair#*:}"; file="${rest%%:*}"; label="${rest#*:}"
+  if [ ! -s "$file" ]; then
+    note_fail "${label}身份凭据缺失：${file}（开通流程见 docs/PLAYBOOK.md W0.4）"
+    continue
+  fi
+  mode="$(stat -f '%Lp' "$file" 2>/dev/null || stat -c '%a' "$file" 2>/dev/null || echo '?')"
+  [ "$mode" = "600" ] && ok "${label}凭据权限 600" || warn "${label}凭据权限为 ${mode}（建议 600）"
+  git ls-files --error-unmatch "$file" >/dev/null 2>&1 && note_fail "${label}凭据已进入版本库：${file}" || ok "${label}凭据未进入版本库"
+  tok="$(cat "$file")"
+  login="$(curl -sS -H "Authorization: token ${tok}" https://api.github.com/user 2>/dev/null | jq -r '.login // ""' 2>/dev/null || true)"
+  [ -n "$login" ] || { note_fail "${label}凭据无效（无法读取身份）"; continue; }
+  perms="$(curl -sS -H "Authorization: token ${tok}" "https://api.github.com/repos/${REPO}" 2>/dev/null | jq -r 'if .permissions then "\(.permissions.push)/\(.permissions.admin)" else "none" end' 2>/dev/null || echo none)"
+  case "$perms" in
+    true/false) ok "${label}身份 ${login}：push 有、admin 无（符合最小权限）" ;;
+    none)       note_fail "${label}身份 ${login} 对本仓库无访问权（404）—— 是否漏做 W0.4 第 4/5 步（邀请+同意）？" ;;
+    *)          warn "${label}身份 ${login} 权限异常：push/admin=${perms}" ;;
+  esac
+done
+
+ok "全部通过，可以开始工作"
   exit 0
 fi
 warn "共有 ${fail} 项未通过 —— 修好再开始（不要跳过：门禁失效或凭据失效都会让 PR 卡死）"
