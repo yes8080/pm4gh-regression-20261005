@@ -10,6 +10,7 @@ class Handoff:
             raise ValueError("title required")
 
     def accept(self):
+        """Accept exactly once; repeated acceptance is invalid."""
         if self.status != "pending":
             raise ValueError("already accepted")
         self.status = "accepted"
