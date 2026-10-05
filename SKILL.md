@@ -60,13 +60,14 @@ metadata:
 | 何时读 | 文件 |
 |---|---|
 | 开工 / 交付 / 返修的每步命令与判据 | [references/flow.md](references/flow.md) |
+| 要把**一句目标**无人工推到已合并（编排序列 S1..S9 + 每步判据） | [references/orchestration.md](references/orchestration.md)（顺序视图；**不新增编排脚本**） |
 | 任何一次状态迁移之前 | [references/status-machine.md](references/status-machine.md)（15 边 / 6 状态的唯一表权威） |
 | 首次开通身份凭据，或身份 / 凭据报错 | [references/identity.md](references/identity.md) |
 | 现象对得上某条坑（检查永久 pending、推送变了身份…） | [references/traps.md](references/traps.md) |
 | 预检有 `[FAIL]`、必需检查永久 pending、需要终止分支 | [references/exceptions.md](references/exceptions.md)（异常处理：触发 → 动作；**发现流程缺陷开 Bug Issue**） |
 | 写 PR 第 5 节 DoD 自查，或合并前核验 | [references/dod.md](references/dod.md) |
 | 填 PR 六段 / 建 Issue 表单 | [assets/README.md](assets/README.md) → `.github/` 里的平台强制模板 |
-| 确定性、多步、有副作用的 GitHub 操作 | [scripts/](scripts/)（7 个脚本，自包含；**不得新增脚本**） |
+| 确定性、多步、有副作用的 GitHub 操作 | [scripts/](scripts/)（7 个脚本，自包含；**不得新增脚本** —— 「顺序」不进脚本层，走 [references/orchestration.md](references/orchestration.md)） |
 | 安装到客户端 | 在**本仓库根目录**执行：主推 `mkdir -p ~/.agents/skills && ln -s "$(git rev-parse --show-toplevel)" ~/.agents/skills/pm4gh`；兼容 `mkdir -p ~/.claude/skills && ln -s "$(git rev-parse --show-toplevel)" ~/.claude/skills/pm4gh` |
 | 把本 skill 装到**另一个仓库** | [references/portability.md](references/portability.md)（采用者**替换点清单**：每条给 `路径` + **符号锚点**（目标文件里逐字存在的片段）+ 换成什么 + 是否有机器判据） |
 | 在**新仓库**落地（或从零建）这套治理 | [references/bootstrap-checklist.md](references/bootstrap-checklist.md)（新项目启动清单：平台陷阱 21 条 ＋ preflight 会断言的 10 条治理假设 ＋ 替换点 11 条；**逐条抄一遍**，覆盖度由 `ci/test` 断言） |
@@ -74,3 +75,5 @@ metadata:
 **明确不做**：把一个仓库**从零建成**这套治理（在别的仓库首次安装 = 按 [references/portability.md](references/portability.md) 逐条替换，不属于本 skill 的执行范围）、Projects、度量报表、跨模型评审留痕、能力开关、共享库；**不引入第二套规范文档** —— `SKILL.md` + `references/**` + `.github/**` + `scripts/**` 就是全部权威。
 
 **里程碑（Milestones）同样不做 —— 这是决定，不是缺口**：① 它不是状态源，本 skill **零消费**（`grep -rn -i milestone SKILL.md references/ scripts/ .github/` = 0 命中；`preflight.sh` 的 10 组与 `ci/test` 都没有里程碑不变量）；② 交付单元是「一个切片 = 一个 Issue = 一个分支 = 一个 PR」，里程碑只在「多切片归一个目标」时有意义 —— 那是组合 / 排期，与上面已排除的 Projects、度量报表同类；③ 原生行为不满足「全关即完成」（实测 2/2 关闭后 `state` 仍为 `open`，必须再发一次 `PUT/PATCH …/milestones/<n>` 手动关闭）→ 引入它 = 引入一条**无判据、需人工收尾**的路径；④ `gh` 没有 `milestone` 子命令（`gh milestone --help` → `unknown command "milestone"`），CRUD 只能走 REST，而本 skill 只有 7 个**不新增**的自包含脚本，没有自然挂载点。多切片归组改用**父子 Issue**（`gh issue create --parent <n>` / `gh issue edit <n> --add-sub-issue <n>`，已实测可用）与 [references/status-machine.md](references/status-machine.md) 的非切片 `backlog → done` 路径承载。采用者自用里程碑**不受阻断** —— 本 skill 只是不规定、不消费它。
+
+**不做编排脚本 —— 这是决定，不是缺口**：无人工流水线的入口 = [references/orchestration.md](references/orchestration.md)（把实测的固定序列 S1..S9 写成文档 + 每步「成功判据 / 失败时做什么」），**不新增** `orchestrate.sh`。理由三类：① **组件性质不同** —— `scripts/` 的 7 个脚本都是**确定性、单步、有副作用**的操作（`preflight` / `start` / `status` / `deliver` / `review` / `closeout` / `abort`）；编排器是**另一类组件**（重试、轮询、并发、跨身份状态），把它塞进脚本层等于把不确定性搬进唯一的不变量边界。② **官方默认纯指令，必要时才加脚本** —— 本仓库已有「文档命令可执行性」判据：文档里的命令形态被**逐条**喂给脚本的**真实参数解析**（`--parse-only` 零副作用路径），所以**文档化 = 可执行化 = 可校验化**，再加一个脚本只会成为同一事实的第二载体。③ **边界更大** —— 编排要同时持有三身份（评审凭据**只让脚本用、不得读内容**）、要处理「同一工作区不能并发两个 agent」（#159 未闭合），这些不是 7 个单步脚本的自然延伸。因此上面那条「**不得新增脚本**」**保持不变**，与这条决定不矛盾：**要「顺序」改文档（orchestration.md），要「一步操作」才改脚本**。
