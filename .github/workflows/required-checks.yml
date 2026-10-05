@@ -1364,14 +1364,14 @@ jobs:
           fi
 
 
-          # F：把清单索引里的陷阱号删掉一个（20）→ 覆盖度判据**必须** FAIL（证明它不是空断言）
+          # F：把清单索引里的最后一个陷阱号删掉 → 覆盖度判据**必须** FAIL（证明它不是空断言）
           mk_copy "$work/F"
-          awk 'NR == 1 { print } /^traps=/ { sub(/,20$/, ""); print; next } { print }' \
+          awk 'NR == 1 { print } /^traps=/ { sub(/,[0-9]+$/, ""); print; next } { print }' \
             "$work/F/references/bootstrap-checklist.md" > "$work/F/references/bootstrap-checklist.md.tmp" \
             && mv "$work/F/references/bootstrap-checklist.md.tmp" "$work/F/references/bootstrap-checklist.md"
           frc=0; cov_check "$work/F" > "$work/F.log" 2>&1 || frc=$?
           if [ "$frc" -ne 0 ] && grep -q 'traps 编号与权威清单不一致' "$work/F.log"; then
-            printf '  [ OK ] 反向样本 F：清单漏掉陷阱 20 → 覆盖度判据按预期 FAIL\n'
+            printf '  [ OK ] 反向样本 F：清单漏掉最后一个陷阱号 → 覆盖度判据按预期 FAIL\n'
             sed -n '1,6p' "$work/F.log" | sed 's/^/   /'
           else
             printf '  [FAIL] 反向样本 F 未失败：清单漏条没被抓到\n' >&2
@@ -1382,6 +1382,269 @@ jobs:
           echo
           echo "✅ 文档命令可执行性：抽出 ${m_total} 条形态（通过 ${m_ok} ／ 跳过 ${m_skip}）全部与脚本参数解析一致；"
           echo "   反向样本 A（删 --as → FAIL）／B（恢复 → 通过）／C（非法身份 → FAIL）／D（脚本不存在 → FAIL）／E（显式标记 → 跳过并打印）／F（清单漏条 → FAIL）全部按预期"
+      - name: 替换点清单的符号锚点（零 path:line + 锚点逐字存在 + 行号必须带锚点；反向样本）
+        run: |
+          set -euo pipefail
+          # ── #160（C1）：需要长期准确的引用改用**符号锚点**，消灭 `file:line` 的静默漂移 ──
+          # 背景：#154 向 SKILL.md / references/flow.md 插入行后，references/portability.md 的替换点清单里
+          #   按 `file:line` 写的定位**全部静默漂移**（行号仍"在文件范围内"，preflight 10 组 + ci/test 全绿）——
+          #   这正是「在范围内但内容已经错了」检不出来的形态（C1：单一事实多处载体）。
+          # 判据（**唯一一份实现**，正向与全部反向样本共用）：
+          #   (a) 静态禁令：references/portability.md 与 references/bootstrap-checklist.md 零 `path:line` 形态；
+          #   (b1) 每条替换点（§1 的 `| N |` 行）必须至少有一个锚点；
+          #   (b2) 锚点存在性：每个 `路径`（锚点：`字面文本`）的锚点必须在**该文件里逐字存在**（缺失 → FAIL + 条目/文件）；
+          #   (c) 其余文档里含 `path:line` 的行**必须**同行带锚点（行号只做定位、锚点做判据）；围栏内的示例豁免。
+          # fail-closed：抽不到锚点（<11）/ 解析不出替换点 → 直接 FAIL（不允许"解析不到就算通过"）。
+          # 锚点记法：`路径`（锚点：`字面文本`；`字面文本`）—— 多条用 `；` 分隔；字面文本里不得含反引号 / 全角右括号。
+          work="$(mktemp -d "${TMPDIR:-/tmp}/anchor.XXXXXX")"
+          trap 'rm -rf "$work"' EXIT
+          
+          cat > "$work/anchor_scan.awk" <<'AWK'
+          BEGIN { fence = 0 }
+          FNR == 1 { fence = 0 }
+          function emit(s, file, ln,   i, j, k, head, path, rest, e, inner, n, parts, p, lit) {
+            while ((i = index(s, "`（锚点：")) > 0) {
+              head = substr(s, 1, i - 1); j = 0
+              for (k = 1; k <= length(head); k++) if (substr(head, k, 1) == "`") j = k
+              rest = substr(s, i + length("`（锚点：")); e = index(rest, "）")
+              if (j == 0 || e == 0) {
+                printf "SYNTAX\t%s\t%d\n", file, ln
+                if (e == 0) { s = "" } else { s = substr(rest, e + length("）")) }
+                continue
+              }
+              path = substr(head, j + 1, i - 1 - j); inner = substr(rest, 1, e - 1)
+              n = split(inner, parts, "；")
+              for (p = 1; p <= n; p++) {
+                lit = parts[p]; sub(/^`/, "", lit); sub(/`$/, "", lit)
+                if (lit == "" || path == "") printf "SYNTAX\t%s\t%d\n", file, ln
+                else printf "ANCHOR\t%s\t%d\t%s\t%s\n", file, ln, path, lit
+              }
+              s = substr(rest, e + length("）"))
+            }
+          }
+          {
+            raw = $0
+            if (raw ~ /^[ \t]*(```|~~~)/) { fence = 1 - fence; next }
+            emit(raw, FILENAME, FNR)
+            if (!fence) {
+              s = raw
+              while (match(s, /[A-Za-z0-9_.\/-]+\.(md|sh|yml|json):[0-9]+/)) {
+                ref = substr(s, RSTART, RLENGTH); p = ref; sub(/:[0-9]+$/, "", p)
+                if (index(raw, "`" p "`（锚点：") == 0) { printf "PL\t%s\t%d\t%s\n", FILENAME, FNR, p } else { printf "PLL\t%s\t%d\t%s\t%d\n", FILENAME, FNR, p, substr(ref, length(p) + 2) }
+                s = substr(s, RSTART + RLENGTH)
+              }
+            }
+          }
+          AWK
+          
+          STRICT="references/portability.md references/bootstrap-checklist.md"
+          PLRE='[A-Za-z0-9_./-]+\.(md|sh|yml|json):[0-9]+'
+          
+          anchor_judge() { # $1 = 根目录；返回 0 = 全通过
+            root="$1"; bad=0; scan="$work/scan.tsv"; : > "$scan"
+            ( cd "$root" && LC_ALL=C awk -f "$work/anchor_scan.awk" SKILL.md references/*.md ) > "$scan" || true
+          
+            # (a) 静态禁令
+            for f in $STRICT; do
+              if [ ! -f "$root/$f" ]; then
+                printf '::error file=%s::替换点清单缺失 —— 锚点判据无从成立（fail-closed）\n' "$f" >&2; bad=1; continue
+              fi
+              hits="$(grep -oE "$PLRE" "$root/$f" | wc -l | tr -d ' ')"
+              if [ "$hits" -ne 0 ]; then
+                printf '::error file=%s::(a) 静态禁令：替换点清单里不得出现 `path:line` 形态 —— 实测 %s 处\n' "$f" "$hits" >&2
+                grep -nE "$PLRE" "$root/$f" | sed 's/^/       /' >&2
+                printf '       修法：改成 `路径`（锚点：`该文件里逐字存在的字面文本`）—— 行号会随上游增删行静默漂移（#154 实测）\n' >&2
+                bad=1
+              else
+                printf '[ OK ]  (a) %s 零 `path:line`\n' "$f"
+              fi
+            done
+          
+            # (c) 含 `path:line` 的行必须同行带锚点；保留行号时还要断言**锚点就在那一行**
+            #     （行号只做定位、锚点做判据；扫描器已豁免围栏内的示例行）
+            if awk -F'\t' '$1=="PL"{f=1} END{exit !f}' "$scan"; then
+              while IFS="$(printf '\t')" read -r _ pf pln ppath; do
+                [ -n "$pf" ] || continue
+                printf '::error file=%s,line=%s::(c) 含 `path:line` 的行必须**同行**带锚点（行号只做定位、锚点做判据）：缺 `%s`（锚点：…）\n' "$pf" "$pln" "$ppath" >&2
+                bad=1
+              done <<EOF
+          $(awk -F'\t' '$1=="PL"' "$scan")
+          EOF
+            fi
+          
+            # (c2) 保留了行号的行：断言锚点**就在该行号指向的那一行**（行号只做定位、锚点做判据）
+            if awk -F'\t' '$1=="PLL"{f=1} END{exit !f}' "$scan"; then
+              while IFS="$(printf '\t')" read -r _ pf pln ppath plno; do
+                [ -n "$pf" ] || continue
+                lits="$(awk -F'\t' -v f="$pf" -v l="$pln" -v p="$ppath" '$1=="ANCHOR" && $2==f && $3==l && $4==p {print $5}' "$scan")"
+                while IFS= read -r lit; do
+                  [ -n "$lit" ] || continue
+                  tline="$(sed -n "${plno}p" "$root/$ppath" 2>/dev/null || true)"
+                  if ! grep -qF -- "$lit" <<<"$tline"; then
+                    printf '::error file=%s,line=%s::(c2) 锚点不在行号指向的那一行：`%s:%s` 那一行里没有 `%s`（行号只做定位，锚点做判据）\n' "$pf" "$pln" "$ppath" "$plno" "$lit" >&2
+                    bad=1
+                  fi
+                done <<XEOF
+          $lits
+          XEOF
+              done <<XEOF
+          $(awk -F'\t' '$1=="PLL"' "$scan")
+          XEOF
+            fi
+          
+            # (b1) 每条替换点必须至少有一个锚点
+            nrows=0
+            while IFS= read -r rl; do
+              [ -n "$rl" ] || continue
+              nrows=$((nrows + 1)); rlno="${rl%%:*}"
+              if ! grep -qF '（锚点：' <<<"${rl#*:}"; then
+                printf '::error file=references/portability.md,line=%s::(b1) 替换点没有锚点 —— 每条必须给 `路径`（锚点：`字面文本`）\n' "$rlno" >&2
+                bad=1
+              fi
+            done <<EOF
+          $(grep -nE '^\| [0-9]+ \|' "$root/references/portability.md" 2>/dev/null || true)
+          EOF
+            if [ "$nrows" -eq 0 ]; then
+              printf '::error file=references/portability.md::解析不出任何替换点（§1 的 `| N |` 行）—— 判据不成立（fail-closed）\n' >&2
+              bad=1
+            fi
+          
+            # (b2) 锚点存在性 + 形态
+            na=0; nbad=0
+            while IFS="$(printf '\t')" read -r kind df dl dpath lit; do
+              [ "$kind" = "ANCHOR" ] || continue
+              na=$((na + 1))
+              if [ ! -f "$root/$dpath" ]; then
+                printf '::error file=%s,line=%s::(b2) 锚点指向的文件不存在：`%s`（锚点：`%s`）\n' "$df" "$dl" "$dpath" "$lit" >&2
+                nbad=$((nbad + 1)); continue
+              fi
+              if ! grep -qF -- "$lit" "$root/$dpath"; then
+                printf '::error file=%s,line=%s::(b2) 锚点存在性：条目里的锚点 `%s` 在 `%s` 里**找不到**（锚点已漂移）\n' "$df" "$dl" "$lit" "$dpath" >&2
+                printf '       修法：把该条目的锚点改成 `%s` 里确实存在的字面文本（标签 / 键名 / 结构标记），或改锚点所在文件\n' "$dpath" >&2
+                nbad=$((nbad + 1))
+              fi
+            done < "$scan"
+            while IFS="$(printf '\t')" read -r kind df dl; do
+              [ "$kind" = "SYNTAX" ] || continue
+              printf '::error file=%s,line=%s::(b2) 锚点标记形态不合规（缺路径 / 缺字面文本 / 缺全角右括号）\n' "$df" "$dl" >&2
+              nbad=$((nbad + 1))
+            done <<EOF
+          $(awk -F'\t' '$1=="SYNTAX"' "$scan")
+          EOF
+            if [ "$na" -lt 11 ]; then
+              printf '::error file=references/portability.md::只抽出 %s 个锚点（<11，替换点共 %s 条）—— 判据不成立（fail-closed）\n' "$na" "$nrows" >&2
+              bad=1
+            fi
+            if [ "$nbad" -ne 0 ]; then bad=1; fi
+            [ "$bad" -eq 0 ] || return 1
+            printf '[ OK ]  (b) 锚点 %s 个逐字存在，覆盖 §1 的 %s 条替换点\n' "$na" "$nrows"
+            return 0
+          }
+          
+          echo "== 正向：真实仓库的符号锚点 =="
+          jrc=0; anchor_judge . > "$work/main.log" 2>&1 || jrc=$?
+          cat "$work/main.log"
+          [ "$jrc" -eq 0 ] || { echo "❌ 锚点判据在真实仓库上失败：见上方 ::error::（条目 + 文件 + 修法）"; exit 1; }
+          
+          echo
+          echo "== 反向样本（临时副本；判据本体与正向同一份实现）=="
+          anchor_copy() { # $1 = 目标目录
+            rm -rf "$1"; mkdir -p "$1"
+            cp SKILL.md "$1/"
+            cp -R references scripts .github "$1/"
+          }
+          
+          # A：把某条锚点在目标文件里的字面文本改掉 → 存在性断言**必须** FAIL
+          anchor_copy "$work/A"
+          pick="$(while IFS="$(printf '\t')" read -r kind df dl dpath lit; do
+                    [ "$kind" = "ANCHOR" ] || continue
+                    [ -f "$dpath" ] || continue
+                    [ "$(grep -cF -- "$lit" "$dpath" || true)" = "1" ] || continue
+                    printf '%s\t%s\t%s\n' "$dpath" "$lit" "$df"
+                    break
+                  done < "$work/scan.tsv")"
+          [ -n "$pick" ] || { echo "::error::抽不到可用于反向样本的锚点（fail-closed）"; exit 1; }
+          IFS="$(printf '\t')" read -r tf tlit tdecl <<EOF
+          $pick
+          EOF
+          LC_ALL=C awk -v lit="$tlit" -v rep="__ANCHOR_DRIFT__" '
+            { p = index($0, lit); if (p > 0) $0 = substr($0, 1, p - 1) rep substr($0, p + length(lit)); print }
+          ' "$work/A/$tf" > "$work/A/$tf.tmp" && mv "$work/A/$tf.tmp" "$work/A/$tf"
+          arc=0; anchor_judge "$work/A" > "$work/A.log" 2>&1 || arc=$?
+          if [ "$arc" -ne 0 ] && grep -q '(b2) 锚点存在性' "$work/A.log"; then
+            printf '  [ OK ] 反向样本 A：把 `%s` 里的锚点 `%s` 改掉 → 判据按预期 FAIL（条目出处 %s）\n' "$tf" "$tlit" "$tdecl"
+            grep -m2 -E '::error|\[ OK \]' "$work/A.log" | sed 's/^/     /'
+          else
+            printf '  [FAIL] 反向样本 A 未失败：改掉锚点后判据仍然通过 —— 存在性断言形同虚设\n' >&2
+            sed 's/^/     /' "$work/A.log" >&2; exit 1
+          fi
+          
+          # B：在清单里塞回一条 `path:line` → 静态禁令**必须** FAIL
+          anchor_copy "$work/B"
+          printf '\n- 回归样本：见 `references/identity.md:9`。\n' >> "$work/B/references/portability.md"
+          brc=0; anchor_judge "$work/B" > "$work/B.log" 2>&1 || brc=$?
+          if [ "$brc" -ne 0 ] && grep -q '(a) 静态禁令' "$work/B.log"; then
+            printf '  [ OK ] 反向样本 B：清单里塞回 `references/identity.md:9` → 静态禁令按预期 FAIL\n'
+            grep -m3 -E '::error|实测' "$work/B.log" | sed 's/^/     /'
+          else
+            printf '  [FAIL] 反向样本 B 未失败：清单里的 `path:line` 没被抓到\n' >&2
+            sed 's/^/     /' "$work/B.log" >&2; exit 1
+          fi
+          
+          # C：在**其它**文档里塞入不带锚点的 `path:line` → (c) **必须** FAIL（两份清单之外的漂移面同样堵住）
+          anchor_copy "$work/C"
+          printf '\n回归样本：见 `references/identity.md:9`。\n' >> "$work/C/references/traps.md"
+          crc=0; anchor_judge "$work/C" > "$work/C.log" 2>&1 || crc=$?
+          if [ "$crc" -ne 0 ] && grep -q '(c) 含 `path:line` 的行必须' "$work/C.log"; then
+            printf '  [ OK ] 反向样本 C：`references/traps.md` 里塞入不带锚点的 `references/identity.md:9` → (c) 按预期 FAIL\n'
+            grep -m2 -E '::error' "$work/C.log" | sed 's/^/     /'
+          else
+            printf '  [FAIL] 反向样本 C 未失败：清单之外的不带锚点行号没被抓到\n' >&2
+            sed 's/^/     /' "$work/C.log" >&2; exit 1
+          fi
+          
+          # D：删掉一条替换点的锚点 → (b1) **必须** FAIL
+          anchor_copy "$work/D"
+          LC_ALL=C awk '
+            NR == 1 { print; next }
+            /^\| 3 \|/ { n = index($0, "（锚点："); if (n > 0) $0 = substr($0, 1, n - 1); print; next }
+            { print }
+          ' "$work/D/references/portability.md" > "$work/D/references/portability.md.tmp" \
+            && mv "$work/D/references/portability.md.tmp" "$work/D/references/portability.md"
+          drc=0; anchor_judge "$work/D" > "$work/D.log" 2>&1 || drc=$?
+          if [ "$drc" -ne 0 ] && grep -q '(b1) 替换点没有锚点' "$work/D.log"; then
+            printf '  [ OK ] 反向样本 D：删掉替换点 #3 的锚点 → (b1) 按预期 FAIL（每条替换点必须有锚点）\n'
+            grep -m1 -E '::error' "$work/D.log" | sed 's/^/     /'
+          else
+            printf '  [FAIL] 反向样本 D 未失败：没有锚点的替换点没被抓到\n' >&2
+            sed 's/^/     /' "$work/D.log" >&2; exit 1
+          fi
+          
+          # F：保留了行号、锚点也在同一行，但锚点**不在行号指向的那一行** → (c2) **必须** FAIL
+          anchor_copy "$work/F"
+          printf '\n回归样本：见 `references/identity.md:10`（`references/identity.md`（锚点：`拆片 + 建 Issue`））。\n' >> "$work/F/references/traps.md"
+          frc=0; anchor_judge "$work/F" > "$work/F.log" 2>&1 || frc=$?
+          if [ "$frc" -ne 0 ] && grep -q '(c2) 锚点不在行号指向的那一行' "$work/F.log"; then
+            printf '  [ OK ] 反向样本 F：行号 `references/identity.md:10` 与锚点 `拆片 + 建 Issue` 不同行 → (c2) 按预期 FAIL\n'
+            grep -m1 -E '::error' "$work/F.log" | sed 's/^/     /'
+          else
+            printf '  [FAIL] 反向样本 F 未失败：锚点不在行号指向的那一行没被抓到\n' >&2
+            sed 's/^/     /' "$work/F.log" >&2; exit 1
+          fi
+          
+          # E：恢复（未改动的同一份副本）→ 判据**必须**通过
+          anchor_copy "$work/E"
+          erc=0; anchor_judge "$work/E" > "$work/E.log" 2>&1 || erc=$?
+          if [ "$erc" -eq 0 ] && grep -q '零 `path:line`' "$work/E.log" && grep -q '逐字存在' "$work/E.log"; then
+            printf '  [ OK ] 反向样本 E：恢复后判据通过（%s）\n' "$(tail -n 1 "$work/E.log")"
+          else
+            printf '  [FAIL] 反向样本 E 未通过：未改动的副本仍失败\n' >&2
+            sed 's/^/     /' "$work/E.log" >&2; exit 1
+          fi
+          
+          echo
+          echo '✅ 符号锚点判据：两份清单零 `path:line`；锚点逐字存在；保留行号时锚点必须就在那一行。'
+          echo "   反向样本 A（锚点漂移 → FAIL）／B（清单塞回 path:line → FAIL）／C（其它文档不带锚点 → FAIL）／D（替换点缺锚点 → FAIL）／F（锚点不在行号那一行 → FAIL）／E（恢复 → 通过）全部按预期"
       - name: 作者职责与「谁建 Issue」三处单一说法（SKILL.md 权威；旧措辞零命中 + 反向样本）
         run: |
           set -euo pipefail
