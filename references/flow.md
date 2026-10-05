@@ -13,7 +13,7 @@
 
 | # | 角色 | 动作 | 产物 / 门禁 | 失败·返修 |
 |---|---|---|---|---|
-| 1 | 人/PM | 交 Issue + 验收标准（DoR 五项） | Issue（W1）；此前 `backlog`（OPEN 且无 `status/*`） | DoR 不齐 → 留在 `backlog` 补齐 |
+| 1 | 作者（agent） | 拆片 + 建 Issue：**作者身份**，DoR 五项齐备（规则见 [SKILL.md](../SKILL.md)「切片拆分与分发」W0.5） | Issue（W1）；建单后停 `backlog`（OPEN 且无 `status/*`） | DoR 不齐 → 留在 `backlog` 补齐；**目标本身**有歧义 → 问 Issue 作者 / dispatcher（[exceptions.md](exceptions.md) 第 5 条） |
 | 2 | dev-bot | W2 `scripts/start.sh <issue#> --as author` | 分支 `<type>/<issue#>-<slug>`；状态 `in-progress`（W0 全过） | 只读状态预检非法 → **建分支之前**失败 |
 | 3 | dev-bot | W3 实现 + 提交（作者身份，`commit -F`） | 提交；工作区干净；`bash -n scripts/*.sh` 通过 | 语法 / bash 3.2 失败 → 先修 |
 | 4 | dev-bot | W4 `scripts/deliver.sh <issue#> --as author` | PR 正文含 `Closes #N` + 六段；状态 `in-review` | 缺 `Closes #N` / 六段 → 推送前失败 |
@@ -36,6 +36,7 @@
 `gh issue list --state open --label status/ready --limit 20 --json number,title,labels` → 只读判定 `scripts/status.sh --check-transition backlog ready`（退出码 `0` = 合法）→ `scripts/status.sh <n> ready --as author`。
 
 - **判据**（五项全齐才可 `backlog → ready`）：① 价值一句话 ② 可判定的验收标准 ③ 明确不改什么（边界）④ 依赖与契约 ⑤ 规模与执行者。
+- **建单不是 W1**：切片 Issue 由**作者身份**在拆片时建好（[SKILL.md](../SKILL.md)「切片拆分与分发」W0.5），建完停在 `backlog`；`ready` 只表示「DoR 齐备、可被领取」，**不是**建单的必经步骤（`backlog → in-progress` 是合法边）。
 
 ## W2 开工 — `scripts/start.sh <issue#> --as author`（线上故障加 `--type hotfix`）
 

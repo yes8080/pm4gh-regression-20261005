@@ -20,6 +20,18 @@ metadata:
 - 身份：作者 = `--as author`（`developer.pat`）；评审 = 不传 `--as`（脚本自取 `reviewer.pat`）；合并 = 本机 `gh` 登录态。**不得读取其他身份的凭据**，**不得自批**。
 - **用户显式指令优先于本 skill**；与本文件冲突时先停下确认。
 
+## 切片拆分与分发（W0.5：一句目标 → 一组切片 Issue）
+
+**输入**：一句目标（**不是**切片清单）。够不够格用 [references/flow.md](references/flow.md) 的 DoR 五项（W1）判。
+
+- **谁拆**：接手该目标的 agent（作者身份）。人 / dispatcher 只在**目标本身有歧义**时介入（[references/exceptions.md](references/exceptions.md) 第 5 条），**不**代为拆片。
+- **粒度**：一条切片 = **恰好一个可合并的改动** = 一个 Issue = 一个分支 = 一个 PR = 一次可独立回滚（1~3 个工作日）。三条判据同时成立才算够格：① 一个 PR 的六段能写清；② 能独立回滚，不依赖其他**未合并**切片；③ 验收标准逐条可判定。
+- **拆 / 并的判据**：两条切片要改**同一文件的同一区域**、或**必须一起合并**才能验收 → 合成一条；一条切片里出现**两个互不依赖**的可合并改动 → 拆成两条。同文件但区域不相交 → 保持两条，用 **blocked by** 串行（`gh issue create --blocked-by <n>`），不合并、不并发。
+- **谁建 Issue**：**作者身份** —— `GH_TOKEN="$(cat "$HOME/.config/pm4gh/developer.pat")" gh issue create …`；非交互必须 `--body-file` + 显式 `--label`（[references/traps.md](references/traps.md) 陷阱 16）。**禁止**用本机 `gh` 登录态（dispatcher）建切片 Issue —— 审计归属 = 做事的人。
+- **每条 Issue 的最低内容**：DoR 五项（① 价值一句话 ② 可判定的验收标准 ③ 明确不改什么 ④ 依赖与契约 ⑤ 规模与执行者，逐字见 [.github/ISSUE_TEMPLATE/slice.yml](.github/ISSUE_TEMPLATE/slice.yml)）；标签 `type/*` + `role/dev`（`area/*` / `prio/*` 按需，它们是人类元数据）；依赖用 `--blocked-by` 建立。
+- **状态起点**：建单后停在 **`backlog`**（OPEN 且无 `status/*`）。`ready` **不是**建单的必经步骤 —— `backlog → in-progress` 是合法边，`scripts/start.sh` 从 `backlog` 也能直接开工（[references/status-machine.md](references/status-machine.md)）。
+- **产物**：N 条 `backlog` Issue（**不是** PR、不是代码）。**禁止**只产出一条"什么都做"的大切片（= 没有拆分），也**禁止**产出没有验收标准的切片。
+
 ## 工作流程
 
 1. **预检**（每次接手第一步）：`scripts/preflight.sh` → 全 `[ OK ]` 且退出码 `0`；任一 `[FAIL]` → 贴原文报 dispatcher，**禁止**继续。
