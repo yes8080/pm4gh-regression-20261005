@@ -10,10 +10,13 @@
 #         合并身份是协作者 —— 防 require_code_owner_review 永久锁死；开关取值以**线上实测**为准）/
 #         机器消费与 **Issue 表单预置**的标签存在（判据 LABEL_ASSERT，与 ci/test 同一段文本）/
 #         **`.github/` 内链接的 slug == 当前仓库 slug**（P6：防复制到别处后忘改，判据 = gh repo view）/
-#         **并发模型**（#159，第 3、4 组）：① R1 **单写者锁**——本 clone 若已被另一个**存活**写者占用 → `[FAIL]`；
-#         陈旧锁**自动接管并打印原因**（锁在**工作区之外**，判据 WRITER_LOCK_ASSERT）；② R2 **当前分支必须归属
-#         一个 `status/in-progress` 的 Issue**（防"在别人的分支上工作"）；③ R3 在途 `in-progress` **>1 仍是
-#         `[WARN]`**——并行**允许**，前提是各自独立 clone（模型见 references/orchestration.md 的并发模型一节）。
+#         **并发模型**（#159，第 3、4 组；#169 修假红）：① R1 **单写者锁**——本 clone 若已被另一个写者占用
+#         → `[FAIL]`，但"占用"的判据是**写者标识匹配**（pid 存活 **且** cmd/起始时间逐字一致）：pid 会被
+#         复用，存活**不足以**证明写者还在（#169）；标识不匹配 / 不可核 = 陈旧锁 → **自动接管并打印原因**
+#         （锁在**工作区之外**，判据 WRITER_LOCK_ASSERT）；② R2 **当前分支必须归属一个在途 Issue**
+#         （`status/in-progress` **或** `status/in-review`——"交付后待评审"是合法运行点，见 #169）；
+#         ③ R3 在途 `in-progress` **>1 仍是 `[WARN]`**——并行**允许**，前提是各自独立 clone
+#         （模型见 references/orchestration.md 的并发模型一节）。
 #
 # 退出码：0 全部通过；1 存在未通过项（每项都给出可行动的修复提示）
 
@@ -35,7 +38,8 @@ BASE_BRANCH="${BASE_BRANCH:-main}"
 # 键 = **clone 的物理根路径**（不是 slug）：「并行 = 各自独立 clone」，若按 slug 建锁，另一个 clone 的
 #   **合法并行写者**会被误判成「占用」（与 R3 的「并行允许」直接矛盾）。
 LOCK_DIR="${PM4GH_LOCK_DIR:-${HOME}/.config/pm4gh/locks}"
-# 锁龄超过 N 分钟且 pid **不可核**（锁里的 cmd 与活着的进程对不上，疑 pid 复用）→ 判陈旧。
+# 锁龄阈值（分钟）：#169 起**只用于接管报文里标注「锁龄偏大」**，不再是接管的前置条件 ——
+#   写者标识不匹配 / 不可核 **即**判陈旧（拿"读不到身份"当"是别人"正是 #169 的假红病灶）。
 LOCK_STALE_MINUTES="${PM4GH_LOCK_STALE_MINUTES:-120}"
 # 这 5 个字符串是**必需检查的 context**（= 工作流里 job 的 name），一个字都不能差。
 REQUIRED_EXPECTED="ci/lint ci/test policy/linked-issue policy/branch-name policy/template"
@@ -191,10 +195,12 @@ pat_in_workspace() {
 }
 # WORKSPACE_ASSERT:END
 
-# ── R1 单写者锁的判据本体（#159）────────────────────────────────────────────
+# ── R1 单写者锁的判据本体（#159；#169 加写者身份核对）────────────────────────
 # 一处实现：第 3 组的执行与 owner 文档（references/orchestration.md 的并发模型一节）都指这里。
 # 锁内容（`key=value`，一行一个）：pid（获取它的进程）/ branch / slug / clone（物理根路径）/
-#   time（epoch 秒，用于算锁龄）/ time_iso（给人看）/ cmd（活进程身份核对的依据）。
+#   time（epoch 秒，用于算锁龄）/ time_iso（给人看）/ cmd（**写者标识**：实际命令行）/
+#   start（**第二判据**：进程起始时间）。#169：**pid 存活不足以证明写者还在** —— pid 会被无关联
+#   进程复用（实测：已退出的 preflight 写的 pid 被别人复用 → R1 假红 + R4 拒绝释放留陈旧锁）。
 # 释放（R4）在 `scripts/closeout.sh` 与 `scripts/abort.sh`（各自的 release_writer_lock）。
 # WRITER_LOCK_ASSERT:BEGIN
 lk_clone_id() { printf '%s' "${1:-}" | sed -E 's#^/##; s#[^A-Za-z0-9]+#-#g'; }
@@ -203,10 +209,35 @@ lk_field()    { grep -m1 "^${2}=" "${1:-}" 2>/dev/null | sed -E "s/^${2}=//" || 
 # 存活判定用 `kill -0`（bash 内建）：受限环境（如本项目所在的 agent 沙箱）会直接拒绝 `/bin/ps`，
 #   而 `kill -0` 仍可用 —— 否则「pid 存活」这一态永远判不出来，R1 会退化成「锁永远陈旧」。
 # 边界（如实）：`kill -0` 对**其他用户**的进程会因 EPERM 返回非零（判成「不存在」）；锁由本用户
-#   自己写，正常路径不受影响。身份核对（cmd）另用 `ps`；`ps` 不可用时 cmd 记为空 = **不可核**。
+#   自己写，正常路径不受影响。身份核对（cmd / start）另用 `ps`；`ps` 不可用（受限环境会直接拒绝
+#   `/bin/ps`）时两者记空 = **不可核** —— 不可核按陈旧锁处理，**不得**当成「别人的活写者」（假红）。
 lk_alive() {
   case "${1:-}" in ''|*[!0-9]*) return 1 ;; esac
   kill -0 "$1" 2>/dev/null
+}
+# 写者标识（#169）= 活进程的实际命令行（`ps -o command=`）；取不到 → 空 = **不可核**。
+lk_cmd_of() {
+  [ -n "${1:-}" ] || return 0
+  ps -p "$1" -o command= 2>/dev/null | tr -d '\n' | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//' | cut -c1-160 || true
+}
+# 第二判据（#169）= 进程起始时间（`ps -o lstart=`）；防「同样的命令行被重跑」造成的 pid 复用误判。
+lk_start_of() {
+  [ -n "${1:-}" ] || return 0
+  ps -p "$1" -o lstart= 2>/dev/null | tr -d '\n' | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//' || true
+}
+# 写者身份核对（#169）：0 = **标识匹配**（确是本流程的写者）；1 = **不匹配 / 不可核**。
+#   判据 = ① 锁里的 cmd 非空 **且** 与活进程实际命令行逐字一致；
+#          ② 锁里的 start 非空 **且** 与活进程起始时间一致（第一条可能被「同命令行重跑」骗过）。
+#   任一为空 / 不符 → 1 ⇒ 调用方按**陈旧锁**处理（接管 / 可释放）—— 这是 #169 的方向性选择：
+#   「读不到身份」不等于「是别人的活写者」，宁可接管也不假红。
+lk_writer_match() { # $1 = 锁文件；$2 = pid
+  lk_m_cmd="$(lk_field "${1:-}" cmd)"
+  lk_m_start="$(lk_field "${1:-}" start)"
+  [ -n "$lk_m_cmd" ] || return 1
+  [ "$(lk_cmd_of "${2:-}")" = "$lk_m_cmd" ] || return 1
+  [ -n "$lk_m_start" ] || return 1
+  [ "$(lk_start_of "${2:-}")" = "$lk_m_start" ] || return 1
+  return 0
 }
 # 锁目录可否用：能创建**且**能写入探针文件（只在目录里留一个瞬时文件，随即删掉）。
 lk_usable() {
@@ -217,9 +248,9 @@ lk_usable() {
   return 0
 }
 lk_write() { # $1 = clone 根路径；$2 = 分支；$3 = 记入锁的 pid
-  printf 'pid=%s\nbranch=%s\nslug=%s\nclone=%s\ntime=%s\ntime_iso=%s\ncmd=%s\n' \
+  printf 'pid=%s\nbranch=%s\nslug=%s\nclone=%s\ntime=%s\ntime_iso=%s\ncmd=%s\nstart=%s\n' \
     "$3" "${2:-}" "${REPO:-}" "$1" "$(date +%s)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    "$(ps -p "$3" -o command= 2>/dev/null | tr -d '\n' | cut -c1-160)" > "$(lk_path "$1")"
+    "$(lk_cmd_of "$3")" "$(lk_start_of "$3")" > "$(lk_path "$1")"
 }
 # 返回 0 = 可以继续（已持有 / 已接管）；1 = 被另一个存活写者占用（调用方负责计数）。
 lk_verdict() { # $1 = clone 根路径；$2 = 当前分支
@@ -236,26 +267,23 @@ lk_verdict() { # $1 = clone 根路径；$2 = 当前分支
   lk_br="$(lk_field "$lk_f" branch)"
   lk_iso="$(lk_field "$lk_f" time_iso)"
   lk_t="$(lk_field "$lk_f" time)"
-  lk_cmd="$(lk_field "$lk_f" cmd)"
   lk_c="$(lk_field "$lk_f" clone)"
   lk_age=-1
   case "$lk_t" in ''|*[!0-9]*) : ;; *) lk_age=$(( ($(date +%s) - lk_t) / 60 )) ;; esac
+  lk_age_txt="锁龄未知"
+  [ "$lk_age" -ge 0 ] && lk_age_txt="锁龄 ${lk_age} 分钟"
   lk_reason=""
   if ! lk_alive "$lk_pid"; then
     lk_reason="pid ${lk_pid:-（缺失）} 不存在（写者进程已退出）"
+  elif lk_writer_match "$lk_f" "$lk_pid"; then
+    # pid 存活 **且** 写者标识（cmd + 起始时间）逐字匹配 = 确实是本流程的写者 → 占用，不许接管
+    bad "本 clone 已被另一个写者占用（pid=${lk_pid} branch=${lk_br:-未知} 时间=${lk_iso:-未知} 锁=${lk_f}）—— 一个 clone = 一个写者 = 一个 Issue；要**并行**请另开独立 clone（references/orchestration.md 的并发模型一节）。当前分支=${2:-（游离 HEAD）}"
+    return 1
   else
-    lk_live="$(ps -p "$lk_pid" -o command= 2>/dev/null | tr -d '\n' || true)"
-    if [ -n "$lk_cmd" ] && [ "$lk_live" = "$lk_cmd" ]; then
-      # 活进程与锁记录逐字一致 = 确实是本流程的写者 → 占用，不许接管
-      bad "本 clone 已被另一个写者占用（pid=${lk_pid} branch=${lk_br:-未知} 时间=${lk_iso:-未知} 锁=${lk_f}）—— 一个 clone = 一个写者 = 一个 Issue；要**并行**请另开独立 clone（references/orchestration.md 的并发模型一节）。当前分支=${2:-（游离 HEAD）}"
-      return 1
-    fi
-    if [ "$lk_age" -ge 0 ] && [ "$lk_age" -gt "$LOCK_STALE_MINUTES" ]; then
-      lk_reason="pid ${lk_pid} 存活但**不可核**（锁里的 cmd 与进程实际命令行不符，疑 pid 复用）且锁龄 ${lk_age} 分钟 > ${LOCK_STALE_MINUTES}"
-    else
-      bad "本 clone 已被另一个写者占用（pid=${lk_pid} branch=${lk_br:-未知} 时间=${lk_iso:-未知} 锁=${lk_f}）—— 一个 clone = 一个写者 = 一个 Issue；要**并行**请另开独立 clone（references/orchestration.md 的并发模型一节）。当前分支=${2:-（游离 HEAD）}"
-      return 1
-    fi
+    # pid 存活但标识**不匹配 / 不可核** = 疑 pid 复用 → 按陈旧锁处理（#169；不再要求锁龄超阈值）
+    lk_reason="pid ${lk_pid} 存活但写者标识**不匹配 / 不可核**（锁里的 cmd/start 与活进程对不上，疑 pid 复用；受限环境里 ps 被拒也会这样）"
+    [ "$lk_age" -ge 0 ] && [ "$lk_age" -gt "$LOCK_STALE_MINUTES" ] \
+      && lk_reason="${lk_reason}，且 ${lk_age_txt} > ${LOCK_STALE_MINUTES}"
   fi
   # 接管：**打印接管原因**（不静默），并把锁改写成「本轮写者」
   if ! lk_write "$1" "${2:-}" "$$" 2>/dev/null; then
@@ -370,19 +398,28 @@ dirty="$(git status --porcelain 2>/dev/null | wc -l | tr -d ' ')"
 current="$(git branch --show-current 2>/dev/null || true)"
 printf '  当前分支：%s\n' "${current:-（游离 HEAD）}"
 
-# ── R2 分支归属：当前分支必须是某个 status/in-progress Issue 的分支（#159）─────────
+# ── R2 分支归属：当前分支必须是某个**在途** Issue 的分支（#159；#169 扩到 in-review）────
 # 命题：一个 clone = 一个写者 = **一个 Issue**。被另一个写者把工作树切到**别人的分支**上，
 # 是本仓库实测发生过的污染源（#144 回归第 2 轮 C 轴）。这里让它在开工前可判定。
-# 「另一侧」不误拦：在**基线分支**上显式不适用（W0 允许在开工前跑；开工后 start.sh 必然把
-#   分支切到 `<type>/<issue#>-<slug>`）—— 打印 `[WARN]` 说明「本判据未执行」，不计入通过。
-# 边界（如实，不得过度宣称）：若另一个写者切到的分支**恰好**属于某个 in-progress Issue，本判据
+# **先枚举合法运行点**（#169 的类级规则：任何新判据必须在**全部合法流程状态**下验证不假红，
+#   见 references/exceptions.md §7）—— preflight 会在这些状态下被跑：
+#   ① 开工前（W0）→ 基线分支 `${BASE_BRANCH}`：本判据**显式不执行**（`[WARN]`，不计入通过）；
+#   ② 实现中 → 切片分支 + Issue `status/in-progress` → **通过**；
+#   ③ **交付后待评审** → 同一分支 + Issue `status/in-review` → **通过**（#169 修的假红：deliver.sh
+#      交付后 Issue 变 in-review，而作者**仍在分支上等评审**，这是正常流程状态，不是"被切走"）；
+#   ④ 返修中 → 同一分支 + Issue 回到 `status/in-progress` → **通过**（与 ② 同一判据）；
+#   ⑤ 终止后 → 分支应已删除；分支仍在且 Issue 已关闭（done / canceled）→ `[FAIL]`（保留原意图）；
+#   ⑥ 被别人切走 → 分支属**别的** Issue 且该 Issue 非本 clone 的在途项 → `[FAIL]`（保留原意图）。
+# 「在途」= Issue **OPEN** 且带 `status/in-progress` **或** `status/in-review`；OPEN 但只有
+#   `status/ready` / 无 `status/*`（backlog）= 未开工 → `[FAIL]`；已 CLOSED / 读不到 → `[FAIL]`（fail-closed）。
+# 边界（如实，不得过度宣称）：若另一个写者切到的分支**恰好**属于某个在途 Issue，本判据
 #   不报（该分支确实合规）—— 这种「同 clone 换分支」由 R1 的单写者锁兜；反之亦然。
 case "$current" in
   ""|HEAD)
-    bad "游离 HEAD（没有分支）—— 无法证明当前工作归属某个 status/in-progress Issue；写者必须站在切片分支上（references/orchestration.md 的并发模型一节）"
+    bad "游离 HEAD（没有分支）—— 无法证明当前工作归属某个在途 Issue；写者必须站在切片分支上（references/orchestration.md 的并发模型一节）"
     ;;
   "$BASE_BRANCH")
-    warn "当前在基线分支 ${BASE_BRANCH}：R2「分支归属 in-progress Issue」**未执行**（开工前状态，不计入通过）；开工后分支必然形如 <type>/<issue#>-<slug>，此时本判据生效"
+    warn "当前在基线分支 ${BASE_BRANCH}：R2「分支归属在途 Issue」**未执行**（开工前状态，不计入通过）；开工后分支必然形如 <type>/<issue#>-<slug>，此时本判据生效"
     ;;
   *)
     br_num=""
@@ -392,23 +429,35 @@ case "$current" in
     esac
     case "$br_num" in
       ''|*[!0-9]*)
-        bad "当前分支 ${current} 既不是基线分支也不是切片分支形态 <type>/<issue#>-<slug> —— 无法证明它归属某个 status/in-progress Issue（可能被另一个写者切走了；references/orchestration.md 的并发模型一节）"
+        bad "当前分支 ${current} 既不是基线分支也不是切片分支形态 <type>/<issue#>-<slug> —— 无法证明它归属某个在途 Issue（可能被另一个写者切走了；references/orchestration.md 的并发模型一节）"
         ;;
       *)
         if [ -z "$REPO" ]; then
-          bad "仓库 slug 未知，无法判定当前分支 ${current} 是否属于 status/in-progress 的 Issue #${br_num}"
+          bad "仓库 slug 未知，无法判定当前分支 ${current} 是否属于**在途**（in-progress / in-review）的 Issue #${br_num}"
         else
-          br_state="$(gh issue view "$br_num" -R "$REPO" --json state --jq .state 2>/dev/null || true)"
-          br_labels="$(gh issue view "$br_num" -R "$REPO" --json labels \
-            --jq '[.labels[].name | select(startswith("status/"))] | join(",")' 2>/dev/null || true)"
+          # 一次读回 state + stateReason + labels：state 判「是否还开着」，stateReason 让 done（COMPLETED）
+          # 与 canceled（NOT_PLANNED）在报文里可辨，labels 判「是否在途」。
+          br_json="$(gh issue view "$br_num" -R "$REPO" --json state,stateReason,labels 2>/dev/null || true)"
+          br_state="$(printf '%s' "$br_json" | jq -r '.state // ""' 2>/dev/null || true)"
+          br_sr="$(printf '%s' "$br_json" | jq -r '.stateReason // ""' 2>/dev/null || true)"
+          br_labels="$(printf '%s' "$br_json" \
+            | jq -r '[.labels[].name | select(startswith("status/"))] | join(",")' 2>/dev/null || true)"
+          br_inflight=""
+          if grep -qxF "status/in-progress" <<<"$(printf '%s' "$br_labels" | tr ',' '\n')"; then
+            br_inflight="status/in-progress"
+          fi
+          if [ -z "$br_inflight" ] \
+            && grep -qxF "status/in-review" <<<"$(printf '%s' "$br_labels" | tr ',' '\n')"; then
+            br_inflight="status/in-review"
+          fi
           if [ -z "$br_state" ]; then
             bad "当前分支 ${current} 指向 Issue #${br_num}，但读不到该 Issue（不存在 / 无权限？）—— 归属无法证明（fail-closed；references/orchestration.md 的并发模型一节）"
           elif [ "$br_state" != "OPEN" ]; then
-            bad "当前分支 ${current} 指向 Issue #${br_num}，但它已 ${br_state} —— 已关闭的 Issue 不应有在写分支（可能被另一个写者切到了别人的分支）"
-          elif grep -qxF "status/in-progress" <<<"$(printf '%s' "$br_labels" | tr ',' '\n')"; then
-            ok "分支归属：${current} → Issue #${br_num} 处于 status/in-progress（一个 clone = 一个 Issue）"
+            bad "当前分支 ${current} 指向 Issue #${br_num}，但它已 ${br_state}（stateReason=${br_sr:-未知}；done=COMPLETED / canceled=NOT_PLANNED）—— 已关闭的 Issue 不应有在写分支（可能被另一个写者切到了别人的分支）"
+          elif [ -n "$br_inflight" ]; then
+            ok "分支归属：${current} → Issue #${br_num} 处于 ${br_inflight}（在途：in-progress = 实现/返修，in-review = 交付后待评审；一个 clone = 一个 Issue）"
           else
-            bad "当前分支 ${current} 指向 Issue #${br_num}，但它不是 status/in-progress（实测标签：${br_labels:-无 status/* = backlog}）—— 本 clone 可能被另一个写者切到了别人的分支（一个 clone = 一个写者 = 一个 Issue）"
+            bad "当前分支 ${current} 指向 Issue #${br_num}，但它既不是 status/in-progress 也不是 status/in-review（实测标签：${br_labels:-无 status/* = backlog}）—— 本 clone 可能被另一个写者切到了别人的分支（一个 clone = 一个写者 = 一个 Issue）"
           fi
         fi
         ;;

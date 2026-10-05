@@ -56,13 +56,36 @@ problems=0
 check_ok()   { ok "$1"; }
 check_fail() { warn "$1"; problems=$((problems + 1)); }
 
-# ── R4 释放本 clone 的单写者锁（#159；创建规则见 scripts/preflight.sh 的 WRITER_LOCK_ASSERT 标记区）──
+# ── R4 释放本 clone 的单写者锁（#159；#169 加写者身份核对）──────────────────────────
 # 锁在**工作区之外**（`$PM4GH_LOCK_DIR`、默认 `$HOME/.config/pm4gh/locks`；preflight 在默认目录不可写
 #   时会回退到 `/tmp/pm4gh-locks-<uid>`，两个候选都查）。键 = clone 的物理根路径。
-# 只释放**本 clone**的锁；pid 仍存活 = 可能另有写者 → **只提示、不删**（不代他人释放）。
+# 只释放**本 clone**的锁。**pid 存活不足以证明写者还在**（pid 会被无关联进程复用，见 #169）：
+#   只有**写者标识匹配**（锁里的 `cmd` 与进程起始时间 `start` 同活进程**逐字一致**）才拒绝释放；
+#   标识不匹配 / 不可核（`ps` 取不到，例如受限环境直接拒绝 `/bin/ps`）→ 那是**复用** → **允许释放**
+#   （否则留下陈旧锁，只能等下次 preflight 接管）。与 preflight 的 WRITER_LOCK_ASSERT 同一口径，
+#   但脚本各自**自包含**（不引共享库），故在此就地实现。
 # 这是「正常结束」的释放动作，**不计入收尾五项**（五项的含义不变）。
 # WRITER_LOCK_RELEASE:BEGIN
 release_writer_lock() {
+  # 写者标识（实际命令行）与第二判据（进程起始时间）；取不到 → 空 = **不可核**。
+  rw_cmd_of() {
+    [ -n "${1:-}" ] || return 0
+    ps -p "$1" -o command= 2>/dev/null | tr -d '\n' | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//' | cut -c1-160 || true
+  }
+  rw_start_of() {
+    [ -n "${1:-}" ] || return 0
+    ps -p "$1" -o lstart= 2>/dev/null | tr -d '\n' | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//' || true
+  }
+  # 0 = 标识匹配（确实另有本流程的写者 → 不代他人释放）；1 = 不匹配 / 不可核（复用 → 可释放）。
+  rw_writer_match() { # $1 = 锁文件；$2 = pid
+    rw_m_cmd="$(grep -m1 '^cmd=' "${1:-}" 2>/dev/null | sed -E 's/^cmd=//' || true)"
+    rw_m_start="$(grep -m1 '^start=' "${1:-}" 2>/dev/null | sed -E 's/^start=//' || true)"
+    [ -n "$rw_m_cmd" ] || return 1
+    [ "$(rw_cmd_of "${2:-}")" = "$rw_m_cmd" ] || return 1
+    [ -n "$rw_m_start" ] || return 1
+    [ "$(rw_start_of "${2:-}")" = "$rw_m_start" ] || return 1
+    return 0
+  }
   rw_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
   [ -n "$rw_root" ] || return 0
   rw_root="$(cd "$rw_root" && pwd -P)"
@@ -81,8 +104,11 @@ release_writer_lock() {
     case "$rw_pid" in
       ''|*[!0-9]*) : ;;
       *) if kill -0 "$rw_pid" 2>/dev/null; then
-           printf '  [WARN] 锁 %s 的 pid=%s **仍存活** —— 不代他人释放（确认该写者已退出后手工 rm）\n' "$rw_file" "$rw_pid"
-           continue
+           if rw_writer_match "$rw_file" "$rw_pid"; then
+             printf '  [WARN] 锁 %s 的 pid=%s **仍存活且写者标识匹配** —— 不代他人释放（确认该写者已退出后手工 rm）\n' "$rw_file" "$rw_pid"
+             continue
+           fi
+           printf '  [WARN] 锁 %s 的 pid=%s 存活但写者标识**不匹配 / 不可核**（锁 cmd/start 与活进程对不上，疑 pid 复用）→ **允许释放**（#169：那不是本流程写者，留下 = 陈旧锁）\n' "$rw_file" "$rw_pid"
          fi ;;
     esac
     if rm -f "$rw_file"; then

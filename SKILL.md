@@ -34,7 +34,7 @@ metadata:
 
 ## 工作流程
 
-1. **预检**（每次接手第一步）：`scripts/preflight.sh` → 全 `[ OK ]` 且退出码 `0`；任一 `[FAIL]` → 贴原文报 dispatcher，**禁止**继续。**新增的两条 `[FAIL]`**（#159，第 3/4 组）：① 本 clone 已被另一个**存活**写者占用（单写者锁）→ 要并行请**另开独立 clone**；② 当前分支不属于任何 `status/in-progress` Issue（防「在别人的分支上工作」）。陈旧锁会被**自动接管并打印原因**，基线分支上分支归属判据**显式不适用**（打印「未执行」）。
+1. **预检**（每次接手第一步）：`scripts/preflight.sh` → 全 `[ OK ]` 且退出码 `0`；任一 `[FAIL]` → 贴原文报 dispatcher，**禁止**继续。**新增的两条 `[FAIL]`**（#159，第 3/4 组；#169 修正判据口径）：① 本 clone 已被另一个写者占用（单写者锁）——但「占用」的判据是**写者标识匹配**（pid 存活 **且** `cmd`/起始时间逐字一致）；pid 存活而标识不匹配 / 不可核（疑 pid 复用）按**陈旧锁自动接管并打印原因**，不再假红 → 要并行请**另开独立 clone**；② 当前分支不属任何**在途** Issue ——「在途」= `status/in-progress` **或** `status/in-review`（**交付后待评审**也是合法状态；防「在别人的分支上工作」）。基线分支上分支归属判据**显式不适用**（打印「未执行」）；判据必须在**全部合法流程状态**下不假红（[references/exceptions.md](references/exceptions.md) §7）。
 2. **开工**：DoR 五项齐备才 `scripts/status.sh <n> ready --as author`；再 `scripts/start.sh <n> --as author`（线上故障加 `--type hotfix`）。
 3. **交付**：提交用 `-F <文件>` + 作者 git 身份；`scripts/deliver.sh <n> --prepare --as author` 生成六段 → 填写 → `scripts/deliver.sh <n> --as author`。
 4. **检查**：`gh pr checks <pr#> --required` —— 5 个必需检查在**最新 SHA** 上全 `pass` 才进下一步。

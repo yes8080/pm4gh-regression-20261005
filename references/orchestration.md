@@ -19,7 +19,7 @@
 scripts/preflight.sh
 ```
 
-- **成功判据**：全 `[ OK ]` 且退出码 `0`；其中必须覆盖：三身份互不相同（第 5、8 组）、作者与评审凭据都在**工作区之外**且权限 `600`（第 5 组）、工作区内没有任何 `*.pat`（第 5、10 组）、**本 clone 的单写者锁已获取或已接管陈旧锁**（第 3 组；R1）、**当前分支归属一个 `status/in-progress` 的 Issue**（第 4 组；R2；在基线分支上显式不适用）。
+- **成功判据**：全 `[ OK ]` 且退出码 `0`；其中必须覆盖：三身份互不相同（第 5、8 组）、作者与评审凭据都在**工作区之外**且权限 `600`（第 5 组）、工作区内没有任何 `*.pat`（第 5、10 组）、**本 clone 的单写者锁已获取或已接管陈旧锁**（第 3 组；R1）、**当前分支归属一个在途 Issue（`in-progress` 或 `in-review`）**（第 4 组；R2；在基线分支上显式不适用）。
 - **失败时做什么**：任一 `[FAIL]` → **如实把原文贴给 dispatcher，禁止继续**（禁止"先干着看"）；缺凭据 / 权限不对 → 按 [identity.md](identity.md) 在**工作区之外**开通，不得为了省事把凭据挪进仓库。
 - **边界（不得违反）**：编排者**不得读取评审凭据的内容**（`cat` / `echo` / 打印 / 复制都不行），只让 `scripts/review.sh` 拿它执行；建切片 Issue **不得**用本机 `gh` 登录态（那是 dispatcher 身份 —— 审计归属 = 做事的人）。
 
@@ -206,6 +206,7 @@ $ scripts/closeout.sh 153
 |---|---|---|
 | 同一 clone | 只允许一个写者；一次只做一个切片 | **R1** 单写者锁（第 3 组）+ **R2** 分支归属（第 4 组） |
 | 并行 | **允许**，前提 = 各自独立 clone、各自 Issue | **R3**：在途 `in-progress` > 1 是 `[WARN]`（不阻断；它不是「同一 clone 被两个写者占用」的证据） |
+| 在途（R2 口径） | 分支所属 Issue = `in-progress`（实现 / 返修）**或** `in-review`（交付后待评审） | **R2**：两者都算「本 clone 的在途项」（#169） |
 | 同一 Issue | 一个分支 = 一个 PR；返修在**同一分支** | `policy/branch-name` / `policy/linked-issue`（必需检查） |
 
 ### 7.1 R1 单写者锁：位置、内容、生命周期
@@ -213,15 +214,15 @@ $ scripts/closeout.sh 153
 - **位置（必须在工作区之外）**：`$PM4GH_LOCK_DIR`；默认 `$HOME/.config/pm4gh/locks`（与凭据同目录，见 [identity.md](identity.md)）。默认目录**不可写**时回退到 `/tmp/pm4gh-locks-<uid>`，并在输出里**打印回退原因**（受限环境不因此变成永久假红）；显式指定的 `PM4GH_LOCK_DIR` 不可写 = 配置错（`[FAIL]`，不静默替换）；两个候选都不可写 → `[FAIL]`（fail-closed）。
   - **为什么不能在仓库里**：锁文件会被 `git add`、被「工作区干净」的 `[WARN]` 计数、被凭据/未提交扫描当成未提交改动 —— 判据会污染判据自己。
 - **键 = clone 的物理根路径**（`git rev-parse --show-toplevel` 再 `pwd -P`）：锁文件 = `<锁目录>/<clone-id>.lock`。**不按 slug 建锁**：按 slug 会让另一个 clone 的**合法并行写者**被判成「占用」，与「并行 = 各自 clone」直接矛盾。
-- **内容**（一行一个 `key=value`）：`pid`（获取锁的进程）/ `branch` / `slug` / `clone` / `time`（epoch 秒）/ `time_iso` / `cmd`（活进程身份核对的依据）。`PM4GH_LOCK_STALE_MINUTES`（默认 `120`）是锁龄阈值。
+- **内容**（一行一个 `key=value`）：`pid`（获取锁的进程）/ `branch` / `slug` / `clone` / `time`（epoch 秒）/ `time_iso` / **`cmd`（写者标识 = 活进程实际命令行）** / **`start`（第二判据 = 进程起始时间）**。`PM4GH_LOCK_STALE_MINUTES`（默认 `120`）**只用于接管报文里标注「锁龄偏大」**，**不是**接管的前置条件（#169）。
 - **三态显式**（[exceptions.md](exceptions.md) §4）：
   1. **无锁** → 获取并继续（`[ OK ]`）。
-  2. **陈旧锁** → **自动接管**并**打印接管原因**（不静默）：`pid` 不存在，**或** `pid` 存活但**不可核**（锁里的 `cmd` 与活进程命令行不符 = 疑 pid 复用）**且**锁龄 > `PM4GH_LOCK_STALE_MINUTES`。锁里的 `branch` / `clone` 与当前不符时另行 `[WARN]` 打印（「本 clone 的分支被切过？」）。
-  3. **`pid` 存活且是本流程写者** → `[FAIL]`：报文含 pid / branch / 时间 / 锁路径，并给出「要并行请另开独立 clone」的修法。
-- **生命周期**：W0 `scripts/preflight.sh` **获取 / 接管**；期间每次 W0 重跑都会「接管自己上一次留下的陈旧锁」（锁记的是**进程**，`preflight` 退出即死 ⇒ **不会把自己锁死**）；**正常结束** `scripts/closeout.sh`（五项全过时）与**异常结束** `scripts/abort.sh`（闭环时）**释放本 clone 的锁**（**R4**）。释放只动**本 clone**的锁：`clone` 字段指向别处、或 `pid` 仍存活 → **不删**、只提示（不代他人释放）。
-- **边界（如实，不得过度宣称）**：① 存活判定用 `kill -0`（bash 内建；受策略限制的环境里 `ps` 可能不可用，此时 `cmd` 记空 = **不可核**），对其他用户的进程会因 EPERM 判成「不存在」；② 只覆盖**跑 W0 的写者** —— 不跑 `preflight` 就动手的写者不在判据内（这是纪律，不是机制）；③ **不**阻止 `deliver.sh` / `status.sh` 等单步脚本被并发调用（它们不查锁）；④ 若另一个写者把你切到了**它自己的** `in-progress` 分支，**R2 不报**（该分支确实合规）—— 那种形态只有在双方都跑 W0 时由 R1 兜住。
+  2. **陈旧锁** → **自动接管**并**打印接管原因**（不静默）：`pid` 不存在，**或** `pid` 存活但**写者标识不匹配 / 不可核**（锁里的 `cmd` / `start` 与活进程对不上 = 疑 pid 复用；受限环境里 `ps` 被拒也记空 = 不可核）——#169 起**不再要求**锁龄超阈值（"读不到身份"不等于"是别人的活写者"，拿它判占用正是假红病灶）。锁里的 `branch` / `clone` 与当前不符时另行 `[WARN]` 打印（「本 clone 的分支被切过？」）。
+  3. **`pid` 存活且写者标识匹配**（`cmd` 非空且逐字一致，**且** `start` 非空且一致）→ `[FAIL]`：报文含 pid / branch / 时间 / 锁路径，并给出「要并行请另开独立 clone」的修法。
+- **生命周期**：W0 `scripts/preflight.sh` **获取 / 接管**；期间每次 W0 重跑都会「接管自己上一次留下的陈旧锁」（锁记的是**进程**，`preflight` 退出即死 ⇒ **不会把自己锁死**）；**正常结束** `scripts/closeout.sh`（五项全过时）与**异常结束** `scripts/abort.sh`（闭环时）**释放本 clone 的锁**（**R4**）。释放只动**本 clone**的锁：`clone` 字段指向别处、或 `pid` 仍存活**且写者标识匹配** → **不删**、只提示（不代他人释放）；`pid` 存活但标识**不匹配 / 不可核** = 复用 → **允许释放**（#169：否则留下陈旧锁）。
+- **边界（如实，不得过度宣称）**：① 存活判定用 `kill -0`（bash 内建），对其他用户的进程会因 EPERM 判成「不存在」；身份核对另用 `ps`（受策略限制的环境里会被直接拒绝，此时 `cmd` / `start` 记空 = **不可核** → 按陈旧锁接管，**不**假红）；② 只覆盖**跑 W0 的写者** —— 不跑 `preflight` 就动手的写者不在判据内（这是纪律，不是机制）；③ **不**阻止 `deliver.sh` / `status.sh` 等单步脚本被并发调用（它们不查锁）；④ 若另一个写者把你切到了**它自己的在途** Issue 分支，**R2 不报**（该分支确实合规）—— 那种形态只有在双方都跑 W0 时由 R1 兜住；⑤ 判据在**全部合法流程状态**下必须不假红（清单与证据要求见 [exceptions.md](exceptions.md) §7）。
 
 ### 7.2 R2 分支归属 与 R3 在途数
 
-- **R2**：当前分支若是切片分支形态 `<type>/<issue#>-<slug>`（`type ∈ {slice,fix,hotfix,spike,chore}`），其 Issue 必须 **OPEN 且带 `status/in-progress`**；否则 `[FAIL]`（读不到该 Issue = fail-closed）。**基线分支上显式不适用**（W0 允许在开工前跑，开工后 `scripts/start.sh` 必然切到切片分支）—— 打印 `[WARN]` 说明「本判据**未执行**」，不计入通过；游离 HEAD / 非切片分支形态 = `[FAIL]`（无法证明归属，fail-closed）。
+- **R2**：当前分支若是切片分支形态 `<type>/<issue#>-<slug>`（`type ∈ {slice,fix,hotfix,spike,chore}`），其 Issue 必须 **OPEN 且在途** = 带 `status/in-progress` **或** `status/in-review`（#169：**交付后待评审**是合法运行点 —— `deliver.sh` 交付后 Issue 变 `in-review` 而作者仍在分支上等评审）；OPEN 但只有 `status/ready` / 无 `status/*`（backlog）、已 CLOSED（done / canceled）、读不到该 Issue → `[FAIL]`（fail-closed）。**基线分支上显式不适用**（W0 允许在开工前跑，开工后 `scripts/start.sh` 必然切到切片分支）—— 打印 `[WARN]` 说明「本判据**未执行**」，不计入通过；游离 HEAD / 非切片分支形态 = `[FAIL]`（无法证明归属，fail-closed）。**六态清单**（开工前 / 实现中 / 交付后待评审 / 返修中 / 终止后 / 被切走）与「另一侧」证据要求见 [exceptions.md](exceptions.md) §7。
 - **R3**：在途 `in-progress` > 1 **仍是 `[WARN]`**，**不升为 `[FAIL]`**。理由：在途数**不是**「同一 clone 被两个写者占用」的证据 —— 两个 `in-progress` 可能落在两个独立 clone 上（正是本模型允许的并行形态）；升为 FAIL 既禁止了合法并行，又把判据压在**错误的观测量**上。同一 clone 的互踩由 R1/R2 判定。`scripts/status.sh --check` 的小结打印**同一说法**。
