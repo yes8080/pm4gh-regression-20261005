@@ -5,7 +5,7 @@
 ## 规则
 
 - 状态集 **6 个**：`backlog | ready | in-progress | in-review | done | canceled`。
-- **必须**：迁移**只能**走 `scripts/status.sh <n> <state> --as author|reviewer|dispatcher`；**禁止**直接改标签、**禁止**把状态写进本地文件。
+- **必须**：迁移**只能**走 `scripts/status.sh <n> <state> --as <身份>`（`<身份>` ∈ `author` / `reviewer` / `dispatcher`）；**禁止**直接改标签、**禁止**把状态写进本地文件。
 - **必须**：任何不可逆副作用（建分支 / 推送 / 建 PR）**之前**先跑只读判定 `scripts/status.sh --check-transition <from> <to>` → 退出码 `0` 合法 / `1` 非法 / `2` 用法错。
 - **判据**：`scripts/status.sh <n> <state> --as <身份>` 退出码 `0` 成功 / `1` 校验或迁移失败 / `2` 参数错；**写迁移缺 `--as` → fail-closed 拒绝**（只读模式 `--check` / `--check-transition` / `--check-cross` 不需要 `--as`）。
 - **禁止**：表外 `from → to`（含终态出边、跨级跳跃）—— 一律失败，**没有跳过开关**。

@@ -17,6 +17,10 @@
 # --check-transition 专供「副作用不可逆」的脚本（start.sh / deliver.sh）在动手前调用：
 # 非法时退出码 1 并打印 from 的合法出边与正确命令；合法时退出码 0，且绝不改动任何东西。
 #
+# `--parse-only`（#147 C3②）：**只做参数解析 + 参数级取值域校验**，然后 exit 0 —— 在所有
+#   仓库 / 凭据 / 网络 / 写操作**之前**。它是 ci/test 的「文档命令可执行性」判据的解析路径
+#   （把文档里的命令形态喂给真实参数解析），**不是**给人用的开关；这条路必须保持零副作用。
+#
 # 状态集（6）：backlog | ready | in-progress | in-review | done | canceled
 #   - backlog = 无任何 status/* 标签且 Issue OPEN
 #   - ready / in-progress / in-review = 对应 status/* 标签，**互斥**
@@ -82,19 +86,26 @@ out_edges_of() {
   printf '%s' "$TRANSITIONS" | tr ' ' '\n' | grep -E "^$1->" | sed 's/->/ → /g' | tr '\n' ' ' | sed -E 's/[[:space:]]+$//'
 }
 
-# ── 参数解析（零副作用：纯 shell，不读网络、不写文件）──────────────────
+# ── 参数解析 + 参数级校验（零副作用：纯 shell，不读网络、不写文件）──────────
 # 唯一开关 = --as；只读模式 = --check / --check-transition / --check-cross。
 # 位置参数按出现顺序收进 POS1/POS2/POS3（不用 set -- 回填：避免 glob 与再分割）。
+# `--parse-only`（#147 C3②）：只做参数解析 + **参数级取值域校验**，然后 exit 0 ——
+#   在所有仓库 / 凭据 / 网络 / 写操作**之前**。ci/test 的「文档命令可执行性」判据靠它把
+#   文档里的命令形态喂给**真实的参数解析**（不是第二套正则）。因此：① 这条路径必须保持
+#   零副作用；② 参数级校验**不得**后移到环境读取之后，否则判据会漏掉「写迁移缺 --as」。
+USAGE_WRITE="用法：scripts/status.sh <issue#> <state> --as author|reviewer|dispatcher | --check | --check-cross | --check-transition <from> <to>"
 AS=""
+PARSE_ONLY=""
 MODE=""
 POS1=""; POS2=""; POS3=""; POSN=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --as)               AS="${2:?--as 需要取值（author|reviewer|dispatcher）}"; shift 2 ;;
+    --parse-only)       PARSE_ONLY=1; shift ;;
     --check)            [ -z "$MODE" ] || die "只读模式只能有一个（已给出 ${MODE}）" 2; MODE="check"; shift ;;
     --check-cross)      [ -z "$MODE" ] || die "只读模式只能有一个（已给出 ${MODE}）" 2; MODE="cross"; shift ;;
     --check-transition) [ -z "$MODE" ] || die "只读模式只能有一个（已给出 ${MODE}）" 2; MODE="transition"; shift ;;
-    -h|--help)          sed -n '2,20p' "$0"; exit 0 ;;
+    -h|--help)          sed -n '2,24p' "$0"; exit 0 ;;
     -*)                 die "未知参数 ${1:-}（本脚本只提供 --as 与三个只读模式；用法见 scripts/status.sh -h）" 2 ;;
     *)
       POSN=$((POSN + 1))
@@ -107,11 +118,9 @@ case "${AS:-}" in
   *) die "未知身份 --as ${AS}（合法值：author|reviewer|dispatcher）" 2 ;;
 esac
 
-# ── --check-transition <from> <to>：**只读**判定（零副作用）─────────────
-# **必须**在任何不可逆副作用（建分支、推送、建 PR）**之前**调用本命令：
-# 先动手再迁移状态，非法迁移会把仓库留在半成品状态。
-# 本分支在任何文件、网络、标签操作**之前**返回 —— 只读本脚本内的 TRANSITIONS。
-# 退出码：0 = 合法（含 from == to 的幂等）；1 = 非法（并打印该 from 的合法出边与对应命令）；2 = 用法/状态名错误
+# ── 参数级校验（取值域；**不依赖**仓库 / 凭据 / 网络）────────────────────
+# 这一段的全部判据都属于「参数」，因此必须在这里（而不是在读到仓库/凭据之后）完成：
+# 后移会让「文档命令可执行性」判据漏掉它们（#147 C3②）。
 if [ "$MODE" = "transition" ]; then
   from="$POS1"
   to="$POS2"
@@ -126,6 +135,35 @@ if [ "$MODE" = "transition" ]; then
     *" ${to} "*) : ;;
     *) die "未知状态 ${to}（合法值：${VALID_STATES}）" 2 ;;
   esac
+elif [ -z "$MODE" ]; then
+  # 写迁移：**缺 --as → fail-closed**（#141 D1）—— 判据在参数级，先于任何环境读取。
+  [ -n "$AS" ] || die "写迁移必须显式指定身份：scripts/status.sh ${POS1:-<issue#>} ${POS2:-<state>} --as author|reviewer|dispatcher
+       原因：label 操作在平台上**产生身份归属**（timeline 的 actor = 发起写请求的凭据持有者）——
+       不指定就变成「谁的环境变量在场，就算谁做的」；审计归属必须 = 做事的人（#141 D1）。
+       只读模式（--check / --check-transition / --check-cross）不需要 --as。" 2
+  [ -n "$POS1" ] || die "$USAGE_WRITE" 2
+  case "$POS1" in *[!0-9]*) die "Issue 编号必须是数字：${POS1}" 2 ;; esac
+  [ -n "$POS2" ] || die "$USAGE_WRITE" 2
+  [ -z "${POS3:-}" ] || die "未知参数 ${POS3}（本脚本只提供 --as 开关；迁移合法性只由转换表决定）" 2
+  case " ${VALID_STATES} " in
+    *" ${POS2} "*) : ;;
+    *) die "未知状态 ${POS2}（合法值：${VALID_STATES}）" 2 ;;
+  esac
+fi
+
+# `--parse-only` 出口：参数解析 + 参数级校验之后、任何环境/副作用之前（#147 C3②）
+if [ -n "$PARSE_ONLY" ]; then
+  printf '[ OK ] 参数解析通过（--parse-only；未读网络、未写任何文件）：%s\n' "$0"
+  exit 0
+fi
+
+# ── --check-transition <from> <to>：**只读**判定（零副作用）─────────────
+# **必须**在任何不可逆副作用（建分支、推送、建 PR）**之前**调用本命令：
+# 先动手再迁移状态，非法迁移会把仓库留在半成品状态。
+# 本分支在任何文件、网络、标签操作**之前**返回 —— 只读本脚本内的 TRANSITIONS。
+# 退出码：0 = 合法（含 from == to 的幂等）；1 = 非法（并打印该 from 的合法出边与对应命令）；2 = 用法/状态名错误
+# （from / to 的存在性与状态名已在「参数级校验」段验证；这里只剩合法性判定）
+if [ "$MODE" = "transition" ]; then
   if [ "$from" = "$to" ]; then
     ok "转换表允许：${from} → ${to}（同状态，幂等）"
     exit 0
@@ -203,11 +241,7 @@ use_identity() {
 }
 
 if [ -z "$MODE" ]; then
-  # 写迁移：缺 --as → fail-closed（并给出修法）
-  [ -n "$AS" ] || die "写迁移必须显式指定身份：scripts/status.sh ${POS1:-<issue#>} ${POS2:-<state>} --as author|reviewer|dispatcher
-       原因：label 操作在平台上**产生身份归属**（timeline 的 actor = 发起写请求的凭据持有者）——
-       不指定就变成「谁的环境变量在场，就算谁做的」；审计归属必须 = 做事的人（#141 D1）。
-       只读模式（--check / --check-transition / --check-cross）不需要 --as。" 2
+  # 写迁移：缺 --as 的 fail-closed 判据已在「参数级校验」段（--parse-only 也走那里）
   use_identity "$AS"
 elif [ -n "$AS" ]; then
   # 只读模式也允许显式指定身份（只影响读请求与打印，不写任何东西）
@@ -525,10 +559,8 @@ if [ "$MODE" = "cross" ]; then
   exit 1
 fi
 
-USAGE_WRITE="用法：scripts/status.sh <issue#> <state> --as author|reviewer|dispatcher | --check | --check-cross | --check-transition <from> <to>"
 ISSUE="$POS1"
-[ -n "$ISSUE" ] || die "$USAGE_WRITE" 2
-case "$ISSUE" in *[!0-9]*) die "Issue 编号必须是数字：${ISSUE}" 2 ;; esac
+# 编号 / 状态名 / POS3 的取值域已在「参数级校验」段（--parse-only 也走那里），此处不再重复。
 
 state_of() {
   st="$(platform_state "$1")"
@@ -549,12 +581,6 @@ state_of() {
 }
 
 STATE="$POS2"
-[ -n "$STATE" ] || die "$USAGE_WRITE" 2
-[ -z "${POS3:-}" ] || die "未知参数 ${POS3}（本脚本只提供 --as 开关；迁移合法性只由转换表决定）" 2
-case " ${VALID_STATES} " in
-  *" ${STATE} "*) : ;;
-  *) die "未知状态 ${STATE}（合法值：${VALID_STATES}）" 2 ;;
-esac
 
 terminal=0
 case "$STATE" in done|canceled) terminal=1 ;; esac

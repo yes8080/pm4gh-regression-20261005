@@ -1082,6 +1082,307 @@ jobs:
           fi
           if [ "$bad" -ne 0 ]; then exit 1; fi
           printf '✅ 路由判据：references/ 无孤儿 .md + SKILL.md 无悬空链接；反向样本 (a) 删引用 `%s` / (b) 新建未引用 `references/zzz.md` / (c) 删被引用 `%s` 三例均按预期 FAIL\n' "$target" "$dtarget"
+      - name: 文档命令可执行性 + 启动清单全量覆盖（与脚本参数解析/权威清单逐条对齐 + 反向样本）
+        run: |
+          set -euo pipefail
+          # ── C3②｜文档命令可执行性：文档里的 scripts/*.sh 命令形态 vs 脚本的**真实参数解析** ──
+          # 抽取范围：SKILL.md + references/*.md 里「看起来是命令行」的片段（行内 code span / fenced 代码块）。
+          # 契约：每个接受参数的脚本都提供 `--parse-only` **零副作用解析路径**（见各脚本参数解析区注释）——
+          #   它只做参数解析 + 参数级取值域校验，在**任何**仓库 / 凭据 / 网络 / 写操作之前 exit 0。
+          #   本步骤喂给脚本的**永远**是 `--parse-only`，因此不可能真正执行写操作。
+          # 为什么需要它（#147）：文档与「脚本实际接受的形态」是同一事实的两处载体；没有逐字断言时，
+          #   改脚本参数而忘改文档**不会被任何检查发现** —— 直到有人照抄文档、被拒（C1 在「命令」上的表现）。
+          # 判定（三态显式，C2）：[ OK ] 解析通过 ／ [FAIL] 不一致（file:line + 原文 + 修法）／
+          #   [ SKIP ] 显式标记 `<!-- 非可执行示例 -->` 的行 —— **打印且不计入通过**。
+          # 无参数形态（如 `scripts/preflight.sh`）：只断言「存在 + 可执行位」，**不执行**。
+          work="$(mktemp -d "${TMPDIR:-/tmp}/doc-cmd.XXXXXX")"
+          trap 'rm -rf "$work"' EXIT
+
+          cat > "$work/extract.awk" <<'AWK'
+          BEGIN { fence = 0 }
+          {
+            raw = $0
+            gsub(/\t/, " ", raw)
+            if (raw ~ /<!--[ \t]*非可执行示例[ \t]*-->[ \t]*$/) { printf "%s\t%d\tSKIP\t-\t%s\n", FILENAME, FNR, raw; next }
+            if (raw ~ /^[ \t]*(```|~~~)/) { fence = 1 - fence; next }
+            n = 0
+            if (fence) { frag[n++] = raw }
+            else {
+              m = split(raw, parts, "`")
+              for (i = 2; i <= m; i += 2) frag[n++] = parts[i]
+            }
+            for (k = 0; k < n; k++) scan(frag[k], FNR)
+          }
+          function scan(s, ln,   rest, name, c) {
+            while (match(s, /scripts\/[a-z-]+\.sh/)) {
+              name = substr(s, RSTART, RLENGTH)
+              rest = substr(s, RSTART + RLENGTH)
+              c = substr(rest, 1, 1)
+              if (c == ":" || (c != "" && c != " " && c != "\t")) { s = rest; continue }
+              sub(/^[ \t]+/, "", rest)
+              sub(/[ \t]*(&&|\|\||;).*$/, "", rest)
+              sub(/[ \t]+$/, "", rest)
+              printf "%s\t%d\tCMD\t%s\t%s\n", FILENAME, FNR, name, rest
+              s = rest
+            }
+          }
+          AWK
+
+          cat > "$work/normalize.awk" <<'AWK'
+          function fill(v) {
+            if (v == "<n>" || v == "<issue#>" || v == "<pr#>" || v == "<pr#>") return "999"
+            if (v == "<state>") return "in-progress"
+            if (v == "<from>") return "backlog"
+            if (v == "<to>") return "ready"
+            if (v == "<身份>") return "author"
+            if (v == "<文件>") return ENVIRON["PROBE_BODY"]
+            if (v == "<分支名>") return "chore/147-probe"
+            if (v == "<原因>" || v == "<说明>") return "probe"
+            if (v == "<type>") return "hotfix"
+            return v
+          }
+          {
+            n = split($0, t, /[ \t]+/); out = ""
+            for (i = 1; i <= n; i++) { if (t[i] == "") continue; v = fill(t[i]); out = (out == "" ? v : out " " v) }
+            print out
+          }
+          AWK
+
+          # 占位符 → 具体值（占位符是本仓库文档的既有约定，见 SKILL.md「输入」）。
+          # `<文件>` 指向一个**真的存在**的正文文件，避免把「文件不存在」误判成参数错。
+          printf '## 1. 变更摘要\n探针占位正文（只用于 --body-file 的取值形态，不会被真正使用）。\n' > "$work/body.md"
+          PROBE_BODY="$work/body.md"; export PROBE_BODY
+          normalize() { printf '%s' "$1" | awk -f "$work/normalize.awk"; }
+
+          # ── 判据本体：$1 = 根目录（其下有 SKILL.md 与 references/）；返回 0 = 全通过 ──
+          # 逐条结果写 stdout；明细写 $work/last-rows；计数写 $work/last-summary。
+          # **唯一一份实现**：正向与全部反向样本都调用它（不允许第二套）。
+          judge() {
+            root="$1"
+            rows="$work/last-rows"
+            ( cd "$root" && awk -f "$work/extract.awk" SKILL.md references/*.md ) > "$rows" || return 1
+            if ! grep -q 'scripts/' "$rows"; then
+              printf '::error::%s 下抽不出任何 scripts/*.sh 命令形态 —— 判据不成立（fail-closed：解析不到 ≠ 通过）\n' "$root" >&2
+              printf '0 0 1 0\n' > "$work/last-summary"
+              return 1
+            fi
+            jtotal=0; jok=0; jbad=0; jskip=0
+            while IFS="$(printf '\t')" read -r f l kind sc ar; do
+              [ -n "$f" ] || continue
+              jtotal=$((jtotal + 1))
+              if [ "$kind" = "SKIP" ]; then
+                jskip=$((jskip + 1))
+                printf '[ SKIP ] %s:%s 显式标记为非可执行示例（**不计入通过**）：%s\n' "$f" "$l" "$ar"
+                continue
+              fi
+              # 无参数形态：只断言存在 + 可执行位（不执行 —— 零副作用）
+              if [ -z "$ar" ]; then
+                if [ -f "$root/$sc" ] && [ -x "$root/$sc" ]; then
+                  jok=$((jok + 1))
+                  printf '[ OK ]  %s:%s %s —— 无参数形态：存在且可执行（未执行）\n' "$f" "$l" "$sc"
+                else
+                  jbad=$((jbad + 1))
+                  printf '::error file=%s,line=%s::文档引用了不存在（或不可执行）的脚本：%s\n' "$f" "$l" "$sc"
+                fi
+                continue
+              fi
+              # `a|b` 不是可执行形态（shell 会当管道）—— 必须改写或显式标记
+              if grep -q '|' <<<"$ar"; then
+                jbad=$((jbad + 1))
+                printf '::error file=%s,line=%s::`%s %s` 不是可执行形态：`|` 在 shell 里是管道，不是「二选一」\n' "$f" "$l" "$sc" "$ar"
+                printf '       修法（首选）：改写成单值形态，把其它取值放进文字（例：`%s <n> approve --body-file <文件>`）；\n' "$sc"
+                printf '       或在该行末尾加 `<!-- 非可执行示例 -->` 显式标记（标记行会在本步骤日志里逐条打印、不计入通过）。\n'
+                continue
+              fi
+              # 契约闸门：**绝不执行**没有 `--parse-only` 解析路径的脚本 ——
+          # 这是「严禁真正执行写操作」的可证形式：为了校验文档而真跑命令是不允许的。
+          if ! grep -q -- '--parse-only' "$root/$sc"; then
+            jbad=$((jbad + 1))
+            printf '::error file=%s,line=%s::脚本 %s **没有** --parse-only 零副作用解析路径 —— 判据拒绝执行它\n' "$f" "$l" "$sc"
+            printf '       修法：给 %s 加解析路径（参数解析 + 参数级取值域校验后 exit 0，见其它脚本的「参数级校验」段）；或把该行标为非可执行示例。\n' "$sc"
+            continue
+          fi
+          argv="$(normalize "$ar")"
+              rc=0
+              out="$(bash "$root/$sc" --parse-only $argv < /dev/null 2>&1)" || rc=$?
+              if [ "$rc" -eq 0 ] && grep -q '参数解析通过' <<<"$out"; then
+                jok=$((jok + 1))
+                printf '[ OK ]  %s:%s %s %s\n' "$f" "$l" "$sc" "$argv"
+              else
+                jbad=$((jbad + 1))
+                printf '::error file=%s,line=%s::文档里的命令形态不被脚本参数解析接受：`%s %s`（填占位符后试算：%s %s）\n' \
+                  "$f" "$l" "$sc" "$ar" "$sc" "$argv"
+                printf '%s\n' "$out" | sed 's/^/        /'
+                printf '       修法：① 改文档，使其与脚本参数解析一致（首选）；② 改脚本参数解析**并同步**文档（两处都是事实载体）；\n'
+                printf '       ③ 确属不能执行的历史/示例片段：改写成可执行形态，或在该行末尾加 `<!-- 非可执行示例 -->`（会被打印、不计入通过）。\n'
+              fi
+            done < "$rows"
+            printf '%s %s %s %s\n' "$jtotal" "$jok" "$jbad" "$jskip" > "$work/last-summary"
+            printf '摘要：抽出命令形态 %s 条 → 通过 %s ／ 不一致 %s ／ 显式跳过 %s（跳过不计入通过）\n' \
+              "$jtotal" "$jok" "$jbad" "$jskip"
+            [ "$jbad" -eq 0 ] || return 1
+            return 0
+          }
+
+          # ── C4② 覆盖度判据：bootstrap-checklist.md 的机器可读索引 vs 三份权威清单 ──
+          # 三份权威清单的**条目数不由人手抄**：陷阱号从 traps.md 的 `**N.` 标题取，预检段号从
+          # preflight.sh 的 `info "N/10` 取，替换点号从 portability.md §1 表格行取。
+          # 清单里的编号少一个 / 多一个 → FAIL 并指出差在哪（防"清单悄悄过期"）。
+          cov_check() { # $1 = 根目录
+            root="$1"
+            cf="$root/references/bootstrap-checklist.md"
+            if [ ! -f "$cf" ]; then
+              printf '::error file=references/bootstrap-checklist.md::启动清单缺失 —— 新项目落地无清单可抄\n' >&2
+              return 1
+            fi
+            src_traps="$(grep -oE '^\*\*[0-9]+\.' "$root/references/traps.md" 2>/dev/null | grep -oE '[0-9]+' | sort -n | tr '\n' ' ' | sed -E 's/[[:space:]]+$//' || true)"
+            src_pf="$(grep -oE '^info "[0-9]+/10 ' "$root/scripts/preflight.sh" 2>/dev/null | sed -E 's/^info "([0-9]+)\/10 .*/\1/' | sort -n | tr '\n' ' ' | sed -E 's/[[:space:]]+$//' || true)"
+            src_pt="$(grep -E '^\| [0-9]+ \|' "$root/references/portability.md" 2>/dev/null | sed -E 's/^\| ([0-9]+) \|.*/\1/' | sort -n | tr '\n' ' ' | sed -E 's/[[:space:]]+$//' || true)"
+            cl_traps="$(sed -n '/BOOTSTRAP_COVERAGE:BEGIN/,/BOOTSTRAP_COVERAGE:END/p' "$cf" | grep -E '^traps=' | sed -E 's/^traps=//; s/,/ /g' | tr -s ' ' | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' || true)"
+            cl_pf="$(sed -n '/BOOTSTRAP_COVERAGE:BEGIN/,/BOOTSTRAP_COVERAGE:END/p' "$cf" | grep -E '^preflight=' | sed -E 's/^preflight=//; s/,/ /g' | tr -s ' ' | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' || true)"
+            cl_pt="$(sed -n '/BOOTSTRAP_COVERAGE:BEGIN/,/BOOTSTRAP_COVERAGE:END/p' "$cf" | grep -E '^portability=' | sed -E 's/^portability=//; s/,/ /g' | tr -s ' ' | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' || true)"
+            cbad=0
+            for spec in "traps|$src_traps|$cl_traps" "preflight|$src_pf|$cl_pf" "portability|$src_pt|$cl_pt"; do
+              kind="${spec%%|*}"; rest="${spec#*|}"; src="${rest%%|*}"; cl="${rest#*|}"
+              if [ -z "$src" ]; then
+                printf '::error file=references/bootstrap-checklist.md::%s 的权威条目号解析为空 —— 判据不成立（fail-closed）\n' "$kind" >&2
+                cbad=1; continue
+              fi
+              if [ "$src" != "$cl" ]; then
+                printf '::error file=references/bootstrap-checklist.md::启动清单的 %s 编号与权威清单不一致（文档漂移）\n' "$kind" >&2
+                printf '       权威（来自源文件）：%s\n' "$src" >&2
+                printf '       清单索引（BOOTSTRAP_COVERAGE 区）：%s\n' "$cl" >&2
+                printf '       修法：把漏掉/多出的编号补进 references/bootstrap-checklist.md 的对应小节与 BOOTSTRAP_COVERAGE 索引（**逐条**，不要只改计数）\n' >&2
+                cbad=1; continue
+              fi
+              printf '[ OK ]  %s 全量覆盖：%s 条（%s）\n' "$kind" "$(printf '%s' "$src" | tr ' ' '\n' | grep -c .)" "$src"
+            done
+            [ "$cbad" -eq 0 ] || return 1
+            return 0
+          }
+
+          # ── 正向：真实仓库 ──────────────────────────────────────────────────────
+          echo "== 正向：SKILL.md + references/*.md 里的命令形态 =="
+          jrc=0; judge . > "$work/main.log" 2>&1 || jrc=$?
+          cat "$work/main.log"
+          [ "$jrc" -eq 0 ] || { echo "❌ 判据在真实仓库上失败：见上方 ::error::（文件:行 + 修法）"; exit 1; }
+          read -r m_total m_ok m_bad m_skip < "$work/last-summary"
+          # 非空断言（防抽取器退化 → 恒通过）
+          if [ "$m_total" -lt 10 ]; then
+            echo "::error file=SKILL.md::只抽出 ${m_total} 条命令形态（<10）—— 抽取器可能已退化，判据不成立（fail-closed）"
+            exit 1
+          fi
+          # 必须覆盖「status.sh 写迁移」这一类（本判据的核心样本：写迁移缺 --as 必须能被抓）
+          if ! awk -F'\t' '$3=="CMD" && $4=="scripts/status.sh" && $5 ~ /--as/ && $5 !~ /^--check/ {found=1} END{exit !found}' "$work/last-rows"; then
+            echo "::error file=SKILL.md::文档里抽不到任何 status.sh 写迁移形态（<n> <state> --as <身份>）—— 判据样本缺失（fail-closed）"
+            exit 1
+          fi
+          printf '[ OK ]  非空断言：抽出 %s 条（含 status.sh 写迁移形态）；显式跳过 %s 条\n' "$m_total" "$m_skip"
+
+          echo
+          echo "== C4② 启动清单覆盖度（traps.md / preflight.sh / portability.md 的全量条目）=="
+          crc0=0; cov_check . || crc0=$?
+          [ "$crc0" -eq 0 ] || { echo "❌ 启动清单覆盖度判据失败：见上方 ::error::"; exit 1; }
+
+          # ── 反向样本（全部在临时副本里做，不动工作区）────────────────────────────
+          # 样本目标从**真实抽取结果**里选（不写死文件名/行号）—— 采用者改了文件名依然有效。
+          sample="$(awk -F'\t' '$3=="CMD" && $4=="scripts/status.sh" && $5 ~ /--as/ && $5 !~ /^--check/ {print $1":"$2; exit}' "$work/last-rows")"
+          [ -n "$sample" ] || { echo "::error::找不到 status.sh 写迁移样本，反向样本无法构造（fail-closed）"; exit 1; }
+          sfile="${sample%%:*}"; sline="${sample##*:}"
+          echo
+          echo "== 反向样本（临时副本；目标 = ${sfile}:${sline}）=="
+          mk_copy() { # $1 = 目标目录；把文档与脚本复制进去（判据在副本上重跑）
+            rm -rf "$1"; mkdir -p "$1"
+            cp SKILL.md "$1/"
+            cp -R references "$1/"
+            cp -R scripts "$1/"
+          }
+
+          # A：删掉该命令的 `--as <值>` → 判据**必须** FAIL（#147 要求的那一条）
+          mk_copy "$work/A"
+          awk -v ln="$sline" 'NR == ln { sub(/--as[ \t]+[^ \t`]+[ \t]*/, ""); print; next } { print }' \
+            "$work/A/$sfile" > "$work/A/$sfile.tmp" && mv "$work/A/$sfile.tmp" "$work/A/$sfile"
+          arc=0; judge "$work/A" > "$work/A.log" 2>&1 || arc=$?
+          sed -n '1,12p' "$work/A.log" | sed 's/^/   /'
+          if [ "$arc" -ne 0 ] && grep -q '\[FAIL\]\|::error file=' "$work/A.log"; then
+            printf '  [ OK ] 反向样本 A：删掉 `--as` → 判据按预期 FAIL（原文见上）\n'
+          else
+            printf '  [FAIL] 反向样本 A 未失败：删掉 `--as` 后判据仍然通过 —— 判据形同虚设\n' >&2
+            exit 1
+          fi
+
+          # B：恢复（同一份未改动副本）→ 判据**必须**通过
+          mk_copy "$work/B"
+          brc=0; judge "$work/B" > "$work/B.log" 2>&1 || brc=$?
+          if [ "$brc" -eq 0 ] && grep -q '通过' "$work/B.log"; then
+            printf '  [ OK ] 反向样本 B：恢复后判据通过（%s）\n' "$(tail -n 1 "$work/B.log")"
+          else
+            printf '  [FAIL] 反向样本 B 未通过：恢复后判据仍失败\n' >&2
+            sed 's/^/   /' "$work/B.log" >&2
+            exit 1
+          fi
+
+          # C：把 `--as` 的值改成非法身份 → 判据**必须** FAIL（证明「取值域校验真的接进了判据」）
+          mk_copy "$work/C"
+          awk -v ln="$sline" 'NR == ln { sub(/--as[ \t]+[^ \t`]+/, "--as authro"); print; next } { print }' \
+            "$work/C/$sfile" > "$work/C/$sfile.tmp" && mv "$work/C/$sfile.tmp" "$work/C/$sfile"
+          crc=0; judge "$work/C" > "$work/C.log" 2>&1 || crc=$?
+          if [ "$crc" -ne 0 ] && grep -q '未知身份' "$work/C.log"; then
+            printf '  [ OK ] 反向样本 C：`--as authro`（非法身份）→ 判据按预期 FAIL，原文含「未知身份」\n'
+          else
+            printf '  [FAIL] 反向样本 C 未失败：非法身份没被抓到（判据只做了形态匹配，没接真实解析）\n' >&2
+            sed 's/^/   /' "$work/C.log" >&2
+            exit 1
+          fi
+
+          # D：把脚本名改成不存在的脚本 → 判据**必须** FAIL（证明存在性断言不是空断言）
+          mk_copy "$work/D"
+          awk -v ln="$sline" 'NR == ln { gsub(/scripts\/status\.sh/, "scripts/status-typo.sh"); print; next } { print }' \
+            "$work/D/$sfile" > "$work/D/$sfile.tmp" && mv "$work/D/$sfile.tmp" "$work/D/$sfile"
+          drc=0; judge "$work/D" > "$work/D.log" 2>&1 || drc=$?
+          if [ "$drc" -ne 0 ] && grep -q 'status-typo.sh' "$work/D.log"; then
+            printf '  [ OK ] 反向样本 D：脚本名不存在 → 判据按预期 FAIL（存在性断言有效）\n'
+          else
+            printf '  [FAIL] 反向样本 D 未失败：不存在的脚本没被抓到\n' >&2
+            sed 's/^/   /' "$work/D.log" >&2
+            exit 1
+          fi
+
+          # E：把**坏**命令显式标记为非可执行示例 → 判据**必须**跳过它（打印 [ SKIP ]）且整体通过
+          #    （证明 SKIP 分支有效；同时证明被跳过的行**显式打印**、不计入通过 —— C2 三态）
+          mk_copy "$work/E"
+          awk -v ln="$sline" 'NR == ln { sub(/--as[ \t]+[^ \t`]+[ \t]*/, ""); print $0 " <!-- 非可执行示例 -->"; next } { print }' \
+            "$work/E/$sfile" > "$work/E/$sfile.tmp" && mv "$work/E/$sfile.tmp" "$work/E/$sfile"
+          erc=0; judge "$work/E" > "$work/E.log" 2>&1 || erc=$?
+          if [ "$erc" -eq 0 ] && grep -q '\[ SKIP \]' "$work/E.log" && grep -q '不计入通过' "$work/E.log"; then
+            printf '  [ OK ] 反向样本 E：坏命令被显式标记 → 判据跳过并**打印**（不计入通过），整体通过\n'
+            grep '\[ SKIP \]' "$work/E.log" | sed 's/^/   /'
+          else
+            printf '  [FAIL] 反向样本 E 未按预期：标记行没有被跳过或没有打印\n' >&2
+            sed 's/^/   /' "$work/E.log" >&2
+            exit 1
+          fi
+
+
+          # F：把清单索引里的陷阱号删掉一个（19）→ 覆盖度判据**必须** FAIL（证明它不是空断言）
+          mk_copy "$work/F"
+          awk 'NR == 1 { print } /^traps=/ { sub(/,19$/, ""); print; next } { print }' \
+            "$work/F/references/bootstrap-checklist.md" > "$work/F/references/bootstrap-checklist.md.tmp" \
+            && mv "$work/F/references/bootstrap-checklist.md.tmp" "$work/F/references/bootstrap-checklist.md"
+          frc=0; cov_check "$work/F" > "$work/F.log" 2>&1 || frc=$?
+          if [ "$frc" -ne 0 ] && grep -q 'traps 编号与权威清单不一致' "$work/F.log"; then
+            printf '  [ OK ] 反向样本 F：清单漏掉陷阱 19 → 覆盖度判据按预期 FAIL\n'
+            sed -n '1,6p' "$work/F.log" | sed 's/^/   /'
+          else
+            printf '  [FAIL] 反向样本 F 未失败：清单漏条没被抓到\n' >&2
+            sed 's/^/   /' "$work/F.log" >&2
+            exit 1
+          fi
+
+          echo
+          echo "✅ 文档命令可执行性：抽出 ${m_total} 条形态（通过 ${m_ok} ／ 跳过 ${m_skip}）全部与脚本参数解析一致；"
+          echo "   反向样本 A（删 --as → FAIL）／B（恢复 → 通过）／C（非法身份 → FAIL）／D（脚本不存在 → FAIL）／E（显式标记 → 跳过并打印）／F（清单漏条 → FAIL）全部按预期"
+
 
   linked-issue:
     name: policy/linked-issue

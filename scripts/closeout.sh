@@ -22,16 +22,25 @@ warn() { printf '[WARN] %s\n' "$*" >&2; }
 info() { printf '\n== %s ==\n' "$*"; }
 
 PR=""
+PARSE_ONLY=""
 DRY=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run) DRY=1; shift ;;
+    --parse-only) PARSE_ONLY=1; shift ;;
     -h|--help) sed -n '2,14p' "$0"; exit 0 ;;
+    -*) die "未知参数 ${1:-}（本脚本不提供该开关；用法见 scripts/closeout.sh -h）" ;;
     *) PR="$1"; shift ;;
   esac
 done
-[ -n "$PR" ] || die "用法：scripts/closeout.sh <pr#> [--dry-run]"
-case "$PR" in *[!0-9]*) die "PR 编号必须是数字：${PR}" ;; esac
+# ── 参数级校验（取值域；**不依赖**仓库 / 凭据 / 网络）────────────────────
+# ci/test 的「文档命令可执行性」判据（--parse-only）走这里（#147 C3②）。
+[ -n "$PR" ] || die "用法：scripts/closeout.sh <pr#> [--dry-run]" 2
+case "$PR" in *[!0-9]*) die "PR 编号必须是数字：${PR}" 2 ;; esac
+if [ -n "$PARSE_ONLY" ]; then
+  printf '[ OK ] 参数解析通过（--parse-only；未读网络、未写任何文件）：%s\n' "$0"
+  exit 0
+fi
 [ -f .github/rulesets/main-protection.json ] || die "请在仓库根目录运行"
 REPO="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || true)"
 [ -n "$REPO" ] || die "无法确定仓库 slug（gh repo view 失败）"

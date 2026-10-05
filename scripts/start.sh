@@ -24,46 +24,65 @@ warn() { printf '[WARN] %s\n' "$*" >&2; }
 info() { printf '\n== %s ==\n' "$*"; }
 
 ACTOR=""
-use_identity() {
+# --as 的取值域（**参数级**校验：不读凭据 / 不读网络）。判据只有这一处定义 ——
+# 「参数级校验段（--parse-only 走它）」与 `use_identity` 都调用它。
+assert_author_as() {
   case "${1:-}" in
-    author)
-      [ -s "$DEVELOPER_PAT_FILE" ] || die "缺少作者凭据 ${DEVELOPER_PAT_FILE}（见 references/identity.md）"
-      GH_TOKEN="$(cat "$DEVELOPER_PAT_FILE")"
-      export GH_TOKEN
-      unset GITHUB_TOKEN || true
-      ACTOR="$(gh api user --jq .login 2>/dev/null || true)"
-      [ -n "$ACTOR" ] || die "作者凭据无效（无法认证）"
-      main="$(env -u GH_TOKEN -u GITHUB_TOKEN gh api user --jq .login 2>/dev/null || true)"
-      [ -z "$main" ] || [ "$main" != "$ACTOR" ] || die "身份分离失败：作者身份 = gh 登录身份（${ACTOR}）—— 检查 ${DEVELOPER_PAT_FILE}"
-      # 评审凭据**不在这里读**（SKILL.md §5：作者不得读取其他身份的凭据）。
-      # 「评审 ≠ 作者」由 W6 `scripts/review.sh` 用**评审凭据自身**判定（平台另禁止自我批准）。
-      ok "本次执行身份（作者）：${ACTOR}"
-      ;;
-    main)
-      die "--as 只接受 author：本脚本**没有** dispatcher 身份开关（作者身份不可被绕过）。当前：${1:-}"
-      ;;
-    *) die "--as 只接受 author（当前：${1:-}）" ;;
+    author) : ;;
+    main) die "--as 只接受 author：本脚本**没有** dispatcher 身份开关（作者身份不可被绕过）。当前：${1:-}" 2 ;;
+    *)    die "--as 只接受 author（当前：${1:-}）" 2 ;;
   esac
+}
+
+use_identity() {
+  assert_author_as "${1:-}"
+  [ -s "$DEVELOPER_PAT_FILE" ] || die "缺少作者凭据 ${DEVELOPER_PAT_FILE}（见 references/identity.md）"
+  GH_TOKEN="$(cat "$DEVELOPER_PAT_FILE")"
+  export GH_TOKEN
+  unset GITHUB_TOKEN || true
+  ACTOR="$(gh api user --jq .login 2>/dev/null || true)"
+  [ -n "$ACTOR" ] || die "作者凭据无效（无法认证）"
+  main="$(env -u GH_TOKEN -u GITHUB_TOKEN gh api user --jq .login 2>/dev/null || true)"
+  [ -z "$main" ] || [ "$main" != "$ACTOR" ] || die "身份分离失败：作者身份 = gh 登录身份（${ACTOR}）—— 检查 ${DEVELOPER_PAT_FILE}"
+  # 评审凭据**不在这里读**（SKILL.md §5：作者不得读取其他身份的凭据）。
+  # 「评审 ≠ 作者」由 W6 `scripts/review.sh` 用**评审凭据自身**判定（平台另禁止自我批准）。
+  ok "本次执行身份（作者）：${ACTOR}"
 }
 
 ISSUE=""
 TYPE=""
 SLUG=""
 AS="author"
+PARSE_ONLY=""
 DRY=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --type) TYPE="${2:?--type 需要取值}"; shift 2 ;;
     --as)   AS="${2:?--as 需要取值}"; shift 2 ;;
+    --parse-only) PARSE_ONLY=1; shift ;;
     --dry-run) DRY=1; shift ;;
     -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
-    -*) die "未知参数 ${1:-}（本脚本不提供该开关；用法见 scripts/start.sh -h）" ;;
+    -*) die "未知参数 ${1:-}（本脚本不提供该开关；用法见 scripts/start.sh -h）" 2 ;;
     *) ISSUE="$1"; shift ;;
   esac
 done
 
-[ -n "$ISSUE" ] || die "用法：scripts/start.sh <issue#> [--type ...] [--as author] [--dry-run]"
-case "$ISSUE" in *[!0-9]*) die "Issue 编号必须是数字：${ISSUE}" ;; esac
+# ── 参数级校验（取值域；**不依赖**仓库 / 凭据 / 网络）────────────────────
+# 全部判据都属于「参数」，必须在读到仓库/凭据之前完成 —— 否则 ci/test 的
+# 「文档命令可执行性」判据（--parse-only）会漏掉它们（#147 C3②）。
+[ -n "$ISSUE" ] || die "用法：scripts/start.sh <issue#> [--type ...] [--as author] [--dry-run]" 2
+case "$ISSUE" in *[!0-9]*) die "Issue 编号必须是数字：${ISSUE}" 2 ;; esac
+assert_author_as "$AS"
+# 空值 = 稍后按标签推导（下方仍会在推导后再校验一次，纵深防御）
+case "${TYPE:-}" in
+  ""|slice|fix|hotfix|spike|chore) : ;;
+  *) die "--type 只能是 slice|fix|hotfix|spike|chore（当前：${TYPE}）" 2 ;;
+esac
+if [ -n "$PARSE_ONLY" ]; then
+  printf '[ OK ] 参数解析通过（--parse-only；未读网络、未写任何文件）：%s\n' "$0"
+  exit 0
+fi
+
 [ -f .github/rulesets/main-protection.json ] || die "请在仓库根目录运行（未找到 .github/rulesets/main-protection.json）"
 REPO="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || true)"
 [ -n "$REPO" ] || die "无法确定仓库 slug（gh repo view 失败）"
@@ -115,6 +134,7 @@ if [ -z "$TYPE" ]; then
     warn "推导结果为 fix —— 若这是**线上故障**（hotfix 轨道），请改用 --type hotfix，或先给 Issue 加 type/hotfix 标签再重跑；本次未创建分支、未指派、未评论"
   fi
 fi
+# 显式 --type 的取值域已在「参数级校验」段校验；这里覆盖**按标签推导**出来的值（纵深防御）
 case "$TYPE" in slice|fix|hotfix|spike|chore) : ;; *) die "--type 只能是 slice|fix|hotfix|spike|chore（当前：${TYPE}）" ;; esac
 if [ -z "$SLUG" ]; then
   # 只取 ASCII 再小写化（用 tr 而不是 bash4 的 ${var,,}）；必须 sed -E，BSD sed 不支持 BRE 的 \+

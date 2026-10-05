@@ -73,18 +73,34 @@ PR=""
 ACTION=""
 MSG=""
 BODY_FILE=""
+PARSE_ONLY=""
 while [ $# -gt 0 ]; do
   case "$1" in
     -m|--message) MSG="${2:?需要取值}"; shift 2 ;;
     --body-file)  BODY_FILE="${2:?需要取值}"; shift 2 ;;
+    --parse-only) PARSE_ONLY=1; shift ;;
     -h|--help)    sed -n '2,17p' "$0"; exit 0 ;;
+    -*)           die "未知参数 ${1:-}（本脚本不提供该开关；用法见 scripts/review.sh -h）" ;;
     *) if [ -z "$PR" ]; then PR="$1"; else ACTION="$1"; fi; shift ;;
   esac
 done
 
-[ -n "$PR" ] && [ -n "$ACTION" ] || die "用法：scripts/review.sh <pr#> <approve|request-changes|comment> [-m 文本 | --body-file 文件]"
-case "$PR" in *[!0-9]*) die "PR 编号必须是数字：${PR}" ;; esac
-case "$ACTION" in approve|request-changes|comment) : ;; *) die "不支持的动作：${ACTION}（只允许 approve|request-changes|comment；合并不在这里）" ;; esac
+# ── 参数级校验（取值域；**不依赖**仓库 / 凭据 / 网络）────────────────────
+# 全部判据都属于「参数」，必须在读到仓库/凭据之前完成 —— 否则 ci/test 的
+# 「文档命令可执行性」判据（--parse-only）会漏掉它们（#147 C3②）。
+[ -n "$PR" ] && [ -n "$ACTION" ] || die "用法：scripts/review.sh <pr#> <approve|request-changes|comment> [-m 文本 | --body-file 文件]" 2
+case "$PR" in *[!0-9]*) die "PR 编号必须是数字：${PR}" 2 ;; esac
+case "$ACTION" in approve|request-changes|comment) : ;; *) die "不支持的动作：${ACTION}（只允许 approve|request-changes|comment；合并不在这里）" 2 ;; esac
+# approve / request-changes 必须给评审意见（-m 或 --body-file）—— 参数级的**必需性**校验；
+# 正文文件读出来为空的情况由下方各动作分支再校验一次（纵深防御）。
+case "$ACTION" in
+  approve|request-changes) [ -n "$MSG" ] || [ -n "$BODY_FILE" ] || die "${ACTION} 必须给出评审意见（-m 或 --body-file）" 2 ;;
+esac
+if [ -n "$PARSE_ONLY" ]; then
+  printf '[ OK ] 参数解析通过（--parse-only；未读网络、未写任何文件）：%s\n' "$0"
+  exit 0
+fi
+
 [ -f .github/rulesets/main-protection.json ] || die "请在仓库根目录运行"
 REPO="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || true)"
 [ -n "$REPO" ] || die "无法确定仓库 slug（gh repo view 失败）"

@@ -75,9 +75,9 @@ git -c user.name="yes8080-dev-bot" -c user.email="317173623+yes8080-dev-bot@user
 - **判据**：5 个 context 在**最新 SHA** 上全 `pass` 才进 W6；某项永久 `pending` → [traps.md](traps.md) 陷阱 1、2。
 - **`ci/test` 的项目测试 step**（约定见「前置约定」）：`tests/` 存在且 `tests/run.sh` 可执行 → 运行它、把**原始输出尾部**打进日志；退出码非零 → `ci/test` FAIL。`tests/` 存在但 `run.sh` 缺失 / 无 `x` 位 → FAIL（修法：`chmod +x tests/run.sh`）。无 `tests/` → 打印 `[ OK ] 本项目未声明测试套件（…）` 再跳过 —— **必须**打印，禁止静默跳过。
 
-## W6 独立评审 — `scripts/review.sh <pr#> approve|request-changes|comment --body-file <文件>`（评审身份，**不加** `--as`）
+## W6 独立评审 — `scripts/review.sh <pr#> approve --body-file <文件>`（评审身份，**不加** `--as`；动作取值 `approve` / `request-changes` / `comment`）
 
-- **判据**：退出码 `0` 发出评审 / `1` 校验或认证失败；`approve` → `reviewDecision=APPROVED`；`request-changes` → 平台 `CHANGES_REQUESTED`。
+- **判据**：退出码 `0` 发出评审 / `1` 校验或认证失败 / `2` 参数错（用法、编号、动作、缺评审意见）；`approve` → `reviewDecision=APPROVED`；`request-changes` → 平台 `CHANGES_REQUESTED`。
 - **必须**：由 `@yes8080-reviewer-bot` 发；approve / request-changes 必须给 `-m <文本>` 或 `--body-file <文件>` 之一（同时给时 `-m` 优先）；`review.md` 只是示例文件名，路径由调用者决定。**禁止**自批（作者批准自己的 PR）、评审身份合并。
 - `approve` **不迁移状态**（停在 `in-review`）；`request-changes` 时若分支里的 issue 号在 PR 的 `closingIssuesReferences` 中，脚本自动 `scripts/status.sh <n> in-progress --as reviewer`（打印 `[WARN] 跳过状态迁移` 时**必须**人工补）。
 - **判据**：返修后新推送**驳回旧批准**（`require_last_push_approval`）→ **必须**回 W6 重评。门禁读数：`gh pr view <pr#> --json reviewDecision,mergeStateStatus`。
@@ -86,7 +86,7 @@ git -c user.name="yes8080-dev-bot" -c user.email="317173623+yes8080-dev-bot@user
 
 `gh pr merge <pr#> --squash --delete-branch` → `scripts/closeout.sh <pr#>`。
 
-- **判据**：`closeout.sh` 五项全过且退出码 `0`：① PR 已 MERGED ② 关联 Issue 已关 ③ 远端无头分支 ④ 本地头分支已清理 ⑤ 无残留 `status/*` 标签。任一不过 → 退出码 `1`，逐条贴原文报告。
+- **判据**：`closeout.sh` 五项全过且退出码 `0`（用法 / 编号错 → `2`）：① PR 已 MERGED ② 关联 Issue 已关 ③ 远端无头分支 ④ 本地头分支已清理 ⑤ 无残留 `status/*` 标签。任一不过 → 退出码 `1`，逐条贴原文报告。
 - **禁止**：作者代跑合并；`gh pr merge --admin` 或任何绕过门禁的手段 —— 只有 `@yes8080` 用本机登录态合并。
 - 第 ⑤ 项由 `closeout.sh` 自己跑 `scripts/status.sh <n> done --as dispatcher`（**仅对已关闭的 Issue**，OPEN 的绝不代关）；第 ④ 项**先**把「分支名 + 本地 tip SHA + PR head SHA + squash 提交」写进 Issue 作可恢复锚点，**再** `git branch -D`（[traps.md](traps.md) 陷阱 9）。
 

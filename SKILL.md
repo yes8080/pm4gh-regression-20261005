@@ -38,7 +38,7 @@ metadata:
 2. **开工**：DoR 五项齐备才 `scripts/status.sh <n> ready --as author`；再 `scripts/start.sh <n> --as author`（线上故障加 `--type hotfix`）。
 3. **交付**：提交用 `-F <文件>` + 作者 git 身份；`scripts/deliver.sh <n> --prepare --as author` 生成六段 → 填写 → `scripts/deliver.sh <n> --as author`。
 4. **检查**：`gh pr checks <pr#> --required` —— 5 个必需检查在**最新 SHA** 上全 `pass` 才进下一步。
-5. **评审**：`scripts/review.sh <pr#> approve|request-changes --body-file <文件>`（评审身份）；打回 → 状态 `in-progress`，**同一分支**返修。
+5. **评审**：`scripts/review.sh <pr#> approve --body-file <文件>`（评审身份；打回时把 `approve` 换成 `request-changes`）；打回 → 状态 `in-progress`，**同一分支**返修。
 6. **合并收尾**：只有 dispatcher 能 `gh pr merge <pr#> --squash --delete-branch`；随后 `scripts/closeout.sh <pr#>` 五项全过。
 7. **终止**：只在"不做"时 `scripts/abort.sh <issue#>`（先 `--dry-run`）；删分支前必须能证明内容不会丢。
 
@@ -51,7 +51,7 @@ metadata:
 
 [references/dod.md](references/dod.md) 六项全过（验收标准逐条有证据；必需检查最新 SHA 全绿 + 非作者 code owner 批准；未越界；`closeout.sh` 五项全过）。
 
-**必要约束（不回退）**：15 边 / 6 状态｜状态迁移 = REST `PUT …/labels` **单请求**｜5 个必需检查 job `name:` 一字不改｜凭据必须在**工作区之外**｜一个切片 = 一个 Issue = 一个分支 = 一个 PR｜项目测试套件约定 = `tests/run.sh`（`exit 0` = 通过），由 `ci/test` 运行、`preflight.sh` 断言接线；无 `tests/` = 未声明（两处都明确打印，不静默跳过）。
+**必要约束（不回退）**：15 边 / 6 状态｜状态迁移 = REST `PUT …/labels` **单请求**｜5 个必需检查 job `name:` 一字不改｜凭据必须在**工作区之外**｜一个切片 = 一个 Issue = 一个分支 = 一个 PR｜项目测试套件约定 = `tests/run.sh`（`exit 0` = 通过），由 `ci/test` 运行、`preflight.sh` 断言接线；无 `tests/` = 未声明（两处都明确打印，不静默跳过）｜每个断言区分 **通过／失败／未执行**（未执行必须打印且不计入通过，见 [references/exceptions.md](references/exceptions.md) §4）｜文档里的 `scripts/*.sh` 命令形态由 `ci/test` 与脚本**真实参数解析**逐条对齐（脚本提供 `--parse-only` 零副作用解析路径，**不得删除**）。
 
 ## 支持资料
 
@@ -69,6 +69,7 @@ metadata:
 | 确定性、多步、有副作用的 GitHub 操作 | [scripts/](scripts/)（7 个脚本，自包含；**不得新增脚本**） |
 | 安装到客户端 | 在**本仓库根目录**执行：主推 `mkdir -p ~/.agents/skills && ln -s "$(git rev-parse --show-toplevel)" ~/.agents/skills/pm4gh`；兼容 `mkdir -p ~/.claude/skills && ln -s "$(git rev-parse --show-toplevel)" ~/.claude/skills/pm4gh` |
 | 把本 skill 装到**另一个仓库** | [references/portability.md](references/portability.md)（采用者**替换点清单**：每条给 `file:line` + 换成什么 + 是否有机器判据） |
+| 在**新仓库**落地（或从零建）这套治理 | [references/bootstrap-checklist.md](references/bootstrap-checklist.md)（新项目启动清单：平台陷阱 19 条 ＋ preflight 会断言的 10 条治理假设 ＋ 替换点 11 条；**逐条抄一遍**，覆盖度由 `ci/test` 断言） |
 
 **明确不做**：把一个仓库**从零建成**这套治理（在别的仓库首次安装 = 按 [references/portability.md](references/portability.md) 逐条替换，不属于本 skill 的执行范围）、Projects、度量报表、跨模型评审留痕、能力开关、共享库；**不引入第二套规范文档** —— `SKILL.md` + `references/**` + `.github/**` + `scripts/**` 就是全部权威。
 
