@@ -134,12 +134,17 @@ issues="$(gh pr view "$PR" -R "$REPO" --json closingIssuesReferences \
 # 进入第 ④ 项之前就有结论。清理是幂等的：无残留时不产生任何写操作。
 # 只在 Issue **已由平台关闭**时才清；OPEN 的 Issue 绝不代关（那会掩盖「合并没关单」的真实错误）。
 info "①-前置 自动清理残留状态标签（status.sh <n> done；仅对已关闭的 Issue）"
+verified_clear=""
 for n in $issues; do
   st="$(gh issue view "$n" -R "$REPO" --json state --jq .state 2>/dev/null || echo UNKNOWN)"
-  leftover="$(gh issue view "$n" -R "$REPO" --json labels \
-    --jq '[.labels[].name | select(startswith("status/"))] | join(",")' 2>/dev/null || true)"
+  if ! leftover="$(gh issue view "$n" -R "$REPO" --json labels \
+    --jq '[.labels[].name | select(startswith("status/"))] | join(",")' 2>/dev/null)"; then
+    check_fail "无法读取 Issue #${n} 的状态标签 —— 不能证明无残留标签"
+    continue
+  fi
   if [ -z "$leftover" ]; then
-    ok "Issue #${n} 无残留状态标签（done 由 Issue 开关状态承载）"
+    verified_clear="${verified_clear} ${n}"
+    ok "Issue #${n} 无残留状态标签（成功读取；done 由 Issue 开关状态承载）"
     continue
   fi
   if [ "$st" != "CLOSED" ]; then
@@ -152,9 +157,11 @@ for n in $issues; do
   fi
   info "  清理 Issue #${n} 的残留状态标签：${leftover}"
   if "$(dirname "$0")/status.sh" "$n" done --as dispatcher; then
-    after="$(gh issue view "$n" -R "$REPO" --json labels \
-      --jq '[.labels[].name | select(startswith("status/"))] | join(",")' 2>/dev/null || true)"
-    if [ -z "$after" ]; then
+    if ! after="$(gh issue view "$n" -R "$REPO" --json labels \
+      --jq '[.labels[].name | select(startswith("status/"))] | join(",")' 2>/dev/null)"; then
+      check_fail "无法回读 Issue #${n} 清理后的状态标签 —— 不能证明清理成功"
+    elif [ -z "$after" ]; then
+      verified_clear="${verified_clear} ${n}"
       check_ok "Issue #${n} 残留状态标签已自动清理（${leftover} → 无）"
     else
       check_fail "Issue #${n} 清理后仍有状态标签 ${after}"
@@ -187,7 +194,12 @@ if [ -z "$branch" ]; then
 elif git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
   check_fail "远端分支 ${branch} 仍存在：git push origin --delete ${branch}"
 else
-  check_ok "远端无分支 ${branch}"
+  remote_status=$?
+  if [ "$remote_status" -eq 2 ]; then
+    check_ok "远端无分支 ${branch}（查询成功，无匹配 ref；退出码 2）"
+  else
+    check_fail "查询远端分支 ${branch} 失败（git ls-remote 退出 ${remote_status}）—— 不能证明分支已删除"
+  fi
 fi
 
 # CLOSEOUT_ANCHOR:BEGIN
@@ -279,13 +291,11 @@ if [ -z "$issues" ]; then
   check_ok "无关联 Issue 需要核验（见 ② 的失败项）"
 else
   for n in $issues; do
-    after="$(gh issue view "$n" -R "$REPO" --json labels \
-      --jq '[.labels[].name | select(startswith("status/"))] | join(",")' 2>/dev/null || true)"
-    if [ -z "$after" ]; then
-      check_ok "Issue #${n} 无残留状态标签（已确认清理后为空）"
-    else
-      check_fail "Issue #${n} 仍有残留状态标签 ${after} —— 跑 scripts/status.sh ${n} done --as dispatcher 清理后重跑本脚本"
-    fi
+    # 只消费①-前置成功读取/清理后回读的结果；不把读取失败吞成空字符串。
+    case " ${verified_clear} " in
+      *" ${n} "*) check_ok "Issue #${n} 无残留状态标签（已由成功读取或清理后回读确认）" ;;
+      *) check_fail "Issue #${n} 无残留状态标签尚未被成功核验（读取或清理失败）" ;;
+    esac
   done
 fi
 

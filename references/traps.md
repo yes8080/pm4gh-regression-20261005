@@ -104,6 +104,7 @@
 - 触发：`gh repo view` 在 **remote 不是 GitHub URL**（或无 remote / 未登录）时解析不出 slug —— 解析失败若被当成"跳过"，P6 链接一致性、规则集 diff、标签存在性、CODEOWNERS 完整性等断言会**静默放行**。
 - **禁止**：把"取值失败"当成"无需断言"；**禁止** `… || true` 吞掉失败后照常打印 `[ OK ]`。
 - **必须**：取不到值 / 取到空值 → `[FAIL]`，并在原文里区分「取不到值」与「值不一致」；不得用 `[ OK ]` 放行。
+- **收尾同样必须 fail-closed**：`closeout.sh` 的远端查询只有匹配结果（退出 0）或无匹配 ref（退出 2）可判定；其他退出码是查询失败。Issue 标签读取及清理后回读必须成功才可核验“无残留”，失败不写恢复记录、不删尚在的本地分支。`ci/test` 的真实脚本 fixture 包含远端退出 128、标签读取失败、清理后回读失败三类反向样本。
 - **判据**：✅ `scripts/preflight.sh`（锚点：`无法确定仓库 slug`；`CODEOWNERS 的 owner 不是协作者`；`无法从 references/identity.md 的三身份表解析出评审身份`）—— slug 取不到：`bad "无法确定仓库 slug（gh repo view 失败）"`；CODEOWNERS 解析不出 owner：`[FAIL]`；评审身份解析不出：`[FAIL]`。反向样本：把 remote 临时换成非 GitHub URL 后重跑 → 必须 `[FAIL]`。
 
 **20. 正文「标题行」的判据是 ATX 形态 `^#{1,6}[[:space:]]`，不是 `^#`**
@@ -125,4 +126,4 @@
 - 触发：`gh pr merge --squash --delete-branch` 已删除本地分支，随后跑 `scripts/closeout.sh`。
 - **禁止**：把“本地分支不存在”当成“已留恢复锚点”；在缺 SHA、评论读取/写入/回读失败时报通过。
 - **必须**：每个关联 Issue 都核验本 PR head + squash SHA 的记录，缺失则写入并回读；本地 tip 不可得须明说，恢复用 `git fetch origin refs/pull/<pr#>/head`。已有记录时幂等零写入；dry-run 不写锚点、不删分支，尚缺任何一项即失败。
-- **判据**：`ci/test` 的“收尾恢复锚点回归”用 stub `gh` 和真实 Git fixture 跑真实 `closeout.sh`，覆盖缺分支、两 Issue、先记录后删分支、幂等、dry-run、读写失败、回读不一致、缺 SHA、未合并保全十项；同一缺分支输入在修复前缺锚点，修复后有两份可恢复记录。
+- **判据**：`ci/test` 的“收尾恢复锚点回归”用 stub `gh` 和真实 Git fixture 跑真实 `closeout.sh`，覆盖缺分支、两 Issue、先记录后删分支、幂等、dry-run、读写失败、回读不一致、缺 SHA、未合并、远端/标签查询失败、清理后回读失败保全十三项；同一缺分支输入在修复前缺锚点，修复后有两份可恢复记录。

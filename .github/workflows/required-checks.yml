@@ -1101,7 +1101,7 @@ jobs:
           fi
           if [ "$fail" -ne 0 ]; then exit 1; fi
           echo "✅ #131：判据与实现同一段（LINKED_ISSUE_ASSERT 标记区）；大正文双向反向样本通过；工作流零「管道接 grep -q」"
-      - name: 收尾恢复锚点回归（真实 closeout + Git fixture；缺分支、幂等、dry-run、失败保全）
+      - name: 收尾恢复锚点及查询失败回归（真实 closeout + Git fixture；失败保全）
         run: |
           python3 - scripts/closeout.sh <<'PY_CLOSEOUT_TEST'
           import json
@@ -1129,6 +1129,14 @@ jobs:
               print(' '.join(map(str,value)) if isinstance(value,list) else value)
           elif a[:2] == ['issue','view']:
               key = a[a.index('--json')+1]
+              if key == 'labels' and os.environ.get('LABEL_FAIL'): sys.exit(1)
+              if key == 'labels' and os.environ.get('AFTER_CLEANUP'):
+                  count_file = root/('label-reads-'+a[2])
+                  count = int(count_file.read_text())+1 if count_file.exists() else 1
+                  count_file.write_text(str(count))
+                  if count > 1: sys.exit(1)
+                  print('status/in-review')
+                  sys.exit(0)
               print('CLOSED' if key == 'state' else '')
           elif a[0] == 'api' and a[1].endswith('/comments'):
               if os.environ.get('FETCH_FAIL'): sys.exit(1)
@@ -1172,8 +1180,20 @@ jobs:
                   bin_dir=root/'bin'; bin_dir.mkdir()
                   gh=bin_dir/'gh'; gh.write_text(stub); gh.chmod(0o755)
                   env=dict(os.environ,PATH=str(bin_dir)+os.pathsep+os.environ['PATH'],FIXTURE=str(root),PM4GH_LOCK_DIR=str(root/'locks'))
+                  real_git = subprocess.run(['which','git'],capture_output=True,text=True,check=True).stdout.strip()
+                  git_stub = bin_dir/'git'
+                  git_stub.write_text('#!/usr/bin/env python3\nimport os, sys\nif sys.argv[1:2] == ["ls-remote"] and os.environ.get("REMOTE_FAIL"): sys.exit(128)\nos.execv(os.environ["REAL_GIT"], ["git", *sys.argv[1:]])\n')
+                  git_stub.chmod(0o755)
+                  env['REAL_GIT'] = real_git
                   env.update(env_extra or {})
-                  p=subprocess.run(['bash',str(script),'9',*flags],cwd=repo,env=env,capture_output=True,text=True)
+                  fixture_script = script
+                  if env.get('AFTER_CLEANUP'):
+                      fixture_dir = root/'scripts'; fixture_dir.mkdir()
+                      fixture_script = fixture_dir/'closeout.sh'
+                      fixture_script.write_bytes(script.read_bytes())
+                      status_stub = fixture_dir/'status.sh'
+                      status_stub.write_text('#!/usr/bin/env bash\nexit 0\n'); status_stub.chmod(0o755)
+                  p=subprocess.run(['bash',str(fixture_script),'9',*flags],cwd=repo,env=env,capture_output=True,text=True)
                   assert p.returncode == expected, f'{name}: expected exit {expected}, got {p.returncode}\n{p.stdout}{p.stderr}'
                   writes=(root/'writes').read_text().splitlines() if (root/'writes').exists() else []
                   if expected == 0:
@@ -1192,7 +1212,7 @@ jobs:
                           assert dry.returncode==0, dry.stdout+dry.stderr
                           assert (root/'writes').read_text().splitlines()==writes, f'{name}: dry run wrote comments'
                   else:
-                      if '--dry-run' in flags or env_extra and (env_extra.get('FETCH_FAIL') or env_extra.get('WRITE_FAIL')) or metadata:
+                      if '--dry-run' in flags or env_extra and any(env_extra.get(k) for k in ['FETCH_FAIL','WRITE_FAIL','REMOTE_FAIL','LABEL_FAIL','AFTER_CLEANUP']) or metadata:
                           assert not writes, f'{name}: unexpected writes {writes}'
                       if local:
                           assert subprocess.run(['git','show-ref','--verify','--quiet','refs/heads/'+data['headRefName']],cwd=repo).returncode == 0, f'{name}: deleted branch on failure'
@@ -1208,7 +1228,10 @@ jobs:
           case('missing PR head SHA is FAIL and zero writes',expected=1,metadata={'headRefOid':''})
           case('missing merge SHA is FAIL and zero writes',expected=1,metadata={'mergeCommit':''})
           case('unmerged PR cannot write anchors or delete branch',local=True,expected=1,metadata={'state':'OPEN'})
-          print('PASS: 10 closeout regression scenarios')
+          case('remote query failed must not count as absent',local=True,expected=1,env_extra={'REMOTE_FAIL':'1'})
+          case('Issue label query failed must not count as clear',expected=1,env_extra={'LABEL_FAIL':'1'})
+          case('label readback after cleanup failure preserves local branch',local=True,expected=1,env_extra={'AFTER_CLEANUP':'1'})
+          print('PASS: 13 closeout regression scenarios')
           PY_CLOSEOUT_TEST
 
       - name: 项目自身测试套件 tests/run.sh（约定：exit 0 = 通过）
