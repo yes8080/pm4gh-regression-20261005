@@ -59,3 +59,5 @@ metadata:
 | 把本 skill 装到**另一个仓库** | [references/portability.md](references/portability.md)（采用者**替换点清单**：每条给 `file:line` + 换成什么 + 是否有机器判据） |
 
 **明确不做**：把一个仓库**从零建成**这套治理（在别的仓库首次安装 = 按 [references/portability.md](references/portability.md) 逐条替换，不属于本 skill 的执行范围）、Projects、度量报表、跨模型评审留痕、能力开关、共享库；**不引入第二套规范文档** —— `SKILL.md` + `references/**` + `.github/**` + `scripts/**` 就是全部权威。
+
+**里程碑（Milestones）同样不做 —— 这是决定，不是缺口**：① 它不是状态源，本 skill **零消费**（`grep -rn -i milestone SKILL.md references/ scripts/ .github/` = 0 命中；`preflight.sh` 的 10 组与 `ci/test` 都没有里程碑不变量）；② 交付单元是「一个切片 = 一个 Issue = 一个分支 = 一个 PR」，里程碑只在「多切片归一个目标」时有意义 —— 那是组合 / 排期，与上面已排除的 Projects、度量报表同类；③ 原生行为不满足「全关即完成」（实测 2/2 关闭后 `state` 仍为 `open`，必须再发一次 `PUT/PATCH …/milestones/<n>` 手动关闭）→ 引入它 = 引入一条**无判据、需人工收尾**的路径；④ `gh` 没有 `milestone` 子命令（`gh milestone --help` → `unknown command "milestone"`），CRUD 只能走 REST，而本 skill 只有 7 个**不新增**的自包含脚本，没有自然挂载点。多切片归组改用**父子 Issue**（`gh issue create --parent <n>` / `gh issue edit <n> --add-sub-issue <n>`，已实测可用）与 [references/status-machine.md](references/status-machine.md) 的非切片 `backlog → done` 路径承载。采用者自用里程碑**不受阻断** —— 本 skill 只是不规定、不消费它。
