@@ -10,4 +10,6 @@ class Handoff:
             raise ValueError("title required")
 
     def accept(self):
+        if self.status != "pending":
+            raise ValueError("already accepted")
         self.status = "accepted"

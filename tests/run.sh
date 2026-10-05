@@ -13,6 +13,12 @@ except ValueError:
     pass
 else:
     raise AssertionError("empty title accepted")
-print("PASS: initial state, acceptance, blank-title rejection")
+try:
+    h.accept()
+except ValueError:
+    pass
+else:
+    raise AssertionError("duplicate acceptance allowed")
+print("PASS: initial state, acceptance, blank-title rejection, duplicate rejection")
 PYTEST
 if [ -f tests/query_test.py ]; then python3 tests/query_test.py; fi
