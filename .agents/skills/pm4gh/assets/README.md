@@ -10,11 +10,11 @@
 
 | 模板源（唯一真相） | 平台作用 | 谁在消费 | 何时用 |
 |---|---|---|---|
-| [`.github/PULL_REQUEST_TEMPLATE.md`](../.github/PULL_REQUEST_TEMPLATE.md) | 新建 PR 时自动填充 | `policy/template` 断言 `## 1.`..`## 6.`；`deliver.sh --prepare` 生成同构骨架 | W4 交付前填六段 |
-| [`.github/ISSUE_TEMPLATE/slice.yml`](../.github/ISSUE_TEMPLATE/slice.yml) | 切片 Issue 表单（DoR 五项） | W1 领片判据 | 建切片 Issue |
-| [`.github/ISSUE_TEMPLATE/bug.yml`](../.github/ISSUE_TEMPLATE/bug.yml) | Bug / 线上故障表单（轨道、级别、复现、证据） | `start.sh` 的 `type/*` 推导 | 建 Bug / 热修 Issue |
-| [`.github/ISSUE_TEMPLATE/config.yml`](../.github/ISSUE_TEMPLATE/config.yml) | 关闭空白 Issue + 联系入口 | 平台 | 建任何 Issue 前 |
-| [`.github/CODEOWNERS`](../.github/CODEOWNERS) | 路径 owner | 规则集 `require_code_owner_review` | 改任何路径前确认有**非作者** owner（[traps.md](../references/traps.md) 陷阱 4） |
+| [`.github/PULL_REQUEST_TEMPLATE.md`](../../../../.github/PULL_REQUEST_TEMPLATE.md) | 新建 PR 时自动填充 | `policy/template` 断言 `## 1.`..`## 6.`；`deliver.sh --prepare` 生成同构骨架 | W4 交付前填六段 |
+| [`.github/ISSUE_TEMPLATE/slice.yml`](../../../../.github/ISSUE_TEMPLATE/slice.yml) | 切片 Issue 表单（DoR 五项） | W1 领片判据 | 建切片 Issue |
+| [`.github/ISSUE_TEMPLATE/bug.yml`](../../../../.github/ISSUE_TEMPLATE/bug.yml) | Bug / 线上故障表单（轨道、级别、复现、证据） | `start.sh` 的 `type/*` 推导 | 建 Bug / 热修 Issue |
+| [`.github/ISSUE_TEMPLATE/config.yml`](../../../../.github/ISSUE_TEMPLATE/config.yml) | 关闭空白 Issue + 联系入口 | 平台 | 建任何 Issue 前 |
+| [`.github/CODEOWNERS`](../../../../.github/CODEOWNERS) | 路径 owner | 规则集 `require_code_owner_review` | 改任何路径前确认有**非作者** owner（[traps.md](../references/traps.md) 陷阱 4） |
 
 ## 六段结构（`policy/template` 逐段断言）
 

@@ -20,6 +20,8 @@
 
 set -eu
 
+SCRIPT_DIR="$(dirname "$0")"
+
 # 作者凭据默认在**工作区之外**；**禁止**指回工作区内路径。写法与 review.sh 一致。
 DEVELOPER_PAT_FILE="${DEVELOPER_PAT_FILE:-${HOME}/.config/pm4gh/developer.pat}"
 BASE_BRANCH="${BASE_BRANCH:-main}"
@@ -159,7 +161,7 @@ Closes #${ISSUE}
 ## 6. 风险与破坏性变更
 EOF
   ok "正文骨架已生成：${BODY_FILE}"
-  printf '填写后运行：scripts/deliver.sh %s --as author\n' "$ISSUE"
+  printf '填写后运行：%q/deliver.sh %s --as author\n' "$SCRIPT_DIR" "$ISSUE"
   exit 0
 fi
 
@@ -252,7 +254,7 @@ if [ "$DRY" -eq 1 ]; then
   else
     printf '  gh pr create --base %s --title "%s (#%s)" --body-file %s\n' "$BASE_BRANCH" "$TITLE" "$ISSUE" "$BODY_FILE"
   fi
-  printf '  scripts/status.sh %s in-review --as %s\n' "$ISSUE" "$AS"
+  printf '  %q/status.sh %s in-review --as %s\n' "$SCRIPT_DIR" "$ISSUE" "$AS"
   printf '  证据块 SHA 注入：%s 个标记 → sha=<推送后的 head>（本地 HEAD=%s）\n' "$markers" "$(git rev-parse HEAD)"
   exit 0
 fi
@@ -335,6 +337,6 @@ info "状态迁移 → in-review"
 echo
 printf '下一步：\n'
 printf '  1) 等必需检查：gh pr checks %s --required\n' "$PR_NUM"
-printf '  2) 独立评审（**不加** --as，走评审身份）：scripts/review.sh %s approve --body-file review.md\n' "$PR_NUM"
+printf '  2) 独立评审（**不加** --as，走评审身份）：%q/review.sh %s approve --body-file review.md\n' "$SCRIPT_DIR" "$PR_NUM"
 printf '  3) 合并（只有 dispatcher）：gh pr merge %s --squash --delete-branch\n' "$PR_NUM"
-printf '  4) 收尾核验：scripts/closeout.sh %s\n' "$PR_NUM"
+printf '  4) 收尾核验：%q/closeout.sh %s\n' "$SCRIPT_DIR" "$PR_NUM"

@@ -13,6 +13,8 @@
 
 set -eu
 
+SCRIPT_DIR="$(dirname "$0")"
+
 # 作者凭据默认在**工作区之外**；**禁止**指回工作区内路径。
 # 写法与 scripts/review.sh 的评审凭据一致（同样支持 env 覆盖）。
 DEVELOPER_PAT_FILE="${DEVELOPER_PAT_FILE:-${HOME}/.config/pm4gh/developer.pat}"
@@ -192,7 +194,7 @@ info "状态迁移 → in-progress"
 
 echo
 printf '下一步：\n'
-printf '  1) 实现；自检：bash -n scripts/*.sh && scripts/status.sh --check\n'
+printf '  1) 实现；自检：bash -n %q/*.sh && %q/status.sh --check\n' "$SCRIPT_DIR" "$SCRIPT_DIR"
 printf '  2) 用作者身份提交（提交信息用 -F 传文件）：\n'
 printf '     git -c user.name="yes8080-dev-bot" -c user.email="317173623+yes8080-dev-bot@users.noreply.github.com" commit -F <msg-file>\n'
-printf '  3) scripts/deliver.sh %s --prepare --as author   然后   scripts/deliver.sh %s --as author\n' "$ISSUE" "$ISSUE"
+printf '  3) %q/deliver.sh %s --prepare --as author   然后   %q/deliver.sh %s --as author\n' "$SCRIPT_DIR" "$ISSUE" "$SCRIPT_DIR" "$ISSUE"

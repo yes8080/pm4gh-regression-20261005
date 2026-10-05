@@ -27,7 +27,7 @@ Closes #
 <!-- 与 Issue 的验收标准逐条对应。给确切命令与**真实输出**，或检查名与运行链接。 -->
 
 <!-- C7：每个证据块必须带产生它的 SHA（机器判据 = 围栏外所有标记的 sha == 本 PR head SHA；一块一行，放在围栏外）。
-     用 scripts/deliver.sh 写/更新正文时，下面这行的 sha 会被自动改写为推送后的 head SHA；
+     用 .agents/skills/pm4gh/scripts/deliver.sh 写/更新正文时，下面这行的 sha 会被自动改写为推送后的 head SHA；
      手工建 PR 时把它换成 `gh pr view <pr#> --json headRefOid -q .headRefOid` 的值。 -->
 <!-- evidence sha=<head> -->
 
@@ -51,8 +51,8 @@ Closes #
 ---
 
 <!--
-  评审：scripts/review.sh <pr#> approve --body-file review.md（评审身份，不得合并）
-  打回：scripts/review.sh <pr#> request-changes --body-file review.md → Issue 转 in-progress，同分支继续提交
+  评审：.agents/skills/pm4gh/scripts/review.sh <pr#> approve --body-file review.md（评审身份，不得合并）
+  打回：.agents/skills/pm4gh/scripts/review.sh <pr#> request-changes --body-file review.md → Issue 转 in-progress，同分支继续提交
   合并：gh pr merge <pr#> --squash --delete-branch（**只有 dispatcher @yes8080 能做**）
-  收尾：scripts/closeout.sh <pr#>
+  收尾：.agents/skills/pm4gh/scripts/closeout.sh <pr#>
 -->
