@@ -69,7 +69,7 @@ metadata:
 | 确定性、多步、有副作用的 GitHub 操作 | [scripts/](scripts/)（7 个脚本，自包含；**不得新增脚本**） |
 | 安装到客户端 | 在**本仓库根目录**执行：主推 `mkdir -p ~/.agents/skills && ln -s "$(git rev-parse --show-toplevel)" ~/.agents/skills/pm4gh`；兼容 `mkdir -p ~/.claude/skills && ln -s "$(git rev-parse --show-toplevel)" ~/.claude/skills/pm4gh` |
 | 把本 skill 装到**另一个仓库** | [references/portability.md](references/portability.md)（采用者**替换点清单**：每条给 `file:line` + 换成什么 + 是否有机器判据） |
-| 在**新仓库**落地（或从零建）这套治理 | [references/bootstrap-checklist.md](references/bootstrap-checklist.md)（新项目启动清单：平台陷阱 19 条 ＋ preflight 会断言的 10 条治理假设 ＋ 替换点 11 条；**逐条抄一遍**，覆盖度由 `ci/test` 断言） |
+| 在**新仓库**落地（或从零建）这套治理 | [references/bootstrap-checklist.md](references/bootstrap-checklist.md)（新项目启动清单：平台陷阱 20 条 ＋ preflight 会断言的 10 条治理假设 ＋ 替换点 11 条；**逐条抄一遍**，覆盖度由 `ci/test` 断言） |
 
 **明确不做**：把一个仓库**从零建成**这套治理（在别的仓库首次安装 = 按 [references/portability.md](references/portability.md) 逐条替换，不属于本 skill 的执行范围）、Projects、度量报表、跨模型评审留痕、能力开关、共享库；**不引入第二套规范文档** —— `SKILL.md` + `references/**` + `.github/**` + `scripts/**` 就是全部权威。
 

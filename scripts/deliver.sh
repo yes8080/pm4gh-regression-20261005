@@ -186,9 +186,13 @@ for i in 1 2 3 4 5 6; do
 done
 [ -z "$missing" ] || die "正文缺少章节：${missing}（需要 1.变更摘要 2.影响面 3.回滚方式 4.验收证据 5.DoD自查 6.风险）"
 ok "六段齐备"
+# 标题判据 = ATX 标题形态 `^#{1,6}[[:space:]]`（井号**后面必须跟空白**）：
+# 正文里以 `#` 开头但**不是**标题的行（Issue/PR 引用，如 `#152 引入了…`）必须计入长度 ——
+# 用 `/^#/` 会把这类正文当标题跳过 → 该节 chars=0 → 误判"内容过少"（Issue #163 的真实病灶）。
+# 小节边界 `## 1.`–`## 6.` 仍由第一条规则处理，不受本行影响。
 empty_sec="$(awk '
   /^## [1-6]\./ { if (name != "" && chars < 20) printf "%s ", name; name=$0; chars=0; next }
-  /^#/ { next }
+  /^#{1,6}[[:space:]]/ { next }
   { gsub(/[[:space:]]/, ""); if (name != "") chars += length($0) }
   END { if (name != "" && chars < 20) printf "%s", name }
 ' "$BODY_FILE")"

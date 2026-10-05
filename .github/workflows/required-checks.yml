@@ -1364,14 +1364,14 @@ jobs:
           fi
 
 
-          # F：把清单索引里的陷阱号删掉一个（19）→ 覆盖度判据**必须** FAIL（证明它不是空断言）
+          # F：把清单索引里的陷阱号删掉一个（20）→ 覆盖度判据**必须** FAIL（证明它不是空断言）
           mk_copy "$work/F"
-          awk 'NR == 1 { print } /^traps=/ { sub(/,19$/, ""); print; next } { print }' \
+          awk 'NR == 1 { print } /^traps=/ { sub(/,20$/, ""); print; next } { print }' \
             "$work/F/references/bootstrap-checklist.md" > "$work/F/references/bootstrap-checklist.md.tmp" \
             && mv "$work/F/references/bootstrap-checklist.md.tmp" "$work/F/references/bootstrap-checklist.md"
           frc=0; cov_check "$work/F" > "$work/F.log" 2>&1 || frc=$?
           if [ "$frc" -ne 0 ] && grep -q 'traps 编号与权威清单不一致' "$work/F.log"; then
-            printf '  [ OK ] 反向样本 F：清单漏掉陷阱 19 → 覆盖度判据按预期 FAIL\n'
+            printf '  [ OK ] 反向样本 F：清单漏掉陷阱 20 → 覆盖度判据按预期 FAIL\n'
             sed -n '1,6p' "$work/F.log" | sed 's/^/   /'
           else
             printf '  [FAIL] 反向样本 F 未失败：清单漏条没被抓到\n' >&2
