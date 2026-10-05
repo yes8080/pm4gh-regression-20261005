@@ -192,7 +192,7 @@ if [ "$DRY" -eq 1 ]; then
   else
     printf '  gh pr create --base %s --title "%s (#%s)" --body-file %s\n' "$BASE_BRANCH" "$TITLE" "$ISSUE" "$BODY_FILE"
   fi
-  printf '  scripts/status.sh %s in-review\n' "$ISSUE"
+  printf '  scripts/status.sh %s in-review --as %s\n' "$ISSUE" "$AS"
   exit 0
 fi
 
@@ -233,7 +233,7 @@ else
 fi
 
 info "状态迁移 → in-review"
-"$(dirname "$0")/status.sh" "$ISSUE" in-review
+"$(dirname "$0")/status.sh" "$ISSUE" in-review --as "$AS"
 
 echo
 printf '下一步：\n'

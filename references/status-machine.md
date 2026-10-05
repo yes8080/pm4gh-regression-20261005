@@ -5,9 +5,9 @@
 ## 规则
 
 - 状态集 **6 个**：`backlog | ready | in-progress | in-review | done | canceled`。
-- **必须**：迁移**只能**走 `scripts/status.sh <n> <state>`；**禁止**直接改标签、**禁止**把状态写进本地文件。
+- **必须**：迁移**只能**走 `scripts/status.sh <n> <state> --as author|reviewer|dispatcher`；**禁止**直接改标签、**禁止**把状态写进本地文件。
 - **必须**：任何不可逆副作用（建分支 / 推送 / 建 PR）**之前**先跑只读判定 `scripts/status.sh --check-transition <from> <to>` → 退出码 `0` 合法 / `1` 非法 / `2` 用法错。
-- **判据**：`scripts/status.sh <n> <state>` 退出码 `0` 成功 / `1` 校验或迁移失败 / `2` 参数错。
+- **判据**：`scripts/status.sh <n> <state> --as <身份>` 退出码 `0` 成功 / `1` 校验或迁移失败 / `2` 参数错；**写迁移缺 `--as` → fail-closed 拒绝**（只读模式 `--check` / `--check-transition` / `--check-cross` 不需要 `--as`）。
 - **禁止**：表外 `from → to`（含终态出边、跨级跳跃）—— 一律失败，**没有跳过开关**。
 - **必须**：要例外就开 Issue 补一条边，同时改 `scripts/status.sh` 的 `TRANSITIONS` 与本表（`ci/test` 断言两处逐字一致）。
 - `in-review` = 「评审中 / 已批准待合并」，没有单独的「验收」状态；「被打回」**不设独立状态** = `in-review → in-progress`（平台另有 `reviewDecision=CHANGES_REQUESTED`）。
@@ -21,7 +21,7 @@
 |---|---|---|---|---|
 `backlog` | `ready` | 人/PM | W1 DoR 五项齐备 | 正常
 `backlog` | `in-progress` | dev-bot | W2 start.sh 直接开工（不假定 Issue 在 backlog） | 正常
-`backlog` | `done` | 人/PM·dispatcher | 非切片 Issue（Epic / Audit / 提案）收尾：待办项已**全部**关闭 → `scripts/status.sh <n> done` | 终态
+`backlog` | `done` | 人/PM·dispatcher | 非切片 Issue（Epic / Audit / 提案）收尾：待办项已**全部**关闭 → `scripts/status.sh <n> done --as dispatcher` | 终态
 `backlog` | `canceled` | 人/PM | 不做（dispatcher 确认） | 异常
 `ready` | `in-progress` | dev-bot | W2 start.sh 开工 | 正常
 `ready` | `backlog` | 人/PM | 收回（DoR 不再齐备） | 异常

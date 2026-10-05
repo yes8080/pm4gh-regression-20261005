@@ -140,7 +140,7 @@ if [ "$DRY" -eq 1 ]; then
   printf '  gh issue develop %s -R %s --base %s --name %s --checkout\n' "$ISSUE" "$REPO" "$BASE_BRANCH" "$BRANCH"
   printf '  gh issue edit %s --add-assignee @me\n' "$ISSUE"
   printf '  gh issue comment %s --body-file <开工声明>\n' "$ISSUE"
-  printf '  scripts/status.sh %s in-progress\n' "$ISSUE"
+  printf '  scripts/status.sh %s in-progress --as %s\n' "$ISSUE" "$AS"
   exit 0
 fi
 
@@ -168,7 +168,7 @@ rm -f "$note_file"
 ok "开工声明已提交"
 
 info "状态迁移 → in-progress"
-"$(dirname "$0")/status.sh" "$ISSUE" in-progress
+"$(dirname "$0")/status.sh" "$ISSUE" in-progress --as "$AS"
 
 echo
 printf '下一步：\n'

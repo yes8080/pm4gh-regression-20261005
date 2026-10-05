@@ -179,7 +179,8 @@ if [ -n "$target" ]; then
       approve)
         ok "approve 不迁移状态：Issue #${target} 停在 in-review（= 已批准待合并；done 由合并关单 + closeout 清理）" ;;
       request-changes)
-        "$(dirname "$0")/status.sh" "$target" in-progress ;;
+        # 迁移用**评审身份**执行（审计归属 = 做事的人；#141 D1）—— 本脚本此刻持有的就是评审凭据
+        "$(dirname "$0")/status.sh" "$target" in-progress --as reviewer ;;
       *) : ;;
     esac
   else

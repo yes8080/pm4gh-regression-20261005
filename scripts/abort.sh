@@ -9,6 +9,9 @@
 #
 # 一条命令做完三件事（**幂等**）：
 #   a) 清理**本地 + 远端**分支 —— 但**先证明「内容不会丢」**，证明不了就**拒绝删除**（fail-closed）
+#      可见性（#141 D8）：**凡 ref 名可归属到 #<issue#> 的分支都要被考虑**（含不合规形态 `<n>-<slug>`、
+#      `<any>/<n>-<slug>`）；`--branch` 是显式指定，**允许任意 ref 名**。放宽的只有可见性，安全判据不动。
+#      触发路径文案（#141 D7）：「③ Issue 已取消但分支已建」**只在分支确实存在时**打印。
 #   b) 状态迁移 → canceled —— **只走 scripts/status.sh**（绝不直接改标签）
 #   c) 在 Issue 留**可恢复锚点**（分支 tip SHA / 原因 / 时间 / 判据 / 关联 PR）—— 锚点写不进去就不删
 #
@@ -111,8 +114,8 @@ else
     "status/ready")       cur_state="ready" ;;
     "status/in-progress") cur_state="in-progress" ;;
     "status/in-review")   cur_state="in-review" ;;
-    *" "*) die "Issue #${ISSUE} 有多个状态标签：${status_labels} —— 状态必须唯一，先 scripts/status.sh ${ISSUE} <state> 修正" ;;
-    *)     die "Issue #${ISSUE} 使用了未定义的状态标签：${status_labels} —— 用 scripts/status.sh 修正" ;;
+    *" "*) die "Issue #${ISSUE} 有多个状态标签：${status_labels} —— 状态必须唯一，先 scripts/status.sh ${ISSUE} <state> --as author 修正" ;;
+    *)     die "Issue #${ISSUE} 使用了未定义的状态标签：${status_labels} —— 用 scripts/status.sh <n> <state> --as author 修正" ;;
   esac
 fi
 ok "当前状态：${cur_state}（读自平台）"
@@ -130,32 +133,53 @@ else
 fi
 
 # ── 1. 发现该 Issue 的分支（显式 / develop 绑定 / 本地 ref / 远端 ref）────
+# 可见性（#141 D8）：发现范围 = **凡 ref 名可归属到 #<issue#> 的分支**（末段形如 `<n>-<slug>`）——
+#   合规形态 `<type>/<n>-<slug>` 与**不合规但可归属**的形态（`<n>-<slug>`、`<any>/<n>-<slug>`）一视同仁。
+#   旧的「只认合规正则」会让不合规分支对 abort **完全不可见**（却打印「未发现分支」+「已闭环」）。
+#   放宽的**只是可见性**：第 2 节的内容不丢判据与 fail-closed 语义一字不动。
 info "发现分支（显式 → gh issue develop 绑定 → 本地 ref → 远端 ref）"
 BRANCHES=""
-add_branch() {
+# ref 名 → 可归属的 Issue 号（取**最后一段**的 `<n>-` 前缀，不要求 type/ 前缀）；不可归属 → 空串
+branch_issue_of() {
+  seg="${1##*/}"
+  case "$seg" in
+    *-*) num="${seg%%-*}" ;;
+    *)   printf ''; return 0 ;;
+  esac
+  case "$num" in ''|*[!0-9]*) printf ''; return 0 ;; esac
+  printf '%s' "$num"
+}
+add_branch_raw() {
   b="${1:-}"
   [ -n "$b" ] || return 0
   case "$b" in main|master) return 0 ;; esac
-  printf '%s' "$b" | grep -qE '^(slice|fix|hotfix|spike|chore)/[0-9]+-[a-z0-9-]+$' || return 0
   case " ${BRANCHES} " in *" ${b} "*) return 0 ;; esac
   BRANCHES="${BRANCHES} ${b}"
 }
+add_branch() {                     # 发现路径：只纳入**可归属到本 Issue**的 ref
+  b="${1:-}"
+  [ "$(branch_issue_of "$b")" = "$ISSUE" ] || return 0
+  add_branch_raw "$b"
+}
 
 if [ -n "$BRANCH_ARG" ]; then
-  printf '%s' "$BRANCH_ARG" | grep -qE '^(slice|fix|hotfix|spike|chore)/[0-9]+-[a-z0-9-]+$' \
-    || die "--branch ${BRANCH_ARG} 不符合 <type>/<issue#>-<slug>（type ∈ {slice,fix,hotfix,spike,chore}）" 2
-  bn="${BRANCH_ARG#*/}"; bn="${bn%%-*}"
-  [ "$bn" = "$ISSUE" ] || die "--branch ${BRANCH_ARG} 指向 Issue #${bn}，与传入的 #${ISSUE} 不一致" 2
-  add_branch "$BRANCH_ARG"
+  # --branch 是**显式指定**：允许任意 ref 名（旧的合规正则拦截已删）——安全门禁照旧（第 2 节），不放宽。
+  # 名字里若带可归属的编号，仍校验它与传入的 #ISSUE 一致（防指错 Issue）。
+  bnum="$(branch_issue_of "$BRANCH_ARG")"
+  if [ -n "$bnum" ] && [ "$bnum" != "$ISSUE" ]; then
+    die "--branch ${BRANCH_ARG} 指向 Issue #${bnum}，与传入的 #${ISSUE} 不一致" 2
+  fi
+  [ -n "$bnum" ] || warn "--branch ${BRANCH_ARG} 的名字里没有可归属到 #${ISSUE} 的编号 —— 按**显式指定**纳入（内容不丢判据照旧，不放宽）"
+  add_branch_raw "$BRANCH_ARG"
 else
   while IFS= read -r b; do add_branch "$b"; done <<EOF
 $(gh issue develop --list "$ISSUE" -R "$REPO" 2>/dev/null | awk 'NF { print $1 }' || true)
 EOF
   while IFS= read -r b; do add_branch "$b"; done <<EOF
-$(git for-each-ref --format='%(refname:short)' refs/heads 2>/dev/null | grep -E "^[a-z]+/${ISSUE}-" || true)
+$(git for-each-ref --format='%(refname:short)' refs/heads 2>/dev/null || true)
 EOF
   while IFS= read -r b; do add_branch "$b"; done <<EOF
-$(git ls-remote --heads origin 2>/dev/null | awk '{ print $2 }' | sed 's#^refs/heads/##' | grep -E "^[a-z]+/${ISSUE}-" || true)
+$(git ls-remote --heads origin 2>/dev/null | awk '{ print $2 }' | sed 's#^refs/heads/##' || true)
 EOF
 fi
 if [ -z "$BRANCHES" ]; then
@@ -252,13 +276,20 @@ while IFS='|' read -r b ltip rtip verdict proof unique prs; do
 done < "$rows"
 
 # ── 3. 触发路径识别（写进锚点）────────────────────────────────────────
+# #141 D7：「③ Issue 已取消但分支已建」**只在分支确实存在时**成立 ——
+#   无分支时打印它（尤其幂等短路路径）与实际不符，会误导。
 scenario="② 作者中途放弃 / 异常终止（未检测到已关闭的 PR）"
-if [ "$cur_state" = "canceled" ]; then
-  scenario="③ Issue 已取消但分支已建"
-elif grep -q "CLOSED" "$rows" 2>/dev/null; then
-  scenario="① PR 被关闭但不合并"
+if [ -s "$rows" ]; then
+  if [ "$cur_state" = "canceled" ]; then
+    scenario="③ Issue 已取消但分支已建"
+  elif grep -q "CLOSED" "$rows" 2>/dev/null; then
+    scenario="① PR 被关闭但不合并"
+  fi
+  ok "触发路径：${scenario}"
+else
+  scenario="无（该 Issue 没有实际存在的关联分支；分支清理路径不适用）"
+  ok "触发路径：${scenario}"
 fi
-ok "触发路径：${scenario}"
 
 if [ "$DRY" -eq 1 ]; then
   info "[dry-run] 将要执行（未做任何写操作）"
@@ -271,7 +302,7 @@ if [ "$DRY" -eq 1 ]; then
       printf '  git branch -D %s\n' "$b"
     fi
   done < "$rows"
-  printf '  scripts/status.sh %s canceled   # 当前 %s\n' "$ISSUE" "$cur_state"
+  printf '  scripts/status.sh %s canceled --as %s   # 当前 %s\n' "$ISSUE" "$AS" "$cur_state"
   exit 0
 fi
 
@@ -354,7 +385,7 @@ info "状态迁移 → canceled（唯一入口 scripts/status.sh）"
 if [ "$cur_state" = "canceled" ]; then
   ok "已是 canceled（幂等，无需迁移）"
 else
-  "$(dirname "$0")/status.sh" "$ISSUE" canceled
+  "$(dirname "$0")/status.sh" "$ISSUE" canceled --as "$AS"
 fi
 
 info "收尾校验"
@@ -363,7 +394,7 @@ leftovers="$(gh issue view "$ISSUE" -R "$REPO" --json labels \
 if [ -z "$leftovers" ]; then
   ok "Issue #${ISSUE} 无残留 status/* 标签"
 else
-  die "Issue #${ISSUE} 仍有残留状态标签：${leftovers} —— 跑 scripts/status.sh ${ISSUE} canceled 清理后重跑" 
+  die "Issue #${ISSUE} 仍有残留状态标签：${leftovers} —— 跑 scripts/status.sh ${ISSUE} canceled --as author 清理后重跑" 
 fi
 while IFS='|' read -r b ltip rtip verdict proof unique prs; do
   [ -n "$b" ] || continue

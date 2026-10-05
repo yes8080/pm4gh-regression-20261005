@@ -73,11 +73,11 @@ for n in $issues; do
     continue
   fi
   if [ "$DRY" -eq 1 ]; then
-    check_fail "[dry-run] Issue #${n} 有残留状态标签 ${leftover} —— 真实运行会调用 scripts/status.sh ${n} done 清理"
+    check_fail "[dry-run] Issue #${n} 有残留状态标签 ${leftover} —— 真实运行会调用 scripts/status.sh ${n} done --as dispatcher 清理"
     continue
   fi
   info "  清理 Issue #${n} 的残留状态标签：${leftover}"
-  if "$(dirname "$0")/status.sh" "$n" done; then
+  if "$(dirname "$0")/status.sh" "$n" done --as dispatcher; then
     after="$(gh issue view "$n" -R "$REPO" --json labels \
       --jq '[.labels[].name | select(startswith("status/"))] | join(",")' 2>/dev/null || true)"
     if [ -z "$after" ]; then
@@ -86,7 +86,7 @@ for n in $issues; do
       check_fail "Issue #${n} 清理后仍有状态标签 ${after}"
     fi
   else
-    check_fail "Issue #${n} 自动清理失败 —— 手动跑 scripts/status.sh ${n} done 后重试"
+    check_fail "Issue #${n} 自动清理失败 —— 手动跑 scripts/status.sh ${n} done --as dispatcher 后重试"
   fi
 done
 
@@ -185,7 +185,7 @@ else
     if [ -z "$after" ]; then
       check_ok "Issue #${n} 无残留状态标签（已确认清理后为空）"
     else
-      check_fail "Issue #${n} 仍有残留状态标签 ${after} —— 跑 scripts/status.sh ${n} done 清理后重跑本脚本"
+      check_fail "Issue #${n} 仍有残留状态标签 ${after} —— 跑 scripts/status.sh ${n} done --as dispatcher 清理后重跑本脚本"
     fi
   done
 fi

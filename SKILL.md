@@ -23,7 +23,7 @@ metadata:
 ## 工作流程
 
 1. **预检**（每次接手第一步）：`scripts/preflight.sh` → 全 `[ OK ]` 且退出码 `0`；任一 `[FAIL]` → 贴原文报 dispatcher，**禁止**继续。
-2. **开工**：DoR 五项齐备才 `scripts/status.sh <n> ready`；再 `scripts/start.sh <n> --as author`（线上故障加 `--type hotfix`）。
+2. **开工**：DoR 五项齐备才 `scripts/status.sh <n> ready --as author`；再 `scripts/start.sh <n> --as author`（线上故障加 `--type hotfix`）。
 3. **交付**：提交用 `-F <文件>` + 作者 git 身份；`scripts/deliver.sh <n> --prepare --as author` 生成六段 → 填写 → `scripts/deliver.sh <n> --as author`。
 4. **检查**：`gh pr checks <pr#> --required` —— 5 个必需检查在**最新 SHA** 上全 `pass` 才进下一步。
 5. **评审**：`scripts/review.sh <pr#> approve|request-changes --body-file <文件>`（评审身份）；打回 → 状态 `in-progress`，**同一分支**返修。

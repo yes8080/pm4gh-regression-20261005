@@ -33,7 +33,7 @@
 
 ## W1 领片（DoR）
 
-`gh issue list --state open --label status/ready --limit 20 --json number,title,labels` → 只读判定 `scripts/status.sh --check-transition backlog ready`（退出码 `0` = 合法）→ `scripts/status.sh <n> ready`。
+`gh issue list --state open --label status/ready --limit 20 --json number,title,labels` → 只读判定 `scripts/status.sh --check-transition backlog ready`（退出码 `0` = 合法）→ `scripts/status.sh <n> ready --as author`。
 
 - **判据**（五项全齐才可 `backlog → ready`）：① 价值一句话 ② 可判定的验收标准 ③ 明确不改什么（边界）④ 依赖与契约 ⑤ 规模与执行者。
 
@@ -78,7 +78,7 @@ git -c user.name="yes8080-dev-bot" -c user.email="317173623+yes8080-dev-bot@user
 
 - **判据**：退出码 `0` 发出评审 / `1` 校验或认证失败；`approve` → `reviewDecision=APPROVED`；`request-changes` → 平台 `CHANGES_REQUESTED`。
 - **必须**：由 `@yes8080-reviewer-bot` 发；approve / request-changes 必须给 `-m <文本>` 或 `--body-file <文件>` 之一（同时给时 `-m` 优先）；`review.md` 只是示例文件名，路径由调用者决定。**禁止**自批（作者批准自己的 PR）、评审身份合并。
-- `approve` **不迁移状态**（停在 `in-review`）；`request-changes` 时若分支里的 issue 号在 PR 的 `closingIssuesReferences` 中，脚本自动 `scripts/status.sh <n> in-progress`（打印 `[WARN] 跳过状态迁移` 时**必须**人工补）。
+- `approve` **不迁移状态**（停在 `in-review`）；`request-changes` 时若分支里的 issue 号在 PR 的 `closingIssuesReferences` 中，脚本自动 `scripts/status.sh <n> in-progress --as reviewer`（打印 `[WARN] 跳过状态迁移` 时**必须**人工补）。
 - **判据**：返修后新推送**驳回旧批准**（`require_last_push_approval`）→ **必须**回 W6 重评。门禁读数：`gh pr view <pr#> --json reviewDecision,mergeStateStatus`。
 
 ## W7 合并与收尾（dispatcher）
@@ -87,7 +87,7 @@ git -c user.name="yes8080-dev-bot" -c user.email="317173623+yes8080-dev-bot@user
 
 - **判据**：`closeout.sh` 五项全过且退出码 `0`：① PR 已 MERGED ② 关联 Issue 已关 ③ 远端无头分支 ④ 本地头分支已清理 ⑤ 无残留 `status/*` 标签。任一不过 → 退出码 `1`，逐条贴原文报告。
 - **禁止**：作者代跑合并；`gh pr merge --admin` 或任何绕过门禁的手段 —— 只有 `@yes8080` 用本机登录态合并。
-- 第 ⑤ 项由 `closeout.sh` 自己跑 `scripts/status.sh <n> done`（**仅对已关闭的 Issue**，OPEN 的绝不代关）；第 ④ 项**先**把「分支名 + 本地 tip SHA + PR head SHA + squash 提交」写进 Issue 作可恢复锚点，**再** `git branch -D`（[traps.md](traps.md) 陷阱 9）。
+- 第 ⑤ 项由 `closeout.sh` 自己跑 `scripts/status.sh <n> done --as dispatcher`（**仅对已关闭的 Issue**，OPEN 的绝不代关）；第 ④ 项**先**把「分支名 + 本地 tip SHA + PR head SHA + squash 提交」写进 Issue 作可恢复锚点，**再** `git branch -D`（[traps.md](traps.md) 陷阱 9）。
 
 ## W8 终止/取消（异常路径出口）— `scripts/abort.sh <issue#>`
 

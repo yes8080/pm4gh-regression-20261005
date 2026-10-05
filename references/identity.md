@@ -10,7 +10,7 @@
 | 评审 | `@yes8080-reviewer-bot` | `$HOME/.config/pm4gh/reviewer.pat`（scope `repo`） | `review.sh <pr#> approve\|request-changes` —— **不加** `--as`，**不得合并** |
 | 合并 | `@yes8080` | 本机 `gh auth login` 登录态（无凭据文件） | `gh pr merge --squash`、改仓库设置、`closeout.sh` |
 
-- **必须**：`--as` 只传 `author`；**禁止**用任何脚本把作者切成 dispatcher。
+- **必须**：`start.sh` / `deliver.sh` / `abort.sh` 的 `--as` 只接受 `author`（作者身份不可被绕过）；`scripts/status.sh` 的**写迁移必须显式** `--as author|reviewer|dispatcher`，用**对应身份**的凭据执行 —— 审计归属 = **做事的人**，不是"谁的环境变量在场"（缺 `--as` → fail-closed 拒绝）。**禁止**用 `start.sh` / `deliver.sh` / `abort.sh` 把作者切成 dispatcher。
 - **禁止**：读取其他身份的凭据内容；打印或提交任何凭据。
 - **必须**：两份凭据都放**工作区之外**；工作区内出现 `*.pat` → `preflight.sh` 记 `[FAIL]`。
 

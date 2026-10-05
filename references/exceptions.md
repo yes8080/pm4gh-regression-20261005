@@ -20,7 +20,7 @@
 
 1. 门禁 FAIL → **报原文**；**禁止**改门禁 / 放松断言 / 删检查来"修好"。
 2. 必需检查必须在**最新 SHA** 上全 `pass` 才进下一步；"先失败后通过"在该 SHA 上不可逆（见陷阱 1）。
-3. 状态迁移只走 `scripts/status.sh`；**禁止**手工 `gh issue edit` 增删 `status/*`（HTTP 层是两次并发 mutation）。
+3. 状态迁移只走 `scripts/status.sh`（**写迁移必须带 `--as author|reviewer|dispatcher`**，缺 → fail-closed 拒绝；只读模式不需要）；**禁止**手工 `gh issue edit` 增删 `status/*`（HTTP 层是两次并发 mutation）。
 4. 无法用**真实输出**证明的事 → **禁止**断言；证据 = 命令 + 真实输出 / 检查名 / 运行链接。
 5. 返修在**同一分支**；被打回后状态回 `in-progress`，**禁止**另开 PR。
 6. 越界请求（改线上规则集 / 标签、增删脚本、改必需检查 job `name:`）→ **停下问** dispatcher。

@@ -2,10 +2,17 @@
 # scripts/status.sh —— 状态机的**唯一迁移入口**（唯一源 = status/* 标签 + Issue 开关状态）
 #
 # 用法：
-#   scripts/status.sh <issue#> <state>             # 迁移到指定状态
+#   scripts/status.sh <issue#> <state> --as author|reviewer|dispatcher   # 迁移到指定状态（**写迁移必须带 --as**）
 #   scripts/status.sh --check                      # 扫**全部开放 Issue**：每个恰好 0 或 1 个合法 status/*
 #   scripts/status.sh --check-transition <from> <to>  # **只读**判定迁移是否合法（零副作用；不读网络）
 #   scripts/status.sh --check-cross                # **只读**交叉状态检查（Issue ↔ PR 四条规则；零副作用）
+#
+# 身份（#141 D1）：**写迁移必须显式 --as**（缺 → fail-closed 拒绝，exit 2）；三个只读模式不需要。
+#   author     = 作者凭据（$HOME/.config/pm4gh/developer.pat，可用 DEVELOPER_PAT_FILE 覆盖）
+#   reviewer   = 评审凭据（$HOME/.config/pm4gh/reviewer.pat，可用 REVIEWER_PAT_FILE 覆盖）
+#   dispatcher = 本机 gh 登录态（合并身份；等价于 unset GH_TOKEN/GITHUB_TOKEN 后的 gh）
+# 理由：label 操作在平台上**产生身份归属**（timeline 的 actor = 发起写请求的凭据持有者）——
+#   「谁的环境变量在场」不等于「谁做的事」，审计归属必须 = 做事的人。
 #
 # --check-transition 专供「副作用不可逆」的脚本（start.sh / deliver.sh）在动手前调用：
 # 非法时退出码 1 并打印 from 的合法出边与正确命令；合法时退出码 0，且绝不改动任何东西。
@@ -75,14 +82,40 @@ out_edges_of() {
   printf '%s' "$TRANSITIONS" | tr ' ' '\n' | grep -E "^$1->" | sed 's/->/ → /g' | tr '\n' ' ' | sed -E 's/[[:space:]]+$//'
 }
 
+# ── 参数解析（零副作用：纯 shell，不读网络、不写文件）──────────────────
+# 唯一开关 = --as；只读模式 = --check / --check-transition / --check-cross。
+# 位置参数按出现顺序收进 POS1/POS2/POS3（不用 set -- 回填：避免 glob 与再分割）。
+AS=""
+MODE=""
+POS1=""; POS2=""; POS3=""; POSN=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --as)               AS="${2:?--as 需要取值（author|reviewer|dispatcher）}"; shift 2 ;;
+    --check)            [ -z "$MODE" ] || die "只读模式只能有一个（已给出 ${MODE}）" 2; MODE="check"; shift ;;
+    --check-cross)      [ -z "$MODE" ] || die "只读模式只能有一个（已给出 ${MODE}）" 2; MODE="cross"; shift ;;
+    --check-transition) [ -z "$MODE" ] || die "只读模式只能有一个（已给出 ${MODE}）" 2; MODE="transition"; shift ;;
+    -h|--help)          sed -n '2,20p' "$0"; exit 0 ;;
+    -*)                 die "未知参数 ${1:-}（本脚本只提供 --as 与三个只读模式；用法见 scripts/status.sh -h）" 2 ;;
+    *)
+      POSN=$((POSN + 1))
+      case "$POSN" in 1) POS1="$1" ;; 2) POS2="$1" ;; *) POS3="$1" ;; esac
+      shift ;;
+  esac
+done
+case "${AS:-}" in
+  ""|author|reviewer|dispatcher) : ;;
+  *) die "未知身份 --as ${AS}（合法值：author|reviewer|dispatcher）" 2 ;;
+esac
+
 # ── --check-transition <from> <to>：**只读**判定（零副作用）─────────────
 # **必须**在任何不可逆副作用（建分支、推送、建 PR）**之前**调用本命令：
 # 先动手再迁移状态，非法迁移会把仓库留在半成品状态。
 # 本分支在任何文件、网络、标签操作**之前**返回 —— 只读本脚本内的 TRANSITIONS。
 # 退出码：0 = 合法（含 from == to 的幂等）；1 = 非法（并打印该 from 的合法出边与对应命令）；2 = 用法/状态名错误
-if [ "${1:-}" = "--check-transition" ]; then
-  from="${2:-}"
-  to="${3:-}"
+if [ "$MODE" = "transition" ]; then
+  from="$POS1"
+  to="$POS2"
+  [ -z "${POS3:-}" ] || die "用法：scripts/status.sh --check-transition <from> <to>（不接受额外参数）" 2
   [ -n "$from" ] && [ -n "$to" ] \
     || die "用法：scripts/status.sh --check-transition <from> <to>（合法状态：${VALID_STATES}）" 2
   case " ${VALID_STATES} " in
@@ -106,7 +139,7 @@ if [ "${1:-}" = "--check-transition" ]; then
   if [ -n "$targets" ]; then
     printf '       %s 的合法出边与正确命令：\n' "$from" >&2
     for t in $targets; do
-      printf '         scripts/status.sh <issue#> %s\n' "$t" >&2
+      printf '         scripts/status.sh <issue#> %s --as <author|reviewer|dispatcher>\n' "$t" >&2
     done
   else
     printf '       %s 是终态，无出边；确需复活：gh issue reopen <issue#> 再迁移\n' "$from" >&2
@@ -120,14 +153,75 @@ fi
 REPO="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || true)"
 [ -n "$REPO" ] || die "无法确定仓库 slug（gh repo view 失败）"
 
-# 身份：优先用当前生效身份；认证失败再回退到 gh 登录态（label 操作不产生身份归属）
-ACTOR="$(gh api user --jq .login 2>/dev/null || true)"
-if [ -z "$ACTOR" ]; then
-  unset GH_TOKEN || true
-  unset GITHUB_TOKEN || true
-  ACTOR="$(gh api user --jq .login 2>/dev/null || true)"
+# ── 身份（#141 D1）────────────────────────────────────────────
+# 实测（#141 回归对照，与旧注释相反）：同脚本、同命令，**只改 ambient GH_TOKEN**，
+#   `status/ready` 迁移的 timeline actor 就从 `yes8080` 变成 `yes8080-dev-bot`。
+# 结论：**label 操作在平台上产生身份归属**（actor = 发起那次写请求的凭据持有者）；
+#   旧注释「label 操作不产生身份归属」与实测不符，已删除。
+# 因此：写迁移必须显式 --as（缺 → fail-closed，exit 2）；只读模式不写任何东西，不需要 --as。
+DEVELOPER_PAT_FILE="${DEVELOPER_PAT_FILE:-${HOME}/.config/pm4gh/developer.pat}"
+REVIEWER_PAT_FILE="${REVIEWER_PAT_FILE:-${HOME}/.config/pm4gh/reviewer.pat}"
+ACTOR=""
+read_login() { gh api user --jq .login 2>/dev/null || true; }
+# 登录名只可能是 [A-Za-z0-9-]；认证失败时 gh 会把错误正文（JSON）留在 stdout —— 据此判成「无效」
+valid_login() { case "${1:-}" in ''|*[!A-Za-z0-9-]*) return 1 ;; *) return 0 ;; esac; }
+use_identity() {
+  case "${1:-}" in
+    author)
+      [ -s "$DEVELOPER_PAT_FILE" ] || die "缺少作者凭据 ${DEVELOPER_PAT_FILE}（见 references/identity.md）"
+      GH_TOKEN="$(cat "$DEVELOPER_PAT_FILE")"
+      export GH_TOKEN
+      unset GITHUB_TOKEN || true
+      ACTOR="$(read_login)"
+      valid_login "$ACTOR" || die "作者凭据无效（无法认证）：读不到登录名（过期 / 被撤销 / 不是 classic PAT）—— 见 references/identity.md"
+      main="$(env -u GH_TOKEN -u GITHUB_TOKEN gh api user --jq .login 2>/dev/null || true)"
+      [ -z "$main" ] || [ "$main" != "$ACTOR" ] || die "身份分离失败：作者身份 = gh 登录身份（${ACTOR}）—— 检查 ${DEVELOPER_PAT_FILE}"
+      # 评审凭据**不在这里读**（SKILL.md §5：作者不得读取其他身份的凭据）。
+      ok "本次执行身份（作者）：${ACTOR}"
+      ;;
+    reviewer)
+      [ -s "$REVIEWER_PAT_FILE" ] || die "缺少评审凭据 ${REVIEWER_PAT_FILE}（见 references/identity.md）"
+      GH_TOKEN="$(cat "$REVIEWER_PAT_FILE")"
+      export GH_TOKEN
+      unset GITHUB_TOKEN || true
+      ACTOR="$(read_login)"
+      valid_login "$ACTOR" || die "评审凭据无效（无法认证）：读不到登录名 —— 见 references/identity.md"
+      main="$(env -u GH_TOKEN -u GITHUB_TOKEN gh api user --jq .login 2>/dev/null || true)"
+      [ -z "$main" ] || [ "$main" != "$ACTOR" ] || die "身份分离失败：评审身份 = gh 登录身份（${ACTOR}）"
+      ok "本次执行身份（评审）：${ACTOR}"
+      ;;
+    dispatcher)
+      # dispatcher = 本机 gh 登录态：**必须**先清掉环境里的 token，否则又是「谁在场算谁」
+      unset GH_TOKEN || true
+      unset GITHUB_TOKEN || true
+      ACTOR="$(read_login)"
+      valid_login "$ACTOR" || die "读不到 gh 登录身份（dispatcher = 本机 gh 登录态，见 references/identity.md）"
+      ok "本次执行身份（dispatcher / 合并）：${ACTOR}"
+      ;;
+    *) die "未知身份（${1:-}）：只接受 author|reviewer|dispatcher" 2 ;;
+  esac
+}
+
+if [ -z "$MODE" ]; then
+  # 写迁移：缺 --as → fail-closed（并给出修法）
+  [ -n "$AS" ] || die "写迁移必须显式指定身份：scripts/status.sh ${POS1:-<issue#>} ${POS2:-<state>} --as author|reviewer|dispatcher
+       原因：label 操作在平台上**产生身份归属**（timeline 的 actor = 发起写请求的凭据持有者）——
+       不指定就变成「谁的环境变量在场，就算谁做的」；审计归属必须 = 做事的人（#141 D1）。
+       只读模式（--check / --check-transition / --check-cross）不需要 --as。" 2
+  use_identity "$AS"
+elif [ -n "$AS" ]; then
+  # 只读模式也允许显式指定身份（只影响读请求与打印，不写任何东西）
+  use_identity "$AS"
+else
+  # 只读模式：沿用当前生效身份，认证失败再回退到 gh 登录态（零写入 → 无身份归属问题）
+  ACTOR="$(read_login)"
+  if [ -z "$ACTOR" ]; then
+    unset GH_TOKEN || true
+    unset GITHUB_TOKEN || true
+    ACTOR="$(read_login)"
+  fi
+  [ -n "$ACTOR" ] || die "无法认证：检查环境里的 GH_TOKEN 与 gh auth login（见 references/identity.md）"
 fi
-[ -n "$ACTOR" ] || die "无法认证：检查环境里的 GH_TOKEN 与 gh auth login（见 references/identity.md）"
 
 platform_state() { gh issue view "$1" -R "$REPO" --json state --jq .state 2>/dev/null || true; }
 status_labels() {
@@ -189,7 +283,8 @@ put_status_labels() {
 # STATUS_LABELS_PUT:END
 
 # ── --check：扫描全部开放 Issue ──────────────────────────────
-if [ "${1:-}" = "--check" ]; then
+if [ "$MODE" = "check" ]; then
+  [ "$POSN" -eq 0 ] || die "用法：scripts/status.sh --check（不接受位置参数）" 2
   info "扫描开放 Issue 的状态标签（仓库 ${REPO}，身份 ${ACTOR}）"
   rows="$(gh issue list -R "$REPO" --state open --limit 200 --json number,labels \
     --jq '.[] | "\(.number)\t\([.labels[].name | select(startswith("status/"))] | join(","))"' 2>/dev/null || true)"
@@ -243,8 +338,8 @@ fi
 # 关联判据（**只检查能确定关联的 PR**）：PR 的 closingIssuesReferences（GitHub 解析出的
 # 关闭关系）或分支名 <type>/<issue#>-<slug>。两者都没有 → 如实标注「无法判定」，**不猜测**。
 # 退出码：0 = 四条规则全未命中；1 = 存在冲突；2 = 查询失败/用法错
-if [ "${1:-}" = "--check-cross" ]; then
-  [ "$#" -eq 1 ] || die "用法：scripts/status.sh --check-cross（不接受额外参数）" 2
+if [ "$MODE" = "cross" ]; then
+  [ "$POSN" -eq 0 ] || die "用法：scripts/status.sh --check-cross（不接受位置参数）" 2
   CROSS_TMP="$(mktemp -d "${TMPDIR:-/tmp}/pm4gh-cross.XXXXXX")" || die "无法创建临时目录"
   cleanup_cross() { rm -rf "$CROSS_TMP"; }
   trap cleanup_cross EXIT INT TERM
@@ -430,8 +525,9 @@ if [ "${1:-}" = "--check-cross" ]; then
   exit 1
 fi
 
-ISSUE="${1:-}"
-[ -n "$ISSUE" ] || die "用法：scripts/status.sh <issue#> <state> | --check | --check-cross | --check-transition <from> <to>" 2
+USAGE_WRITE="用法：scripts/status.sh <issue#> <state> --as author|reviewer|dispatcher | --check | --check-cross | --check-transition <from> <to>"
+ISSUE="$POS1"
+[ -n "$ISSUE" ] || die "$USAGE_WRITE" 2
 case "$ISSUE" in *[!0-9]*) die "Issue 编号必须是数字：${ISSUE}" 2 ;; esac
 
 state_of() {
@@ -452,12 +548,9 @@ state_of() {
   esac
 }
 
-STATE="${2:-}"
-[ -n "$STATE" ] || die "用法：scripts/status.sh <issue#> <state> | --check | --check-cross | --check-transition <from> <to>" 2
-case "${3:-}" in
-  "") : ;;
-  *) die "未知参数 ${3}（本脚本不接受额外参数；迁移合法性只由转换表决定）" 2 ;;
-esac
+STATE="$POS2"
+[ -n "$STATE" ] || die "$USAGE_WRITE" 2
+[ -z "${POS3:-}" ] || die "未知参数 ${POS3}（本脚本只提供 --as 开关；迁移合法性只由转换表决定）" 2
 case " ${VALID_STATES} " in
   *" ${STATE} "*) : ;;
   *) die "未知状态 ${STATE}（合法值：${VALID_STATES}）" 2 ;;
@@ -469,7 +562,7 @@ case "$STATE" in done|canceled) terminal=1 ;; esac
 cur="$(state_of "$ISSUE")"
 raw_state="$(platform_state "$ISSUE")"
 leftover="$(status_labels "$ISSUE")"
-info "Issue #${ISSUE}：${cur} → ${STATE}"
+info "Issue #${ISSUE}：${cur} → ${STATE}（身份 --as ${AS} = ${ACTOR}）"
 
 # 幂等短路只在目标状态的**全部载体**都已满足时成立：
 #   - 非终态：状态标签已是目标值

@@ -568,7 +568,15 @@ jobs:
                 esac
               done
               case "$path" in
-                user) printf 'yes8080-dev-bot\n' ;;
+                user)
+                  # #141 D1：stub 平台让「身份」可观测 —— 返回哪个登录名**只取决于 GH_TOKEN**，
+                  # 从而证明 status.sh --as 真的切换了凭据（而不是打印一句口号）。
+                  case "${GH_TOKEN:-}" in
+                    "${STUB_AUTHOR_TOKEN:-__absent__}")   printf 'yes8080-dev-bot\n' ;;
+                    "${STUB_REVIEWER_TOKEN:-__absent__}") printf 'yes8080-reviewer-bot\n' ;;
+                    *) printf 'yes8080\n' ;;
+                  esac
+                  ;;
                 */issues/*/labels)
                   if [ "$method" = "PUT" ]; then
                     bump "$S/writes.count"
@@ -641,6 +649,9 @@ jobs:
           REPL_B="$(cat "$ST/repl-b.txt")" awk 'index($0, "TEST_ANCHOR:PAYLOAD") { print ENVIRON["REPL_B"]; next } { print }' scripts/status.sh > "$ST/impl-nokeep.sh"
 
           # ⑤ 把真实 status.sh（或其变异副本）跑在 stub 平台上：in-progress → in-review
+          # #141 D1：写迁移**必须**带 --as；stub 作者凭据只存在于测试目录（**不读任何真实凭据**）。
+          printf 'stub-author-token\n' > "$ST/dev.pat"
+          printf 'stub-reviewer-token\n' > "$ST/reviewer.pat"
           run_case() { # run_case <实现文件> <tamper 0|1>
             impl="$1"; tamper="${2:-0}"
             S="$ST/s"; rm -rf "$S"; mkdir -p "$S"
@@ -650,7 +661,8 @@ jobs:
             printf '0\n' > "$S/writes.count"; printf '0\n' > "$S/get-labels.count"; printf '0\n' > "$S/issue-edit.count"
             rc=0
             PATH="$ST/bin:$PATH" STUB_STATE="$S" STUB_TAMPER="$tamper" \
-              bash "$impl" 999 in-review > "$S/out.log" 2>&1 || rc=$?
+              DEVELOPER_PAT_FILE="$ST/dev.pat" STUB_AUTHOR_TOKEN=stub-author-token \
+              bash "$impl" 999 in-review --as author > "$S/out.log" 2>&1 || rc=$?
           }
 
           assert_transition() { # assert_transition <样本名>
@@ -750,7 +762,8 @@ jobs:
           for step in ready in-progress in-review in-progress in-review done; do
             lrc=0
             PATH="$ST/bin:$PATH" STUB_STATE="$S" STUB_TAMPER=0 \
-              bash scripts/status.sh 999 "$step" > "$S/out-$step.log" 2>&1 || lrc=$?
+              DEVELOPER_PAT_FILE="$ST/dev.pat" STUB_AUTHOR_TOKEN=stub-author-token \
+              bash scripts/status.sh 999 "$step" --as author > "$S/out-$step.log" 2>&1 || lrc=$?
             cnt="$(grep -c '^status/' "$S/labels.txt" || true)"
             st="$(cat "$S/state.txt")"
             keep="$(grep -v '^status/' "$S/labels.txt" | grep -c . || true)"
@@ -779,12 +792,83 @@ jobs:
           for i in 1 2 3 4 5 6; do printf '     put-%s.json = %s\n' "$i" "$(cat "$S/put-${i}.json")"; done
           printf '  —— 终态标签（应为 3 个非 status/*，无空串标签）：%s\n' "$(tr '\n' ' ' < "$S/labels.txt")"
 
+          # ── #141 D1：写迁移必须带**显式身份**；只读模式不需要 ──────────────────────
+          # 判据（常驻 ci/test，不新增必需检查）：
+          #   ① 写迁移缺 --as → 拒绝（exit 非 0）且**零写请求**（fail-closed，不产生任何身份归属）
+          #   ② --as author|reviewer|dispatcher → 各自用**对应凭据**执行：stub 平台读到的登录名
+          #      随 GH_TOKEN 变化，从而证明凭据真的被切换（不是只打印一句口号）
+          #   ③ 只读模式（--check-transition）不带 --as → exit 0 且**一次 gh 调用都没有**（零副作用）
+          # 凭据只存在于测试目录（$ST/dev.pat、$ST/reviewer.pat 是 stub 文本，**不读任何真实凭据**）。
+          printf '\n== 身份开关（#141 D1）：写迁移必须 --as；只读模式不需要 ==\n'
+          id_state() {
+            S="$ST/id"; rm -rf "$S"; mkdir -p "$S"
+            printf 'type/bug\narea/ci\nrole/dev\nstatus/in-progress\n' > "$S/labels.txt"
+            printf 'OPEN\n' > "$S/state.txt"; printf 'COMPLETED\n' > "$S/reason.txt"
+            : > "$S/calls.log"
+            printf '0\n' > "$S/writes.count"; printf '0\n' > "$S/get-labels.count"; printf '0\n' > "$S/issue-edit.count"
+          }
+          id_bad=0
+
+          # ① 缺 --as 的写迁移
+          id_state
+          irc=0
+          PATH="$ST/bin:$PATH" STUB_STATE="$ST/id" DEVELOPER_PAT_FILE="$ST/dev.pat" STUB_AUTHOR_TOKEN=stub-author-token \
+            bash scripts/status.sh 999 in-review > "$ST/id/out.log" 2>&1 || irc=$?
+          if [ "$irc" != "0" ] && [ "$(cat "$ST/id/writes.count")" = "0" ] && grep -q '写迁移必须显式指定身份' "$ST/id/out.log"; then
+            printf '  [ OK ] 缺 --as：拒绝（exit %s）、零写请求、给出修法\n' "$irc"
+          else
+            printf '  [FAIL] 缺 --as：exit %s（应非 0）/ 写请求 %s（应 0）\n' "$irc" "$(cat "$ST/id/writes.count")"; id_bad=1
+          fi
+          sed 's/^/       /' "$ST/id/out.log"
+
+          # ② 三个身份各自用对应凭据执行（stub：登录名只由 GH_TOKEN 决定）
+          for spec in "author|$ST/dev.pat|stub-author-token|yes8080-dev-bot|作者" \
+                      "reviewer|$ST/reviewer.pat|stub-reviewer-token|yes8080-reviewer-bot|评审" \
+                      "dispatcher|||yes8080|dispatcher / 合并"; do
+            IFS='|' read -r who pat tok want label <<EOF
+          $spec
+          EOF
+            id_state
+            irc=0
+            if [ "$who" = "author" ]; then
+              PATH="$ST/bin:$PATH" STUB_STATE="$ST/id" DEVELOPER_PAT_FILE="$pat" STUB_AUTHOR_TOKEN="$tok" \
+                bash scripts/status.sh 999 in-review --as author > "$ST/id/out.log" 2>&1 || irc=$?
+            elif [ "$who" = "reviewer" ]; then
+              PATH="$ST/bin:$PATH" STUB_STATE="$ST/id" REVIEWER_PAT_FILE="$pat" STUB_REVIEWER_TOKEN="$tok" \
+                bash scripts/status.sh 999 in-review --as reviewer > "$ST/id/out.log" 2>&1 || irc=$?
+            else
+              PATH="$ST/bin:$PATH" STUB_STATE="$ST/id" \
+                bash scripts/status.sh 999 in-review --as dispatcher > "$ST/id/out.log" 2>&1 || irc=$?
+            fi
+            if [ "$irc" = "0" ] && grep -q "本次执行身份（${label}）：${want}" "$ST/id/out.log" \
+               && grep -q "身份 --as ${who} = ${want}" "$ST/id/out.log" \
+               && [ "$(cat "$ST/id/writes.count")" = "1" ]; then
+              printf '  [ OK ] --as %-10s → 用对应凭据执行（stub 平台读到 %s），恰好 1 次标签写请求\n' "$who" "$want"
+            else
+              printf '  [FAIL] --as %-10s → exit %s / 写请求 %s / 期望身份 %s\n' "$who" "$irc" "$(cat "$ST/id/writes.count")" "$want"
+              sed 's/^/       /' "$ST/id/out.log"; id_bad=1
+            fi
+          done
+
+          # ③ 只读模式不需要 --as（且零副作用：连一次 gh 调用都没有）
+          id_state
+          irc=0
+          PATH="$ST/bin:$PATH" STUB_STATE="$ST/id" \
+            bash scripts/status.sh --check-transition in-progress in-review > "$ST/id/out.log" 2>&1 || irc=$?
+          id_calls="$(grep -c . "$ST/id/calls.log" || true)"
+          if [ "$irc" = "0" ] && [ "$id_calls" = "0" ] && [ "$(cat "$ST/id/writes.count")" = "0" ]; then
+            printf '  [ OK ] 只读模式（--check-transition）不带 --as：exit 0、gh 调用 0 次、写请求 0 次\n'
+          else
+            printf '  [FAIL] 只读模式：exit %s（应 0）/ gh 调用 %s（应 0）/ 写请求 %s（应 0）\n' "$irc" "$id_calls" "$(cat "$ST/id/writes.count")"; id_bad=1
+          fi
+          [ "$id_bad" = 0 ] || fail=$((fail + 1))
+
           printf '\n'
           if [ "$fail" -ne 0 ]; then
             printf '❌ 状态迁移单请求断言失败（%s 项）—— 见上方 [FAIL]\n' "$fail"
             exit 1
           fi
-          printf '✅ 非终态迁移恰好 1 次标签写请求 + 载荷含全部非 status/ 标签 + 读回校验不重试覆盖；反向样本 A/B 按预期失败；闭环回归 6 步每步 status/* 恰好 1 个\n'
+          printf '✅ 非终态迁移恰好 1 次标签写请求 + 载荷含全部非 status/ 标签 + 读回校验不重试覆盖；反向样本 A/B 按预期失败；闭环回归 6 步每步 status/* 恰好 1 个；身份开关：缺 --as 拒绝、三个 --as 各用对应凭据、只读模式无需 --as\n'
       - name: 未提交任何凭据
         run: |
           set -euo pipefail
