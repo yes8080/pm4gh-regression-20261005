@@ -8,7 +8,8 @@
 #         线上规则集 == 仓库内定义 / 每个必需 context 都有工作流 job /
 #         **CODEOWNERS 完整性**（每个 owner 是协作者且有 push、评审身份是 `*` 的 owner、
 #         合并身份是协作者 —— 防 require_code_owner_review 永久锁死；开关取值以**线上实测**为准）/
-#         机器消费与 **Issue 表单预置**的标签存在（判据 LABEL_ASSERT，与 ci/test 同一段文本）。
+#         机器消费与 **Issue 表单预置**的标签存在（判据 LABEL_ASSERT，与 ci/test 同一段文本）/
+#         **`.github/` 内链接的 slug == 当前仓库 slug**（P6：防复制到别处后忘改，判据 = gh repo view）。
 #
 # 退出码：0 全部通过；1 存在未通过项（每项都给出可行动的修复提示）
 
@@ -462,6 +463,40 @@ else
         bad "合并身份 ${main_login} 不是协作者（或没有 push）—— 无人能合并，所有 PR 永久卡住"
         printf '       修法（dispatcher）：gh api -X PUT repos/%s/collaborators/%s -f permission=push\n' "$REPO" "$main_login" >&2
       fi
+    fi
+  fi
+
+  # ── .github 内链接与当前 slug 一致性（P6：把「复制到别处后忘改」从**静默**变成预检报错）──
+  # 机理：`.github/ISSUE_TEMPLATE/config.yml` 的 contact link 会**写死源仓库 URL** —— 复制到
+  #   另一个仓库后，它照样把用户导向**源仓库**，且没有任何东西会报错。这里让它可见。
+  # 判据：`.github/` 内出现的 `github.com/<owner>/<repo>` 形态链接，其 `<owner>/<repo>` 必须与
+  #   当前仓库 slug（`gh repo view`，大小写不敏感）**逐字一致**；不一致 → `[FAIL]` 并列出替换点。
+  #   本仓库自身必须全绿；被复制到别处则应报错 —— 这正是它要发现的问题。
+  # 取舍：指向**第三方**仓库的 `github.com/...` 链接同样会被判为不一致（判据不猜意图）；若确需
+  #   引用第三方仓库，写成不含 `github.com/` 的 `owner/repo` 文本，或报告 dispatcher 说明。
+  # 采用者的替换点清单见 references/portability.md。
+  printf '\n  ── .github 内链接与当前 slug 一致性（P6：判据 = gh repo view 得到的 slug）\n'
+  gh_links="$(grep -rnoIE 'github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+' .github/ 2>/dev/null || true)"
+  if [ -z "$gh_links" ]; then
+    ok ".github/ 内没有 github.com/<owner>/<repo> 形态链接（无需替换）"
+  else
+    link_total=0 link_bad=""
+    while IFS= read -r hit; do
+      [ -n "$hit" ] || continue
+      link_total=$((link_total + 1))
+      ln_file="${hit%%:*}"; ln_rest="${hit#*:}"; ln_no="${ln_rest%%:*}"
+      ln_slug="${hit##*github.com/}"; ln_slug="${ln_slug%.git}"
+      if [ "$(printf '%s' "$ln_slug" | tr '[:upper:]' '[:lower:]')" != "$(printf '%s' "$REPO" | tr '[:upper:]' '[:lower:]')" ]; then
+        printf -v link_line '%s:%s 指向 %s\n' "$ln_file" "$ln_no" "$ln_slug"
+        link_bad="${link_bad}${link_line}"
+      fi
+    done <<<"$gh_links"
+    if [ -n "$link_bad" ]; then
+      bad ".github/ 内的链接指向的不是当前仓库 ${REPO}（复制后忘改 = 静默把用户导向别的仓库）："
+      printf '%s' "$link_bad" >&2
+      printf '       修法：把上面每处换成 https://github.com/%s/...（逐条替换点见 references/portability.md）\n' "$REPO" >&2
+    else
+      ok ".github/ 内 ${link_total} 处链接与当前 slug 一致（${REPO}）"
     fi
   fi
 fi

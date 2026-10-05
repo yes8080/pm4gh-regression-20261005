@@ -1,7 +1,7 @@
 ---
 name: pm4gh
-description: "在本仓库（yes8080/pm4gh）把一个开发切片推完 GitHub 闭环：scripts/preflight.sh 预检 → 认领 Issue（DoR 五项）→ scripts/start.sh 开工建分支 → 提交 → scripts/deliver.sh 开 PR → 5 个必需检查 → scripts/review.sh 独立评审 → dispatcher squash 合并 → scripts/closeout.sh 收尾；并含 scripts/status.sh 状态迁移与 scripts/abort.sh 终止。当你要在本仓库接手某个 Issue、把改动交付成 PR、评审或合并某个 PR、推进或终止某个 Issue 的状态、排查本流程卡住或脚本报错，或要判断某项 GitHub 操作在本仓库是否被允许（能否直推 main、能否增删本仓库标签体系 `status/*`、`type/*` 等流程标签，*不是* release tag）时使用。在本仓库会话中，未点名的开工/交付/合并/收尾默认指本流程。不用于：其他仓库的安装与治理、GitHub Projects 与度量报表、跨模型评审留痕、能力开关、与本仓库无关的通用 Git/GitHub 操作。"
-compatibility: "macOS（系统自带 bash 3.2）；需要 git、gh、jq（脚本另用 awk/sed/curl/diff）；GitHub 凭据必须在工作区之外，固定放 $HOME/.config/pm4gh/{developer,reviewer}.pat；改动线上规则集需要仓库 admin（属 dispatcher 权限）。"
+description: "在当前仓库（由 `gh repo view` 推导，不写死 slug）把一个开发切片推完 GitHub 闭环：scripts/preflight.sh 预检 → 认领 Issue（DoR 五项）→ scripts/start.sh 开工建分支 → 提交 → scripts/deliver.sh 开 PR → 5 个必需检查 → scripts/review.sh 独立评审 → dispatcher squash 合并 → scripts/closeout.sh 收尾；并含 scripts/status.sh 状态迁移与 scripts/abort.sh 终止。当你要在本仓库接手某个 Issue、把改动交付成 PR、评审或合并某个 PR、推进或终止某个 Issue 的状态、排查本流程卡住或脚本报错，或要判断某项 GitHub 操作在本仓库是否被允许（能否直推 main、能否增删本仓库标签体系 `status/*`、`type/*` 等流程标签，*不是* release tag）时使用。在本仓库会话中，未点名的开工/交付/合并/收尾默认指本流程。不用于：把一个仓库**从零建成**这套治理（含在别的仓库首次安装本流程 —— 本 skill 用于**已就绪**仓库的日常推进）／GitHub Projects 与度量报表／跨模型评审留痕／能力开关／与本仓库无关的通用 Git/GitHub 操作。"
+compatibility: "macOS（系统自带 bash 3.2）；需要 git、gh、jq（脚本另用 awk/sed/curl/diff）；GitHub 凭据必须在工作区之外，默认放 $HOME/.config/pm4gh/{developer,reviewer}.pat（可用 `DEVELOPER_PAT_FILE` / `REVIEWER_PAT_FILE` 覆盖）；改动线上规则集需要仓库 admin（属 dispatcher 权限）。"
 metadata:
   version: "1.0.0"
   short-description: "多 agent + GitHub 开发闭环：认领→开工→交付→评审→合并→收尾"
@@ -54,6 +54,7 @@ metadata:
 | 写 PR 第 5 节 DoD 自查，或合并前核验 | [references/dod.md](references/dod.md) |
 | 填 PR 六段 / 建 Issue 表单 | [assets/README.md](assets/README.md) → `.github/` 里的平台强制模板 |
 | 确定性、多步、有副作用的 GitHub 操作 | [scripts/](scripts/)（7 个脚本，自包含；**不得新增脚本**） |
-| 安装到客户端 | 主推 `mkdir -p ~/.agents/skills && ln -s /Users/ws/code/pm4gh ~/.agents/skills/pm4gh`；兼容 `mkdir -p ~/.claude/skills && ln -s /Users/ws/code/pm4gh ~/.claude/skills/pm4gh` |
+| 安装到客户端 | 在**本仓库根目录**执行：主推 `mkdir -p ~/.agents/skills && ln -s "$(git rev-parse --show-toplevel)" ~/.agents/skills/pm4gh`；兼容 `mkdir -p ~/.claude/skills && ln -s "$(git rev-parse --show-toplevel)" ~/.claude/skills/pm4gh` |
+| 把本 skill 装到**另一个仓库** | [references/portability.md](references/portability.md)（采用者**替换点清单**：每条给 `file:line` + 换成什么 + 是否有机器判据） |
 
-**明确不做**：其他仓库的安装 / 治理、Projects、度量报表、跨模型评审留痕、能力开关、共享库；**不引入第二套规范文档** —— `SKILL.md` + `references/**` + `.github/**` + `scripts/**` 就是全部权威。
+**明确不做**：把一个仓库**从零建成**这套治理（在别的仓库首次安装 = 按 [references/portability.md](references/portability.md) 逐条替换，不属于本 skill 的执行范围）、Projects、度量报表、跨模型评审留痕、能力开关、共享库；**不引入第二套规范文档** —— `SKILL.md` + `references/**` + `.github/**` + `scripts/**` 就是全部权威。
