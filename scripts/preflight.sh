@@ -5,7 +5,7 @@
 # 检查项：命令齐备 / gh 登录 / cwd 与仓库形态 / 工作区 / 远端唯一 / 作者与合并身份互不相同 /
 #         作者凭据 scope 与最小权限 / **工作区内不得存在任何凭据文件**/
 #         评审凭据在**工作区之外**（不读其内容）/
-#         线上规则集 == 仓库内定义 / 每个必需 context 都有工作流 job /
+#         线上规则集 == 仓库内定义 / 每个必需 context 都有工作流 job / **项目测试套件接线**（tests/ 存在 → tests/run.sh 必须存在且可执行；约定 exit 0 = 通过）/
 #         **CODEOWNERS 完整性**（每个 owner 是协作者且有 push、评审身份是 `*` 的 owner、
 #         合并身份是协作者 —— 防 require_code_owner_review 永久锁死；开关取值以**线上实测**为准）/
 #         机器消费与 **Issue 表单预置**的标签存在（判据 LABEL_ASSERT，与 ci/test 同一段文本）/
@@ -223,6 +223,21 @@ else
   [ -f "$RULESET_FILE" ] || bad "缺少规则集定义 ${RULESET_FILE}（是否在仓库根目录？）"
   REPO="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || true)"
   [ -n "$REPO" ] && ok "仓库 slug：${REPO}" || bad "无法确定仓库 slug（gh repo view 失败）"
+  # D6：tests/ 存在 = 项目声明了测试套件 → 入口 tests/run.sh 必须存在且可执行。
+  # 与 ci/test 的对应 step 同源（那边负责**跑**；这边堵「有 tests/ 却没接线 / 不可执行」——
+  # 否则删掉 tests/ 或去掉可执行位即可绕过「跑项目测试」的那一步）。
+  # 判据用的是仓库根绝对路径（cwd 允许是仓库子目录）。
+  if [ ! -e "${REPO_ROOT}/tests" ]; then
+    ok "本项目未声明测试套件（无 tests/ 目录；约定：tests/run.sh，exit 0 = 通过）"
+  elif [ ! -d "${REPO_ROOT}/tests" ]; then
+    bad "tests 存在但不是目录 —— 约定：测试入口固定为 tests/run.sh（exit 0 = 通过）"
+  elif [ ! -f "${REPO_ROOT}/tests/run.sh" ]; then
+    bad "tests/ 存在但缺少 tests/run.sh —— 约定：测试入口固定为 tests/run.sh（exit 0 = 通过）；缺入口 = 有测试却没接线门禁"
+  elif [ ! -x "${REPO_ROOT}/tests/run.sh" ]; then
+    bad "tests/run.sh 缺少可执行位 —— 修复：chmod +x tests/run.sh（ci/test 会运行它）"
+  else
+    ok "tests/run.sh 存在且可执行 —— ci/test 会运行它（约定 exit 0 = 通过）"
+  fi
 fi
 
 info "4/10 工作区与远端"

@@ -39,7 +39,7 @@ metadata:
 
 [references/dod.md](references/dod.md) 六项全过（验收标准逐条有证据；必需检查最新 SHA 全绿 + 非作者 code owner 批准；未越界；`closeout.sh` 五项全过）。
 
-**必要约束（不回退）**：15 边 / 6 状态｜状态迁移 = REST `PUT …/labels` **单请求**｜5 个必需检查 job `name:` 一字不改｜凭据必须在**工作区之外**｜一个切片 = 一个 Issue = 一个分支 = 一个 PR。
+**必要约束（不回退）**：15 边 / 6 状态｜状态迁移 = REST `PUT …/labels` **单请求**｜5 个必需检查 job `name:` 一字不改｜凭据必须在**工作区之外**｜一个切片 = 一个 Issue = 一个分支 = 一个 PR｜项目测试套件约定 = `tests/run.sh`（`exit 0` = 通过），由 `ci/test` 运行、`preflight.sh` 断言接线；无 `tests/` = 未声明（两处都明确打印，不静默跳过）。
 
 ## 支持资料
 

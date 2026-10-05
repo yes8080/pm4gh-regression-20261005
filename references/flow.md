@@ -7,6 +7,7 @@
 - 命令一律在**仓库根目录**执行（`gh` 不带 `-R`）；占位符 `<n>` / `<pr#>` 只填**数字**（不带 `#`，脚本会拒绝）。
 - 与平台实际行为冲突时以**平台**为准；**必须**开 Issue 改文档，**禁止**按"更方便"执行。
 - `--dry-run`（`start.sh` / `deliver.sh` / `closeout.sh` / `abort.sh` 支持；其余脚本无）= 不建分支、不推送、不建 PR、不写 Issue、不删分支、不迁移状态；`closeout.sh --dry-run` 仍判五项，判不过退出码 `1`。**例外**：`deliver.sh --prepare --dry-run` 仍会写正文骨架文件（`cat >` 在 `--dry-run` 判断之前执行）。
+- **项目测试套件约定（唯一一套）**：项目在 `tests/run.sh` 声明**自己交付物**的测试套件，**`exit 0` = 通过**、非零 = 失败。`ci/test` 的「项目自身测试套件」step 会运行它，`preflight.sh` 第 3 段断言入口存在且可执行。`tests/` 不存在 = 本项目未声明测试套件 —— 两处都**明确打印**「已运行」/「未声明」，**不允许**静默跳过；有 `tests/` 却没有合法 `tests/run.sh`（缺失 / 无 `x` 位）则 CI 与预检都 `[FAIL]`。边界：**删掉 `tests/` 与「本项目确实没有测试」在门禁看来完全一样**（没有声明文件就无法区分），绕过这条等于承诺"本项目不声明测试"。
 
 ## 时序步骤表（谁在什么时候触发）
 
@@ -27,7 +28,7 @@
 ## W0 预检（每次接手都跑）— `scripts/preflight.sh`
 
 - **判据**：无参数；全 `[ OK ]` 且退出码 `0`；任一 `[FAIL]` → 退出码 `1`，**禁止**"先干着看"，把失败项**原文**贴 dispatcher。
-- 输出 `1/10`…`10/10` 十组：① 命令齐备 ② gh 登录 ③ 仓库形态与 cwd ④ 工作区与远端 ⑤ 三身份凭据 ⑥ 作者凭据 scope 与最小权限 ⑦ 工作流 job 名 == 必需 context ⑧ 线上规则集整份 diff + **CODEOWNERS 完整性**（每个 owner 是协作者且有 push / 评审身份是 `*` 的 owner / 合并身份是协作者 —— 防 `require_code_owner_review` 永久锁死；开关取值只认线上实测值）⑨ 机器消费 + **Issue 表单预置**标签存在（表单标签从 `.github/ISSUE_TEMPLATE/*.yml` 解析，不手抄）⑩ 工作区内无 `*.pat`。
+- 输出 `1/10`…`10/10` 十组：① 命令齐备 ② gh 登录 ③ 仓库形态与 cwd ④ 工作区与远端 ⑤ 三身份凭据 ⑥ 作者凭据 scope 与最小权限 ⑦ 工作流 job 名 == 必需 context ⑧ 线上规则集整份 diff + **CODEOWNERS 完整性**（每个 owner 是协作者且有 push / 评审身份是 `*` 的 owner / 合并身份是协作者 —— 防 `require_code_owner_review` 永久锁死；开关取值只认线上实测值）⑨ 机器消费 + **Issue 表单预置**标签存在（表单标签从 `.github/ISSUE_TEMPLATE/*.yml` 解析，不手抄）⑩ 工作区内无 `*.pat`。组③还含 **项目测试套件接线**：`tests/` 存在 → `tests/run.sh` 必须存在且可执行（判据用仓库根绝对路径，cwd 是子目录也准）。
 - **判据**：只有 `[FAIL]` 计入失败，`[WARN]` 一律不阻断（退出码仍 `0`）。常见 `[WARN]`：工作区有未提交改动、本地 `main` 与 `origin/main` 不一致、无法 fetch、评审凭据缺失、作者权限异常、超过一个 `in-progress`。组⑦⑧需要 `.github/workflows/*.yml` 存在 —— 在**没有**工作流的副本里跑必然 `[FAIL]`，这是环境事实，不是流程失败。
 
 ## W1 领片（DoR）
@@ -65,12 +66,13 @@ git -c user.name="yes8080-dev-bot" -c user.email="317173623+yes8080-dev-bot@user
 | context（= job `name:`） | 判什么 |
 |---|---|
 | `ci/lint` | 被跟踪脚本的 `bash -n` + bash 3.2 兼容 + JSON 有效 |
-| `ci/test` | 5 个 context 与工作流 job 名精确相等、规则集形状与全量键、状态标签互斥、状态迁移 HTTP 层单请求（stub `gh` + 反向样本）、PR 模板六段、无凭据入库、脚本自包含、`status-machine.md` ↔ `status.sh` 转换表逐字一致 |
+| `ci/test` | 5 个 context 与工作流 job 名精确相等、规则集形状与全量键、状态标签互斥、状态迁移 HTTP 层单请求（stub `gh` + 反向样本）、PR 模板六段、无凭据入库、脚本自包含、`status-machine.md` ↔ `status.sh` 转换表逐字一致、**项目自身测试套件 `tests/run.sh`**（有 `tests/` 就必跑，`exit 0` = 通过；无 `tests/` 打印「未声明」） |
 | `policy/linked-issue` | 正文有 `Closes #N` **且** GitHub 解析出了关闭关系（目标必须是默认分支） |
 | `policy/branch-name` | 分支名匹配正则 + Issue OPEN + 已有 `status/*` 标签 |
 | `policy/template` | 正文有 `## 1.` … `## 6.` |
 
 - **判据**：5 个 context 在**最新 SHA** 上全 `pass` 才进 W6；某项永久 `pending` → [traps.md](traps.md) 陷阱 1、2。
+- **`ci/test` 的项目测试 step**（约定见「前置约定」）：`tests/` 存在且 `tests/run.sh` 可执行 → 运行它、把**原始输出尾部**打进日志；退出码非零 → `ci/test` FAIL。`tests/` 存在但 `run.sh` 缺失 / 无 `x` 位 → FAIL（修法：`chmod +x tests/run.sh`）。无 `tests/` → 打印 `[ OK ] 本项目未声明测试套件（…）` 再跳过 —— **必须**打印，禁止静默跳过。
 
 ## W6 独立评审 — `scripts/review.sh <pr#> approve|request-changes|comment --body-file <文件>`（评审身份，**不加** `--as`）
 

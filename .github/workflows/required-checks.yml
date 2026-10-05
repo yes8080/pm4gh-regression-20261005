@@ -853,6 +853,47 @@ jobs:
           fi
           if [ "$fail" -ne 0 ]; then exit 1; fi
           echo "✅ #131：判据与实现同一段（LINKED_ISSUE_ASSERT 标记区）；大正文双向反向样本通过；工作流零「管道接 grep -q」"
+      - name: 项目自身测试套件 tests/run.sh（约定：exit 0 = 通过）
+        run: |
+          set -euo pipefail
+          # D6：门禁必须跑**项目自己的**交付物测试，否则 5 个必需检查在采用者仓库里
+          # 只自检了工作流/规则集/标签/状态机，会给出「测试被验证过」的假印象。
+          # 约定（**唯一一套**，不发明第二套）：tests/run.sh 存在且可执行 = 项目声明了测试套件，
+          # 运行它，**退出码 0 = 通过**；tests/ 不存在 = 本项目未声明测试套件。
+          # 本步骤**必须**明确打印「跑了」还是「未声明」——**不允许**静默跳过。
+          # 反绕过：删掉 tests/ 就能绕过本步骤 → 由 preflight.sh 第 3 段与 ci/test 同源的断言
+          # 堵住「有 tests/ 却没有合法入口（缺失 / 不可执行）」。
+          if [ ! -e tests ]; then
+            printf '[ OK ] 本项目未声明测试套件（无 tests/ 目录；约定：tests/run.sh，exit 0 = 通过）—— 本步骤未运行任何项目测试\n'
+            exit 0
+          fi
+          if [ ! -d tests ]; then
+            echo "::error file=tests::tests 存在但不是目录 —— 约定：测试入口固定为 tests/run.sh（exit 0 = 通过）"
+            exit 1
+          fi
+          if [ ! -f tests/run.sh ]; then
+            echo "::error file=tests/run.sh::tests/ 存在但缺少 tests/run.sh —— 约定：测试入口固定为 tests/run.sh（exit 0 = 通过）；缺入口 = 有测试却没接线门禁"
+            exit 1
+          fi
+          if [ ! -x tests/run.sh ]; then
+            echo "::error file=tests/run.sh::tests/run.sh 没有可执行位 —— 修复：chmod +x tests/run.sh"
+            exit 1
+          fi
+          printf '[ OK ] 本项目声明了测试套件 tests/run.sh（约定 exit 0 = 通过）→ 现在运行它（完整输出见下）\n'
+          log="$(mktemp "${TMPDIR:-/tmp}/project-tests.XXXXXX")"
+          rc=0
+          set +e
+          ./tests/run.sh 2>&1 | tee "$log"
+          rc="${PIPESTATUS[0]}"
+          set -e
+          printf '\n──── tests/run.sh 原始输出尾部（最后 20 行）────\n'
+          tail -n 20 "$log"
+          rm -f "$log"
+          if [ "$rc" -ne 0 ]; then
+            echo "::error file=tests/run.sh::项目测试套件失败：tests/run.sh 退出码 ${rc}（约定：exit 0 = 通过）"
+            exit 1
+          fi
+          printf '✅ 项目测试套件 tests/run.sh 通过（退出码 0）—— 本次交付物的测试由门禁真实执行过\n'
 
   linked-issue:
     name: policy/linked-issue
