@@ -5,7 +5,7 @@
 #   ① PR 已 MERGED（squash）
 #   ② 关联 Issue 已自动关闭
 #   ③ 远程不存在头分支
-#   ④ 本地头分支已清理（**先**把可恢复锚点写进 Issue，**再** git branch -D）
+#   ④ 本地头分支已清理且每个关联 Issue 有恢复锚点（存在时先留锚点再删除）
 #   ⑤ 关联 Issue 无残留 status/* 标签 —— 本脚本**自己清理**（内部调用 status.sh <n> done），
 #      不再要求人先手动跑一遍 status.sh；判定的是「清理之后」的结果。
 #      Issue 本身必须已由平台合并关单：closeout 绝不允许把 OPEN 的 Issue 关掉（那是掩盖错误）。
@@ -190,64 +190,89 @@ else
   check_ok "远端无分支 ${branch}"
 fi
 
-info "④ 本地头分支清理（先留锚点，再删除）"
+# CLOSEOUT_ANCHOR:BEGIN
+# 即使 gh pr merge --delete-branch 已删掉本地分支，也必须逐个核对关联 Issue 的锚点。
+# PR head 是可从 GitHub 取回的权威 SHA；本地 tip 已不可得时明确写明，不伪造为 head。
+valid_sha() {
+  [ "${#1}" -eq 40 ] || return 1
+  case "$1" in *[!0-9a-f]*) return 1 ;; esac
+  return 0
+}
+
+info "④ 本地头分支清理与恢复锚点（分支已不存在也必须核验）"
+local_present=0
+tip_sha=""
 if [ -z "$branch" ]; then
   check_fail "无法确定要清理的分支名"
-elif ! git show-ref --verify --quiet "refs/heads/${branch}"; then
-  check_ok "本地分支 ${branch} 已不存在（无需清理）"
+elif git show-ref --verify --quiet "refs/heads/${branch}"; then
+  local_present=1
+  tip_sha="$(git rev-parse "refs/heads/${branch}" 2>/dev/null || true)"
+  valid_sha "$tip_sha" || check_fail "无法读取本地分支 ${branch} 的完整 tip SHA"
+fi
+valid_sha "$head_sha" || check_fail "无法读取完整 PR head SHA —— 不能证明恢复锚点有效"
+valid_sha "$merge_sha" || check_fail "无法读取完整合并 SHA —— 不能证明恢复锚点有效"
+
+if [ "$problems" -ne 0 ]; then
+  check_fail "收尾前置项未通过，**未执行**恢复锚点写入和本地分支删除"
 else
-  current="$(git branch --show-current)"
-  if [ "$current" = "$branch" ]; then
-    if [ "$DRY" -eq 1 ]; then
-      printf '[dry-run] git checkout main && git pull --ff-only\n'
+  marker="<!-- pm4gh-closeout pr=${PR} head=${head_sha} merge=${merge_sha} -->"
+  comments_file="$(mktemp "${TMPDIR:-/tmp}/pm4gh-closeout-comments.XXXXXX")"
+  rec_file="$(mktemp "${TMPDIR:-/tmp}/pm4gh-closeout-record.XXXXXX")"
+  cat > "$rec_file" <<REC
+**收尾记录（可恢复锚点）**
+
+${marker}
+
+- 分支：\`${branch}\`
+- 本地 tip SHA：\`${tip_sha:-不可得（合并工具已删除本地分支，恢复以 PR head 为准）}\`
+- PR head SHA：\`${head_sha}\`（GitHub 侧保留的权威恢复锚点）
+- 合并提交（squash）：\`${merge_sha}\`
+- 恢复命令：\`git fetch origin refs/pull/${PR}/head && git branch recovery-pr-${PR} FETCH_HEAD\`
+
+> 本地分支已被合并工具删除也要保留记录；若还存在，先核验每个 Issue 的记录，再删除。
+REC
+  for n in $issues; do
+    if ! gh api "repos/${REPO}/issues/${n}/comments" --paginate --jq '.[].body' > "$comments_file"; then
+      check_fail "无法读取 Issue #${n} 的恢复锚点 —— 未执行写入，不把读取失败当作记录不存在"
+    elif grep -qxF "$marker" "$comments_file"; then
+      check_ok "Issue #${n} 已有本 PR 的恢复锚点（已核验 head / merge SHA；幂等不重复写）"
+    elif [ "$DRY" -eq 1 ]; then
+      check_fail "[dry-run] Issue #${n} 尚无本 PR 的恢复锚点 —— 真实运行会补写；本次未写入"
+    elif ! gh issue comment "$n" -R "$REPO" --body-file "$rec_file" >/dev/null; then
+      check_fail "无法写入 Issue #${n} 的恢复锚点 —— **拒绝**删除本地分支"
+    elif ! gh api "repos/${REPO}/issues/${n}/comments" --paginate --jq '.[].body' > "$comments_file"; then
+      check_fail "无法回读 Issue #${n} 的恢复锚点 —— **拒绝**删除本地分支"
+    elif grep -qxF "$marker" "$comments_file"; then
+      check_ok "已把可恢复锚点写入 Issue #${n} 并回读核验（pr_head ${head_sha:0:12}）"
     else
+      check_fail "Issue #${n} 锚点写入后回读不一致 —— **拒绝**删除本地分支"
+    fi
+  done
+  rm -f "$comments_file" "$rec_file"
+fi
+
+if [ "$local_present" -eq 1 ]; then
+  if [ "$DRY" -eq 1 ]; then
+    check_fail "[dry-run] 本地分支 ${branch} 仍存在 —— 本次未删除，真实运行在锚点核验后清理"
+  elif [ "$problems" -ne 0 ]; then
+    check_fail "存在未通过项，**拒绝**删除本地分支 ${branch}（先保全）"
+  else
+    current="$(git branch --show-current)"
+    if [ "$current" = "$branch" ]; then
       info "先切回 main"
       git checkout main >/dev/null 2>&1 || check_fail "无法切回 main，请手动处理"
       git pull --ff-only >/dev/null 2>&1 || warn "  git pull --ff-only 未成功（稍后手动执行）"
     fi
-  fi
-  if [ "$state" != "MERGED" ]; then
-    check_fail "PR 未合并，**拒绝**删除本地分支 ${branch}（避免掩盖真实错误）"
-  else
-    tip_sha="$(git rev-parse "refs/heads/${branch}" 2>/dev/null || true)"
-    if [ "$DRY" -eq 1 ]; then
-      printf '[dry-run] 写锚点到 Issue：branch=%s tip=%s pr_head=%s\n' "$branch" "${tip_sha:0:12}" "${head_sha:0:12}"
-      printf '[dry-run] git branch -D %s\n' "$branch"
+    if [ "$problems" -eq 0 ] && git branch -D "$branch" >/dev/null 2>&1; then
+      check_ok "本地分支 ${branch} 已清理（确认 MERGED 且每个 Issue 留锚点后才执行）"
     else
-      rec_ok=0
-      if [ -n "$issues" ]; then
-        rec_file="${TMPDIR:-/tmp}/pm4gh-closeout-${PR}-$$.md"
-        cat > "$rec_file" <<REC
-**收尾记录（可恢复锚点）**
-
-- 分支：\`${branch}\`
-- 本地 tip SHA：\`${tip_sha:-未知}\`
-- PR head SHA：\`${head_sha:-未知}\`（**权威锚点**：GitHub 侧保留该提交，PR 页可 "Restore branch"）
-- 合并提交（squash）：\`${merge_sha:-未知}\`
-
-> 原因：squash 合并后分支上的原始提交不在 \`main\` 上，直接删除分支会让它只能靠本地 reflog 找回。
-> 先留锚点再删除（工作区规则：未验收/未合的独有成果必须可恢复）。
-REC
-        for n in $issues; do
-          if gh issue comment "$n" -R "$REPO" --body-file "$rec_file" >/dev/null 2>&1; then rec_ok=1; break; fi
-        done
-        rm -f "$rec_file"
-      fi
-      if [ "$rec_ok" = "1" ]; then
-        check_ok "已把可恢复锚点写入 Issue（tip ${tip_sha:0:12} / pr_head ${head_sha:0:12}）"
-      else
-        check_fail "无法写入可恢复锚点 —— 按规则**不得**再删除本地分支（先修复写入权限）"
-      fi
-      if [ "$problems" -eq 0 ] && git branch -D "$branch" >/dev/null 2>&1; then
-        check_ok "本地分支 ${branch} 已清理（确认 MERGED 且留锚点后才执行）"
-      elif [ "$problems" -ne 0 ]; then
-        check_fail "存在未通过项，**拒绝**删除本地分支 ${branch}（先保全）"
-      else
-        check_fail "本地分支 ${branch} 删除失败，请手动检查"
-      fi
+      check_fail "本地分支 ${branch} 未清理，请手动检查"
     fi
   fi
+elif [ "$problems" -eq 0 ]; then
+  check_ok "本地分支 ${branch} 已不存在；每个关联 Issue 的恢复锚点均已核验"
 fi
+# CLOSEOUT_ANCHOR:END
 
 info "⑤ 关联 Issue 无残留状态标签（结论来自上面的①-前置清理）"
 if [ -z "$issues" ]; then

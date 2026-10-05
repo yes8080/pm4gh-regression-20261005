@@ -99,7 +99,7 @@ git -c user.name="yes8080-dev-bot" -c user.email="317173623+yes8080-dev-bot@user
 
 - **判据**：`closeout.sh` 五项全过且退出码 `0`（用法 / 编号错 → `2`）：① PR 已 MERGED ② 关联 Issue 已关 ③ 远端无头分支 ④ 本地头分支已清理 ⑤ 无残留 `status/*` 标签。任一不过 → 退出码 `1`，逐条贴原文报告。五项全过时**同时释放本 clone 的单写者锁**（R4，见 [orchestration.md](orchestration.md) §7；`--dry-run` 不释放）。
 - **禁止**：作者代跑合并；`gh pr merge --admin` 或任何绕过门禁的手段 —— 只有 `@yes8080` 用本机登录态合并。
-- 第 ⑤ 项由 `closeout.sh` 自己跑 `scripts/status.sh <n> done --as dispatcher`（**仅对已关闭的 Issue**，OPEN 的绝不代关）；第 ④ 项**先**把「分支名 + 本地 tip SHA + PR head SHA + squash 提交」写进 Issue 作可恢复锚点，**再** `git branch -D`（[traps.md](traps.md) 陷阱 9）。
+- 第 ⑤ 项由 `closeout.sh` 自己跑 `scripts/status.sh <n> done --as dispatcher`（**仅对已关闭的 Issue**，OPEN 的绝不代关）；第 ④ 项逐个核验关联 Issue 的「分支名 + 本地 tip SHA + PR head SHA + squash 提交」恢复锚点；本地分支已由 `gh pr merge --delete-branch` 删除时仍补写，以 PR head 为权威恢复 SHA，并明确本地 tip 不可得。分支仍在时**先**写入并回读锚点，**再** `git branch -D`；重复收尾不重复评论，读取/写入/回读失败均不通过（[traps.md](traps.md) 陷阱 9）。
 
 ## W8 终止/取消（异常路径出口）— `scripts/abort.sh <issue#>`
 

@@ -1101,6 +1101,116 @@ jobs:
           fi
           if [ "$fail" -ne 0 ]; then exit 1; fi
           echo "✅ #131：判据与实现同一段（LINKED_ISSUE_ASSERT 标记区）；大正文双向反向样本通过；工作流零「管道接 grep -q」"
+      - name: 收尾恢复锚点回归（真实 closeout + Git fixture；缺分支、幂等、dry-run、失败保全）
+        run: |
+          python3 - scripts/closeout.sh <<'PY_CLOSEOUT_TEST'
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+          import sys
+          import tempfile
+
+          script = Path(sys.argv[1]).resolve()
+          stub = r'''#!/usr/bin/env python3
+          import json, os
+          from pathlib import Path
+          import subprocess, sys
+          root = Path(os.environ['FIXTURE'])
+          d = json.loads((root/'pr.json').read_text())
+          a = sys.argv[1:]
+          if a[:2] == ['repo','view']:
+              print('fixture/repo')
+          elif a[:2] == ['api','user']:
+              print('dispatcher')
+          elif a[:2] == ['pr','view']:
+              key = a[a.index('--json')+1]
+              value = d[key]
+              print(' '.join(map(str,value)) if isinstance(value,list) else value)
+          elif a[:2] == ['issue','view']:
+              key = a[a.index('--json')+1]
+              print('CLOSED' if key == 'state' else '')
+          elif a[0] == 'api' and a[1].endswith('/comments'):
+              if os.environ.get('FETCH_FAIL'): sys.exit(1)
+              n = a[1].split('/')[-2]
+              p = root/('comments-'+n)
+              if p.exists(): sys.stdout.write(p.read_text())
+          elif a[:2] == ['issue','comment']:
+              if os.environ.get('WRITE_FAIL'): sys.exit(1)
+              n = a[2]
+              body = Path(a[a.index('--body-file')+1]).read_text()
+              local = subprocess.run(['git','show-ref','--verify','--quiet','refs/heads/'+d['headRefName']]).returncode == 0
+              with (root/'writes').open('a') as f: f.write(n+' local='+str(int(local))+'\n')
+              if not os.environ.get('DROP_WRITE'):
+                  with (root/('comments-'+n)).open('a') as f: f.write(body+'\n')
+          else:
+              print('unexpected gh arguments: '+repr(a),file=sys.stderr)
+              sys.exit(2)
+          '''
+
+          def git(root, *args):
+              return subprocess.run(['git', *args], cwd=root, check=True, capture_output=True, text=True).stdout.strip()
+
+          def case(name, *, local=False, expected=0, flags=(), env_extra=None, metadata=None, again=False):
+              with tempfile.TemporaryDirectory(prefix='pm4gh-closeout-test-') as t:
+                  root = Path(t)
+                  repo = root/'repo'; repo.mkdir()
+                  git(repo,'init','-b','main')
+                  (repo/'seed').write_text('seed\n')
+                  git(repo,'add','seed')
+                  git(repo,'-c','user.name=fixture','-c','user.email=fixture@example.com','commit','-m','seed')
+                  sha = git(repo,'rev-parse','HEAD')
+                  remote = root/'origin.git'
+                  subprocess.run(['git','init','--bare',str(remote)],check=True,capture_output=True)
+                  git(repo,'remote','add','origin',str(remote))
+                  (repo/'.github/rulesets').mkdir(parents=True)
+                  (repo/'.github/rulesets/main-protection.json').write_text('{}')
+                  data={'state':'MERGED','headRefName':'slice/1-fixture','headRefOid':sha,'mergeCommit':sha,'closingIssuesReferences':[1,2]}
+                  data.update(metadata or {})
+                  (root/'pr.json').write_text(json.dumps(data))
+                  if local: git(repo,'branch',data['headRefName'])
+                  bin_dir=root/'bin'; bin_dir.mkdir()
+                  gh=bin_dir/'gh'; gh.write_text(stub); gh.chmod(0o755)
+                  env=dict(os.environ,PATH=str(bin_dir)+os.pathsep+os.environ['PATH'],FIXTURE=str(root),PM4GH_LOCK_DIR=str(root/'locks'))
+                  env.update(env_extra or {})
+                  p=subprocess.run(['bash',str(script),'9',*flags],cwd=repo,env=env,capture_output=True,text=True)
+                  assert p.returncode == expected, f'{name}: expected exit {expected}, got {p.returncode}\n{p.stdout}{p.stderr}'
+                  writes=(root/'writes').read_text().splitlines() if (root/'writes').exists() else []
+                  if expected == 0:
+                      for n in [1,2]:
+                          body=(root/f'comments-{n}').read_text() if (root/f'comments-{n}').exists() else ''
+                          assert sha in body and 'refs/pull/9/head' in body, f'{name}: Issue #{n} lacks recovery record'
+                      assert len(writes)==2, f'{name}: expected one write per linked Issue, got {writes}'
+                      if local:
+                          assert all('local=1' in w for w in writes), f'{name}: deleted before recording'
+                          assert subprocess.run(['git','show-ref','--verify','--quiet','refs/heads/'+data['headRefName']],cwd=repo).returncode != 0
+                      if again:
+                          q=subprocess.run(['bash',str(script),'9'],cwd=repo,env=env,capture_output=True,text=True)
+                          assert q.returncode==0, q.stdout+q.stderr
+                          assert (root/'writes').read_text().splitlines()==writes, f'{name}: rerun duplicated recovery comments'
+                          dry=subprocess.run(['bash',str(script),'9','--dry-run'],cwd=repo,env=env,capture_output=True,text=True)
+                          assert dry.returncode==0, dry.stdout+dry.stderr
+                          assert (root/'writes').read_text().splitlines()==writes, f'{name}: dry run wrote comments'
+                  else:
+                      if '--dry-run' in flags or env_extra and (env_extra.get('FETCH_FAIL') or env_extra.get('WRITE_FAIL')) or metadata:
+                          assert not writes, f'{name}: unexpected writes {writes}'
+                      if local:
+                          assert subprocess.run(['git','show-ref','--verify','--quiet','refs/heads/'+data['headRefName']],cwd=repo).returncode == 0, f'{name}: deleted branch on failure'
+                  print('PASS: '+name)
+
+          case('merge already deleted local branch; all linked Issues recorded; rerun/dry-run idempotent',again=True)
+          case('local branch retained until both recovery comments verified',local=True)
+          case('dry-run missing anchor is FAIL and zero writes',expected=1,flags=('--dry-run',))
+          case('dry-run local branch is FAIL and preserves branch',local=True,expected=1,flags=('--dry-run',))
+          case('comment read failure is FAIL and zero writes',local=True,expected=1,env_extra={'FETCH_FAIL':'1'})
+          case('comment write failure is FAIL and preserves branch',local=True,expected=1,env_extra={'WRITE_FAIL':'1'})
+          case('successful API without persisted record is FAIL and preserves branch',local=True,expected=1,env_extra={'DROP_WRITE':'1'})
+          case('missing PR head SHA is FAIL and zero writes',expected=1,metadata={'headRefOid':''})
+          case('missing merge SHA is FAIL and zero writes',expected=1,metadata={'mergeCommit':''})
+          case('unmerged PR cannot write anchors or delete branch',local=True,expected=1,metadata={'state':'OPEN'})
+          print('PASS: 10 closeout regression scenarios')
+          PY_CLOSEOUT_TEST
+
       - name: 项目自身测试套件 tests/run.sh（约定：exit 0 = 通过）
         run: |
           set -euo pipefail
