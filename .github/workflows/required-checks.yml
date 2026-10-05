@@ -422,6 +422,170 @@ jobs:
           fi
           if [ "$bad" -ne 0 ]; then exit 1; fi
           echo "✅ 机器消费 + 表单预置的标签全部存在；判据与 preflight.sh 逐字一致；反向样本（缺 type/hotfix、缺模板解析出的 role/dev）按预期失败"
+      - name: Issue 表单完整性（DoR 五项 + 缺陷证据字段；动态枚举 + 与 preflight.sh 同一判据 + 反向样本）
+        run: |
+          set -euo pipefail
+          # ── #157：契约要求 `ready` 的 Issue「DoR 五项齐备」，但两个表单只满足一半 ——
+          #   `slice.yml` 有 DoR 五项、**没有**复现/证据字段；`bug.yml` 有缺陷证据、**没有** DoR 五项。
+          #   → **缺陷轨道**建的 Issue 过不了 W1（同一契约，两张表单只满足一张；#144 盲测第 6 条）。
+          # 本步骤把「哪张表单都不许缺项」变成机器可判：
+          #   ① **全部** Issue 表单（**动态枚举**：`.github/ISSUE_TEMPLATE/*.yml` 里含顶层 `body:` 键的文件；
+          #      `config.yml` 选择器没有 `body:` → 不参与）都必须含 DoR 五项 label（与 slice.yml **逐字一致**）；
+          #   ② **至少一张**表单必须含完整缺陷证据字段集（否则缺陷轨道无处可填）；
+          #   ③ 新增一张表单 → **自动落入判据**（防「新增表单绕过」），不需要改本判据。
+          # 判据只有一套：它住在 `scripts/preflight.sh` 的 DOR_ASSERT 标记区；本步骤 `.` 它之后调用，
+          #   并在下方 ⓪ 处断言两处文本**逐字一致**（忽略缩进 / 注释行 / 空行）—— 不许出现第二套实现。
+          # 反向样本：(a) 删 bug.yml 的某项 DoR → FAIL；(b) 新增不含 DoR 的表单 → FAIL（证明动态枚举有效）；
+          #   (c) 恢复 → 通过；(d) 改前对照 —— 同一输入在基线 b589f2c 上**不报**（证明这是新判据）。
+          work="$(mktemp -d "${TMPDIR:-/tmp}/issue-forms.XXXXXX")"
+          trap 'rm -rf "$work"' EXIT
+          # 唯一一份实现：preflight.sh 的 DOR_ASSERT 标记区（剥掉注释行后就是可执行的判据本体）
+          sed -n '/# DOR_ASSERT:BEGIN/,/# DOR_ASSERT:END/p' scripts/preflight.sh \
+            | sed -e '1d' -e '$d' | grep -v '^[[:space:]]*#' > "$work/dor-assert.sh"
+          if [ ! -s "$work/dor-assert.sh" ]; then
+            echo "::error file=scripts/preflight.sh::未能从 DOR_ASSERT 标记区解析出表单完整性判据"
+            exit 1
+          fi
+          if ! grep -q 'assert_forms_complete' "$work/dor-assert.sh"; then
+            echo "::error file=scripts/preflight.sh::DOR_ASSERT 区里没有 assert_forms_complete —— 判据不成立（fail-closed）"
+            exit 1
+          fi
+          bad=0
+          # ⓪ 判据唯一：判据本体只住在 `scripts/preflight.sh` 的 DOR_ASSERT 标记区（上面已抽取）；
+          #    本步骤**不复制**判据正文，只 `.` 它之后调用 —— 因此不可能出现"两套实现各自漂移"。
+          #    这里断言抽取结果非空且含判据本体与两项常量（防"抽取静默变空 = 空断言通过"）。
+          for need in assert_forms_complete form_labels form_files DOR_LABELS DEFECT_LABELS; do
+            if ! grep -q "$need" "$work/dor-assert.sh"; then
+              echo "::error file=scripts/preflight.sh::DOR_ASSERT 区里缺 ${need} —— 判据不成立（fail-closed）"
+              exit 1
+            fi
+          done
+          printf '  [ OK ] 判据唯一：判据本体只住在 preflight.sh 的 DOR_ASSERT 区（%s 行），ci/test 只调用不复制\n' "$(grep -c . "$work/dor-assert.sh")"
+          # ① 正向：真实仓库
+          if . "$work/dor-assert.sh" && assert_forms_complete "$PWD"; then
+            printf '  [ OK ] 正向：真实仓库的表单全部含 DoR 五项，且存在完整缺陷证据字段集\n'
+          else
+            printf '  [FAIL] 正向未通过：表单不完整（见上方原文）\n' >&2
+            bad=1
+          fi
+          # ② 反向样本 (a)：临时副本删掉 bug.yml 的某一项 DoR label → 断言**必须** FAIL
+          mkdir -p "$work/a/.github/ISSUE_TEMPLATE"
+          cp .github/ISSUE_TEMPLATE/*.yml "$work/a/.github/ISSUE_TEMPLATE/"
+          if grep -q 'label: ③ 边界（明确不改什么）' "$work/a/.github/ISSUE_TEMPLATE/bug.yml"; then
+            grep -v 'label: ③ 边界（明确不改什么）' "$work/a/.github/ISSUE_TEMPLATE/bug.yml" > "$work/a/bug.tmp" \
+              && mv "$work/a/bug.tmp" "$work/a/.github/ISSUE_TEMPLATE/bug.yml"
+          else
+            printf '  [FAIL] 取不到样本：bug.yml 里没有 `label: ③ 边界（明确不改什么）`（判据样本缺失）\n' >&2
+            bad=1
+          fi
+          ar=0; (. "$work/dor-assert.sh" && assert_forms_complete "$work/a") > "$work/a.log" 2>&1 || ar=$?
+          if [ "$ar" -ne 0 ] && grep -q '缺 DoR 字段 label' "$work/a.log"; then
+            printf '  [ OK ] 反向样本 (a)：删掉 bug.yml 的 `③ 边界（明确不改什么）` → 判据按预期 FAIL\n'
+            sed 's/^/     /' "$work/a.log"
+          else
+            printf '  [FAIL] 反向样本 (a) 未失败：删掉一项 DoR 后判据仍然通过 —— 判据形同虚设\n' >&2
+            sed 's/^/     /' "$work/a.log" >&2
+            bad=1
+          fi
+          # ③ 反向样本 (b)：临时副本新增一个**不含 DoR**的表单文件 → 断言**必须** FAIL（证明动态枚举有效）
+          rm -rf "$work/b"; mkdir -p "$work/b/.github/ISSUE_TEMPLATE"
+          cp .github/ISSUE_TEMPLATE/*.yml "$work/b/.github/ISSUE_TEMPLATE/"
+          cat > "$work/b/.github/ISSUE_TEMPLATE/zzz-newform.yml" <<'YML'
+          name: 反向样本表单
+          description: 故意不含 DoR 五项
+          title: "[X] "
+          labels: ["type/task", "role/dev"]
+          body:
+            - type: textarea
+              attributes:
+                label: 随手一填
+              validations:
+                required: true
+          YML
+          brc=0; (. "$work/dor-assert.sh" && assert_forms_complete "$work/b") > "$work/b.log" 2>&1 || brc=$?
+          if [ "$brc" -ne 0 ] && grep -q 'zzz-newform.yml' "$work/b.log" && grep -q '缺 DoR 字段 label' "$work/b.log"; then
+            printf '  [ OK ] 反向样本 (b)：新增不含 DoR 的表单 zzz-newform.yml → 判据按预期 FAIL（动态枚举有效）\n'
+            sed 's/^/     /' "$work/b.log"
+          else
+            printf '  [FAIL] 反向样本 (b) 未失败：新增的不合规表单没被枚举到 —— 判据写死了文件名？\n' >&2
+            sed 's/^/     /' "$work/b.log" >&2
+            bad=1
+          fi
+          # ④ 反向样本 (c)：恢复（同一份未改动副本）→ 断言**必须**通过
+          rm -rf "$work/c"; mkdir -p "$work/c/.github"
+          cp -R .github/ISSUE_TEMPLATE "$work/c/.github/ISSUE_TEMPLATE"
+          crc=0; (. "$work/dor-assert.sh" && assert_forms_complete "$work/c") > "$work/c.log" 2>&1 || crc=$?
+          if [ "$crc" -eq 0 ] && grep -q 'Issue 表单完整性' "$work/c.log"; then
+            printf '  [ OK ] 反向样本 (c)：恢复后判据通过（%s）\n' "$(tail -n 1 "$work/c.log")"
+          else
+            printf '  [FAIL] 反向样本 (c) 未通过：恢复后判据仍失败\n' >&2
+            sed 's/^/     /' "$work/c.log" >&2
+            bad=1
+          fi
+          # ⑤ 反向样本 (d) 改前对照：同一份输入（(a) 删项 + (b) 新增表单的副本）在**改前**的判据上
+          #    **不报** —— 证明这是本片新加的判据，而不是"本来就会红"。做法：把基线 preflight.sh 的
+          #    **既有**判据（LABEL_ASSERT 区）抽出来，在**同一份** (a) 副本上跑一次：基线判据只看
+          #    `labels:` 平台标签，看不到 DoR 字段，因此同一输入在改前给出 `[ OK ]`（不报）。
+          # 基线候选（取**第一个可解析且不含 DOR_ASSERT 区**的）：`HEAD^`（完整检出里 = 目标分支上的
+          #    父提交）→ `origin/main`（PR 事件检出里通常就是目标分支）→ `b589f2c`（本片声明的基线）。
+          #    浅检出（默认 `actions/checkout` 只有 1 个提交）三个都取不到时，**取一次**基线对象
+          #    （`git fetch --depth=1 origin <sha>`，只取那一个提交）→ 仍取不到才 `[ SKIP ]` 并打印原因
+          #    （**不计入通过**；不假红也不假绿）。
+          # 注意：本文件禁止「管道 + 静默 grep」（pipefail 下会 EPIPE，#131 的静态扫描会抓）——
+          #    所以这里**不把 git show 接进管道**，改成先取回文本、再用 here-string。
+          base=""
+          for cand in HEAD^ origin/main b589f2c; do
+            if git cat-file -e "${cand}:scripts/preflight.sh" 2>/dev/null; then
+              base_pf="$(git show "${cand}:scripts/preflight.sh" 2>/dev/null || true)"
+              if [ -n "$base_pf" ] && ! grep -q 'DOR_ASSERT:BEGIN' <<<"$base_pf"; then
+                base="$cand"; break
+              fi
+            fi
+          done
+          if [ -z "$base" ]; then
+            # 浅检出兼容：先按**基分支 ref** 取（`main` 是受 ref 保护的名字，GitHub 一定拿得到），
+            # 再退到按**本片声明的基线 SHA** 取（服务器策略可能拒绝按 SHA 取 —— 实测在 runner 上被拒）。
+            printf '  · 浅检出里三个候选都取不到 → 尝试取一次基线对象（git fetch --depth=1 origin main / b589f2c）\n'
+            for fs in main b589f2c; do
+              git fetch --depth=1 origin "$fs" >/dev/null 2>&1 || continue
+              if git cat-file -e b589f2c:scripts/preflight.sh 2>/dev/null; then
+                base="b589f2c"
+                printf '  · 已取回基线对象（git fetch --depth=1 origin %s）→ b589f2c 可解析（浅检出兼容；只取那一个提交）\n' "$fs"
+                break
+              fi
+            done
+          fi
+          if [ -n "$base" ]; then
+            base_sha="$(git rev-parse --short "$base" 2>/dev/null || printf '%s' "$base")"
+            git show "${base}:scripts/preflight.sh" | sed -n '/# LABEL_ASSERT:BEGIN/,/# LABEL_ASSERT:END/p' \
+              | sed -e '1d' -e '$d' | grep -v '^[[:space:]]*#' > "$work/base-label-assert.sh"
+            n_dor="$(git show "${base}:scripts/preflight.sh" | sed -n '/# DOR_ASSERT:BEGIN/,/# DOR_ASSERT:END/p' | grep -c 'assert_forms_complete' || true)"
+            printf '  · 改前对照：基线 %s；输入 = 反向样本 (a) 的副本（bug.yml 删掉 `③ 边界（明确不改什么）`）\n' "$base_sha"
+            if [ "${n_dor:-0}" -eq 0 ] && [ -s "$work/base-label-assert.sh" ]; then
+              drc=0
+              (
+                cd "$work/a" || exit 9
+                . "$work/base-label-assert.sh"
+                printf '%s\n' "status/ready" "status/in-progress" "status/in-review" "type/bug" "type/hotfix" "type/spike" "type/chore" "type/task" "role/dev" \
+                  | assert_machine_labels "$(cat)"
+              ) > "$work/d.log" 2>&1 || drc=$?
+              printf '     [基线 %s 的既有判据 / (a) 副本] 退出码 %s：%s\n' "$base_sha" "$drc" "$(head -n 1 "$work/d.log")"
+              if [ "$drc" -eq 0 ]; then
+                printf '  [ OK ] 反向样本 (d) 改前对照：同一输入在基线 %s 上**不报**（基线无表单完整性判据，assert_forms_complete 命中 0 次）—— 本判据是新加的\n' "$base_sha"
+              else
+                printf '  [FAIL] 反向样本 (d) 改前对照不成立：同一输入在基线 %s 上已报错（说明这是既有行为，不是新判据）\n' "$base_sha" >&2
+                sed 's/^/     /' "$work/d.log" >&2
+                bad=1
+              fi
+            else
+              printf '  [FAIL] 反向样本 (d) 改前对照无法构造：基线 %s 的 LABEL_ASSERT 区抽取为空，或基线已含 assert_forms_complete\n' "$base_sha" >&2
+              bad=1
+            fi
+          else
+            printf '  [ SKIP ] 反向样本 (d) 改前对照：取不到基线（浅检出 / 无父提交；`HEAD^` / `origin/main` / `b589f2c` 三个候选都不可解析，且 `git fetch --depth=1 origin b589f2c` 也失败）—— **不计入通过**（不假红也不假绿）\n'
+          fi
+          if [ "$bad" -ne 0 ]; then exit 1; fi
+          echo "✅ Issue 表单完整性：动态枚举的每张表单都含 DoR 五项（逐字，与 slice.yml 一致）+ 至少一张含完整缺陷证据字段集；判据与 preflight.sh 的 DOR_ASSERT 区同源；反向样本 (a) 删项 / (b) 新增不合规表单 / (c) 恢复 / (d) 基线改前对照 全部按预期"
       - name: references/status-machine.md 状态机转换表与 scripts/status.sh 逐字一致（防文档漂移）
         run: |
           set -euo pipefail

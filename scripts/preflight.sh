@@ -9,6 +9,9 @@
 #         **CODEOWNERS 完整性**（每个 owner 是协作者且有 push、评审身份是 `*` 的 owner、
 #         合并身份是协作者 —— 防 require_code_owner_review 永久锁死；开关取值以**线上实测**为准）/
 #         机器消费与 **Issue 表单预置**的标签存在（判据 LABEL_ASSERT，与 ci/test 同一段文本）/
+#         **Issue 表单完整性**（#157：**动态枚举**全部表单 → 每个都必须含 DoR 五项 label（逐字）；
+#         且至少一张表含完整缺陷证据字段集；判据 DOR_ASSERT，与 ci/test 同一段文本。目录缺失 = `[FAIL]`，
+#         见判据区的理由）/
 #         **`.github/` 内链接的 slug == 当前仓库 slug**（P6：防复制到别处后忘改，判据 = gh repo view）/
 #         **并发模型**（#159，第 3、4 组；#169 修假红）：① R1 **单写者锁**——本 clone 若已被另一个写者占用
 #         → `[FAIL]`，但"占用"的判据是**写者标识匹配**（pid 存活 **且** cmd/起始时间逐字一致）：pid 会被
@@ -123,6 +126,139 @@ assert_machine_labels() {
   return 0
 }
 # LABEL_ASSERT:END
+
+# ── 表单完整性判据：DoR 五项 + 缺陷证据字段（本仓库**唯一**的一份实现）──────────
+# 为什么（#157）：契约要求 `ready` 的 Issue「DoR 五项齐备」，但两个表单只满足一半 ——
+#   `slice.yml` 有 DoR 五项、**没有**复现/证据字段；`bug.yml` 有缺陷证据、**没有** DoR 五项。
+#   于是**缺陷轨道**建的 Issue 过不了 W1 的 DoR 判据（同一契约、两张表单只满足一张）。本判据把
+#   「哪张表单都不许缺项」变成机器可判：**全部** Issue 表单都必须含 DoR 五项（label 逐字），
+#   且**至少一张**表单必须含完整缺陷证据字段集（否则缺陷轨道无处可填）。
+# 枚举是**动态**的：文件集 = `.github/ISSUE_TEMPLATE/*.yml` 里含顶层 `body:` 键的文件
+#   （Issue Form 必需键；`config.yml` 选择器配置没有它 → 不参与，也不被当成表单）。
+#   **新增一张表单 → 自动落入判据**（防「新增表单绕过」），不需要改本判据。
+# 三态显式（exceptions.md §4）：通过 → 打印 [ OK ]（含动态枚举出的表单清单）；
+#   缺项 → 非零退出 + **逐条**指出「文件 + 缺哪个 label」；**输入读不到 = 不通过**（fail-closed）。
+# 「没有 `.github/ISSUE_TEMPLATE/` 目录」的行为与理由：**判 [FAIL]** ——
+#   本仓库（以及本流程的采用者仓库）的 Issue 表单是**交付物的一部分**（随 `.github/**` 一起复制，
+#   见 references/portability.md §1 第 9 条），表单就是「DoR 五项齐备」这条契约的唯一固定载体；
+#   目录缺失 = 用户建单时**无表单可走**（`config.yml` 已关空白 Issue）→ 契约当场落空。
+#   这里**不**做「目录不存在就按未声明跳过」的宽容处理：那等于「删掉目录即绕过门禁」（假绿）。
+#   `config.yml` 的 `blank_issues_enabled: false` 与本判据是同一取态的两次表达（禁空白 + 表单必须齐项）。
+# 不新增脚本（判据住在既有 preflight.sh + ci/test 里）；同一段文本在两处**逐字一致**（LABEL_ASSERT 同款做法）。
+# DOR_ASSERT:BEGIN
+# ① DoR 五项：与 `.github/ISSUE_TEMPLATE/slice.yml` 的 ①…⑤ **逐字一致**（同一事实只有一种写法）。
+DOR_LABELS="① 价值
+② 验收标准
+③ 边界（明确不改什么）
+④ 依赖与契约
+⑤ 估算与归属"
+# ② 缺陷证据字段集：任一表单必须**整组**具备（= 缺陷轨道的表单）。
+DEFECT_LABELS="复现步骤
+期望 vs 实际
+影响版本 / 提交
+证据
+回滚 / 临时缓解"
+
+# 枚举参与判据的表单文件（含顶层 `body:` 键的 *.yml）；**不写死文件名**。
+form_files() {
+  ffs_dir="${1:-.github/ISSUE_TEMPLATE}"
+  [ -d "$ffs_dir" ] || return 0
+  for ffs_f in "$ffs_dir"/*.yml; do
+    [ -f "$ffs_f" ] || continue
+    grep -q '^body:[[:space:]]*$' "$ffs_f" 2>/dev/null && printf '%s\n' "$ffs_f"
+  done
+  return 0
+}
+
+# 从表单抽取全部 `label:` 值（含 checkboxes 的 options 标签）。
+# 只取 `label:` **行首**的键（`options:` 下的 `- label:` 缩进不同，按值处理即可）；
+# markdown 字段的 `value:` 文本里可能逐字出现标签名（本仓表单的导语就提到 DoR 五项）→ 必须跳过，
+# 否则「正文提了一句」会被当成「字段存在」= 假绿。
+form_labels() {
+  awk '
+    function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
+    function unquote(s) {
+      if (s ~ /^"/) { sub(/^"/, "", s); sub(/"[ \t]*$/, "", s) }
+      return s
+    }
+    { t = trim($0) }
+    t == "- type: markdown" { inmd = 1; next }
+    inmd && t ~ /^- type:/ { inmd = 0 }
+    inmd { next }
+    t ~ /^label:[ \t]/ {
+      v = t; sub(/^label:[ \t]*/, "", v); sub(/[ \t]+#.*$/, "", v)
+      print "LABEL\t" trim(unquote(v))
+      next
+    }
+  ' "$@" 2>/dev/null || true
+}
+
+# 判据本体：$1 = 仓库根目录（其下 .github/ISSUE_TEMPLATE/）；返回 0 = 通过。
+assert_forms_complete() {
+  af_root="${1:-.}"
+  af_dir="${af_root}/.github/ISSUE_TEMPLATE"
+  af_bad=0
+  if [ ! -d "$af_dir" ]; then
+    printf '[FAIL] 缺少 Issue 表单目录：%s\n' "$af_dir" >&2
+    printf '       后果：DoR 五项的固定载体不存在 → 建的 Issue 过不了 W1；不要靠「目录不存在就跳过」绕过\n' >&2
+    return 1
+  fi
+  af_files=""
+  while IFS= read -r af_f; do
+    [ -n "$af_f" ] || continue
+    af_files="${af_files}${af_files:+ }${af_f}"
+  done <<EOF
+$(form_files "$af_dir")
+EOF
+  if [ -z "$af_files" ]; then
+    printf '[FAIL] %s 下枚举不到任何 Issue 表单（*.yml 且含顶层 body: 键）\n' "$af_dir" >&2
+    printf '       后果：没有表单可走，DoR 五项与缺陷证据无处收集（fail-closed：枚举不到 ≠ 通过）\n' >&2
+    return 1
+  fi
+  af_evidence=""
+  for af_f in $af_files; do
+    af_got="$(form_labels "$af_f" | sed -n 's/^LABEL\t//p')"
+    af_missing=""
+    while IFS= read -r af_l; do
+      [ -n "$af_l" ] || continue
+      grep -qxF "$af_l" <<<"$af_got" || af_missing="${af_missing}${af_missing:+、}${af_l}"
+    done <<EOF
+$DOR_LABELS
+EOF
+    if [ -n "$af_missing" ]; then
+      printf '[FAIL] %s 缺 DoR 字段 label：%s\n' "$af_f" "$af_missing" >&2
+      printf '       后果：用该表单建的 Issue 拿不到 DoR 五项 → 过不了 W1（判据与 ci/test 逐字一致）\n' >&2
+      af_bad=$((af_bad + 1))
+    fi
+    af_ef=""
+    af_em=""
+    while IFS= read -r af_l; do
+      [ -n "$af_l" ] || continue
+      if grep -qxF "$af_l" <<<"$af_got"; then
+        af_ef="${af_ef}${af_ef:+、}${af_l}"
+      else
+        af_em="${af_em}${af_em:+、}${af_l}"
+      fi
+    done <<EOF
+$DEFECT_LABELS
+EOF
+    if [ -z "$af_em" ]; then
+      af_evidence="${af_evidence}${af_evidence:+ }${af_f}"
+    else
+      printf '       [ 提示 ] %s 不是缺陷表单：缺 %s（合规；判据只要求至少一张表单**整组**具备）\n' "$af_f" "$af_em"
+    fi
+  done
+  if [ -z "$af_evidence" ]; then
+    printf '[FAIL] 枚举到的表单里没有一张含完整缺陷证据字段集（%s）\n' "$(printf '%s' "$DEFECT_LABELS" | tr '\n' '、')" >&2
+    printf '       后果：缺陷轨道无处填复现 / 证据 → 要么漏证据，要么另建表外格式（同一契约、两个载体）\n' >&2
+    af_bad=$((af_bad + 1))
+  fi
+  if [ "$af_bad" -ne 0 ]; then return 1; fi
+  printf '[ OK ] Issue 表单完整性：动态枚举 %s 张表单，全部含 DoR 五项（逐字）；缺陷证据字段集见 %s\n' \
+    "$(printf '%s' "$af_files" | wc -w | tr -d ' ')" "$af_evidence"
+  return 0
+}
+# DOR_ASSERT:END
 
 fail=0
 ok()   { printf '[ OK ] %s\n' "$*"; }
@@ -756,7 +892,7 @@ else
   fi
 fi
 
-info "9/10 机器消费与 Issue 表单预置的标签存在性（status/* ×3 + type/* ×4 + 模板 labels:）"
+info "9/10 机器消费与 Issue 表单预置的标签存在性（status/* ×3 + type/* ×4 + 模板 labels:）+ 表单完整性（DoR 五项 + 缺陷证据字段，动态枚举 *.yml）"
 if [ -z "$REPO" ]; then
   bad "仓库 slug 未知，跳过标签存在性断言"
 else
@@ -768,6 +904,9 @@ else
     assert_machine_labels "$live_labels" || fail=$((fail + 1))
   fi
 fi
+# 表单完整性（#157）判据见文件头 DOR_ASSERT（与 ci/test 逐字一致）；失败原因由判据自己打印。
+# 与上面两项标签断言同为**仓库内文件**的事实，因此放在同一组（分组仍 10 组）。
+assert_forms_complete "$REPO_ROOT" || fail=$((fail + 1))
 
 info "10/10 未提交任何凭据"
 if git grep -nE 'ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|gho_[A-Za-z0-9]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY-----' -- . >/dev/null 2>&1; then

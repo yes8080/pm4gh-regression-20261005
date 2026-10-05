@@ -14,6 +14,9 @@ body:
           **手动**给 Issue 加 `type/hotfix`，开工一律用 `scripts/start.sh <issue#> --type hotfix --as author`；
           两者都漏时热修会静默退化成 `fix/`
 
+        **表单选择判据**（与 `slice.yml` 同源，见 `references/flow.md` W1）：发现**缺陷** → 用本表单（带复现 /
+        证据字段）；交付**新能力** → 用切片表单；**两侧都要 DoR 五项** —— 两表单的 ①…⑤ label 逐字一致。
+
   - type: dropdown
     attributes:
       label: 轨道
@@ -21,6 +24,50 @@ body:
         - 开发期缺陷（已合并后新开 Issue）
         - 线上故障（Hotfix）
         - 依赖/安全扫描自动发现
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: ① 价值
+      description: 一句话说明修复这个缺陷交付什么价值（影响谁 / 不修会怎样；不要写"修一下"）。
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: ② 验收标准
+      description: 可判定条目。PR 的第 4 节必须逐条给证据。
+      placeholder: |
+        - [ ] Given … When … Then …
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: ③ 边界（明确不改什么）
+      description: 本次不修的相邻缺陷 / 不动的模块，供评审人核对是否越界；只修一处也要写明。
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: ④ 依赖与契约
+      description: 阻塞项（用 blocked by 关系建立）、受影响的接口或数据契约、需要的权限或凭据
+      placeholder: |
+        - blocked by #12
+        - 涉及对外契约：<接口 / 表 / 文件格式>
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: ⑤ 估算与归属
+      description: Size（1/2/3/5/8）、执行者、目标日期
+      placeholder: |
+        Size: 2（约 1 天）
+        执行者: @yes8080-dev-bot
+        目标: 2026-10-08
     validations:
       required: true
 

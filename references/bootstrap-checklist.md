@@ -44,7 +44,7 @@
 | ☐ | 6 | `ISSUE_TEMPLATE/config.yml` 的 contact 链接 | ✅ 同 #1（P6） |
 | ☐ | 7 | `SKILL.md` 安装路径（已是相对当前仓库写法） | ❌ 无（人工核对绝对路径零命中） |
 | ☐ | 8 | 测试床 / 绝对路径引用（stub slug、登录名） | ❌ 无（stub 值不参与断言） |
-| ☐ | 9 | 流程标签体系（`status/*` ×3 + `type/*` ×4 + 表单 `labels:`） | ✅ 第 9 段 |
+| ☐ | 9 | 流程标签体系（`status/*` ×3 + `type/*` ×4 + 表单 `labels:`）**与表单完整性**（每张表单都含 DoR 五项 label、至少一张含缺陷证据字段集；`.github/ISSUE_TEMPLATE/` 必须存在） | ✅ 第 9 段（`LABEL_ASSERT` + `DOR_ASSERT`，与 `ci/test` 逐字一致 + 动态枚举） |
 | ☐ | 10 | 门禁接线（规则集 + 5 个必需检查 job `name:` 一字不改） | ✅ 第 7/8 段 |
 | ☐ | 11 | 项目测试套件入口（`tests/run.sh`；没有测试就**别建** `tests/`） | ✅ `ci/test` 项目测试 step + 第 3 段 |
 
@@ -62,7 +62,7 @@
 | ☐ | 6 | 作者凭据 scope 含 `repo` + `workflow`，且作者对本仓库有 push、无 admin |
 | ☐ | 7 | 工作流产出的检查名与 5 个必需 context **精确一致**（改名 = 所有 PR 永久 pending） |
 | ☐ | 8 | 线上规则集与仓库内定义**整份一致**；CODEOWNERS owner 有 push、评审身份是 `*` owner、合并身份是协作者 |
-| ☐ | 9 | 机器消费（`status/*` ×3 + `type/*` ×4）与 Issue 表单预置的标签**都存在** |
+| ☐ | 9 | 机器消费（`status/*` ×3 + `type/*` ×4）与 Issue 表单预置的标签**都存在**；且**每张** Issue 表单都含 DoR 五项 label（逐字）、**至少一张**含完整缺陷证据字段集（复现步骤 / 期望 vs 实际 / 影响版本 / 证据 / 回滚·临时缓解）；`.github/ISSUE_TEMPLATE/` 目录必须存在 |
 | ☐ | 10 | 仓库里没有凭据被提交 |
 
 ## 4. 落地完成的判据（可复核，逐条给证据）
@@ -70,7 +70,7 @@
 - [ ] `scripts/preflight.sh` 全 `[ OK ]`、退出码 `0`（**唯一**的"装好了"判据）。
 - [ ] 目标仓库的 PR 上 `ci/lint` + `ci/test` 通过（5 个必需检查 context 与 job `name:` **一字不改**）。
 - [ ] 规则集已在平台上建好且与 `.github/rulesets/main-protection.json` 一致（第 8 段）。
-- [ ] 用 Issue 表单**真的建过一张单**（验证表单预置标签存在；表单指向不存在的标签会当场失败）。
+- [ ] 用 Issue 表单**真的建过一张单**（验证表单预置标签存在；表单指向不存在的标签会当场失败），且两张表单都能给出 DoR 五项 —— 缺陷表单还要带齐复现 / 证据字段（判据 `DOR_ASSERT`，第 9 段）。
 - [ ] 文档里的命令形态与脚本参数解析一致（`ci/test` 的「文档命令可执行性」判据；判据本身靠脚本的 `--parse-only` 零副作用解析路径）。
 - [ ] ❌ **反例（跑不了，别照抄）**：`scripts/status.sh 144 in-progress`（缺 `--as` → fail-closed 拒绝；见 [flow.md](flow.md)）<!-- 非可执行示例 -->
 
