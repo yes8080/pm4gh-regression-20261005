@@ -1919,6 +1919,49 @@ jobs:
           echo
           echo '✅ 符号锚点判据：两份清单零 `path:line`；锚点逐字存在；保留行号时锚点必须就在那一行。'
           echo "   反向样本 A（锚点漂移 → FAIL）／B（清单塞回 path:line → FAIL）／C（其它文档不带锚点 → FAIL）／D（替换点缺锚点 → FAIL）／F（锚点不在行号那一行 → FAIL）／E（恢复 → 通过）全部按预期"
+      - name: W0 分支归属文档与真实 R2 实现一致（两个合法状态 + 四个反向样本）
+        run: |
+          python3 - references/flow.md scripts/preflight.sh <<'PY_FLOW_ELIGIBILITY'
+          from pathlib import Path
+          import sys
+
+          def validate(flow, preflight):
+              assert flow.count('## W0 ') == 1 and flow.count('## W1 ') == 1, 'cannot locate W0/W1'
+              w0 = flow.split('## W0 ', 1)[1].split('## W1 ', 1)[0]
+              for anchor in ['**R2 分支归属**', '② 当前分支']:
+                  lines = [line.split(anchor, 1)[1].split('**R3', 1)[0] for line in w0.splitlines() if anchor in line]
+                  assert len(lines) == 1, 'missing/ambiguous R2 clause: '+anchor
+                  assert all('`status/'+state+'`' in lines[0] for state in ['in-progress','in-review']), 'R2 clause omits a legal state: '+anchor
+                  assert 'OPEN' in lines[0], 'R2 clause must require an open Issue'
+              assert preflight.count('# ── R2 分支归属：') == 1 and preflight.count('# ── R3 ') == 1, 'cannot locate implementation'
+              r2 = preflight.split('# ── R2 分支归属：',1)[1].split('# ── R3 ',1)[0]
+              for state in ['in-progress','in-review']:
+                  assert 'grep -qxF "status/'+state+'"' in r2, 'implementation omits legal state: '+state
+
+          flow = Path(sys.argv[1]).read_text()
+          preflight = Path(sys.argv[2]).read_text()
+          validate(flow, preflight)
+          print('PASS: W0 summary and failure guidance both agree with actual in-progress/in-review eligibility')
+          for state in ['in-progress','in-review']:
+              bad_flow = flow.replace('`status/'+state+'`', '`removed-state`')
+              assert bad_flow != flow
+              try:
+                  validate(bad_flow, preflight)
+              except AssertionError:
+                  print('PASS: documentation omitting '+state+' is rejected')
+              else:
+                  raise AssertionError('mutated documentation escaped: '+state)
+              bad_script = preflight.replace('grep -qxF "status/'+state+'"','grep -qxF "status/removed"')
+              assert bad_script != preflight
+              try:
+                  validate(flow, bad_script)
+              except AssertionError:
+                  print('PASS: implementation omitting '+state+' is rejected')
+              else:
+                  raise AssertionError('mutated implementation escaped: '+state)
+          print('PASS: eligibility contract plus four negative samples')
+          PY_FLOW_ELIGIBILITY
+
       - name: 作者职责与「谁建 Issue」三处单一说法（SKILL.md 权威；旧措辞零命中 + 反向样本）
         run: |
           set -euo pipefail
