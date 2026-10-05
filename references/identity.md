@@ -6,7 +6,7 @@
 
 | 角色 | 账号 | 凭据（**必须在工作区之外**） | 职责 |
 |---|---|---|---|
-| 作者 | `@yes8080-dev-bot` | `$HOME/.config/pm4gh/developer.pat`（scope `repo, workflow`） | 建分支、提交、推送、开 PR、返修、`abort.sh` —— **只加** `--as author` |
+| 作者 | `@yes8080-dev-bot` | `$HOME/.config/pm4gh/developer.pat`（scope `repo, workflow`） | 拆片 + 建 Issue（**作者身份**）、建分支、提交、推送、开 PR、返修、`abort.sh` —— **只加** `--as author` |
 | 评审 | `@yes8080-reviewer-bot` | `$HOME/.config/pm4gh/reviewer.pat`（scope `repo`） | `review.sh <pr#> approve\|request-changes` —— **不加** `--as`，**不得合并** |
 | 合并 | `@yes8080` | 本机 `gh auth login` 登录态（无凭据文件） | `gh pr merge --squash`、改仓库设置、`closeout.sh` |
 

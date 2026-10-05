@@ -1382,6 +1382,154 @@ jobs:
           echo
           echo "✅ 文档命令可执行性：抽出 ${m_total} 条形态（通过 ${m_ok} ／ 跳过 ${m_skip}）全部与脚本参数解析一致；"
           echo "   反向样本 A（删 --as → FAIL）／B（恢复 → 通过）／C（非法身份 → FAIL）／D（脚本不存在 → FAIL）／E（显式标记 → 跳过并打印）／F（清单漏条 → FAIL）全部按预期"
+      - name: 作者职责与「谁建 Issue」三处单一说法（SKILL.md 权威；旧措辞零命中 + 反向样本）
+        run: |
+          set -euo pipefail
+          # ── #156：把「谁建 Issue」从"点"变成"类"的机器判据 ──
+          # 背景：#152 把「拆片 + 建 Issue：作者身份」写进 SKILL.md「切片拆分与分发」W0.5 与
+          #   references/flow.md W1，但 references/identity.md 的**作者职责行**当时没同步
+          #   （#152 的边界只允许改 SKILL.md + references/flow.md）→ 回归盲测据此用
+          #   **dispatcher 身份**（本机 gh 登录态）建了 3 条切片 Issue。本步骤锁死三处表述。
+          # 权威 = SKILL.md；三处 = SKILL.md frontmatter description/W0.5、flow.md W1、identity.md 作者职责行。
+          # 旧矛盾措辞（**实测原文**，取自 #152 之前的 git 历史 6499c39^）：
+          #   references/flow.md:  `| 1 | 人/PM | 交 Issue + 验收标准（DoR 五项） |`
+          #   references/identity.md 作者行: 建分支、提交、推送、开 PR、返修、`abort.sh`（**无**「建 Issue」）
+          #   → 旧说法形态 =「人/PM … 交 Issue」；#152 已改 flow.md，本步骤断言它在文档里**零命中**。
+          # 扫描范围 = 文档（SKILL.md + references/**/*.md + assets/**/*.md + .github/*.md +
+          #   Issue 表单 .yml）—— **不含** .github/workflows/**（本判据的注释里就要写旧原文，自扫会自伤）。
+          # 三态显式：通过 [ OK ] ／ 不一致 [FAIL] + ::error::（file:line + 原文 + 修法）／解析不到 = fail-closed。
+          work="$(mktemp -d "${TMPDIR:-/tmp}/author-duty.XXXXXX")"
+          trap 'rm -rf "$work"' EXIT
+
+          # **唯一一份实现**：正向与全部反向样本都调用它（不允许第二套）。
+          # AUTHOR_DUTY_ASSERT:BEGIN
+          duty_judge() { # $1 = 根目录；0 = 通过
+            root="$1"; bad=0
+            # ① identity.md 作者职责行：必须含「拆片」「建 Issue」「作者身份」
+            duty="$(grep -E '^\|[[:space:]]*作者[[:space:]]*\|' "$root/references/identity.md" 2>/dev/null || true)"
+            if [ -z "$duty" ]; then
+              printf '::error file=references/identity.md::解析不出作者职责行（`| 作者 | …` 表格行）—— 判据不成立（fail-closed）\n' >&2
+              bad=1
+            elif ! grep -q '拆片' <<<"$duty" || ! grep -q '建 Issue' <<<"$duty" || ! grep -q '作者身份' <<<"$duty"; then
+              printf '::error file=references/identity.md::作者职责行缺「拆片 + 建 Issue（作者身份）」—— 与 SKILL.md W0.5 / flow.md W1 分叉\n' >&2
+              printf '       实际：%s\n' "$duty" >&2
+              printf '       修法：补成「拆片 + 建 Issue（**作者身份**）、建分支、…」（措辞以 SKILL.md 为权威；回归盲测因缺这句用 dispatcher 身份建了切片 Issue）\n' >&2
+              bad=1
+            else
+              printf '[ OK ]  references/identity.md 作者职责行含「拆片 + 建 Issue（作者身份）」\n'
+            fi
+            # ② SKILL.md：frontmatter description + W0.5 正文（权威表述）
+            fm="$(awk 'NR==1 && $0=="---" {on=1; next} on && $0=="---" {exit} on {print}' "$root/SKILL.md" 2>/dev/null || true)"
+            w05="$(awk '/^## 切片拆分与分发/ {on=1} on && /^## / && !/^## 切片拆分与分发/ {exit} on {print}' "$root/SKILL.md" 2>/dev/null || true)"
+            if [ -z "$fm" ] || [ -z "$w05" ]; then
+              printf '::error file=SKILL.md::解析不出 frontmatter 或「切片拆分与分发（W0.5）」小节 —— 判据不成立（fail-closed）\n' >&2
+              bad=1
+            else
+              if grep -qF '拆片 + 建 Issue（作者身份）' <<<"$fm"; then
+                printf '[ OK ]  SKILL.md frontmatter description 含「拆片 + 建 Issue（作者身份）」\n'
+              else
+                printf '::error file=SKILL.md::frontmatter description 缺「拆片 + 建 Issue（作者身份）」—— 「谁建 Issue」少一处说法\n' >&2
+                printf '       修法：在 description 的工作流链里补「拆片 + 建 Issue（作者身份）→ 认领 Issue（DoR 五项）」\n' >&2
+                bad=1
+              fi
+              if grep -q '谁建 Issue' <<<"$w05" && grep -q '作者身份' <<<"$w05"; then
+                printf '[ OK ]  SKILL.md W0.5 含「谁建 Issue」+「作者身份」\n'
+              else
+                printf '::error file=SKILL.md::「切片拆分与分发」（W0.5）缺「谁建 Issue：作者身份」—— 本文件是权威表述\n' >&2
+                bad=1
+              fi
+            fi
+            # ③ flow.md W1：必须出现「拆片 + 建 Issue」，且同一行给出「作者身份」
+            w1="$(grep -n '拆片 + 建 Issue' "$root/references/flow.md" 2>/dev/null || true)"
+            if [ -z "$w1" ]; then
+              printf '::error file=references/flow.md::W1 缺「拆片 + 建 Issue：作者身份」—— 与 SKILL.md W0.5 分叉\n' >&2
+              bad=1
+            elif ! grep -q '作者身份' <<<"$w1"; then
+              printf '::error file=references/flow.md::「拆片 + 建 Issue」那行没有「作者身份」：%s\n' "$w1" >&2
+              bad=1
+            else
+              printf '[ OK ]  references/flow.md W1 含「拆片 + 建 Issue：作者身份」\n'
+            fi
+            # ④ #152 之前的旧矛盾措辞零命中（实测原文：「人/PM」交 Issue + 验收标准）
+            old=0
+            for f in "$root"/SKILL.md "$root"/references/*.md "$root"/assets/*.md "$root"/.github/*.md "$root"/.github/ISSUE_TEMPLATE/*.yml; do
+              [ -f "$f" ] || continue
+              hit="$(grep -nE '交[[:space:]]?Issue' "$f" 2>/dev/null || true)"
+              if [ -n "$hit" ]; then
+                printf '       %s:%s\n' "${f#$root/}" "$hit" >&2
+                old=1
+              fi
+            done
+            if [ "$old" -ne 0 ]; then
+              printf '::error file=references/flow.md::文档里出现 #152 之前的旧矛盾措辞「交 Issue」—— 建 Issue 的人又变成人/PM\n' >&2
+              printf '       修法：删掉旧说法，改指 SKILL.md W0.5「谁建 Issue：作者身份」（建单 = 作者身份）\n' >&2
+              bad=1
+            else
+              printf '[ OK ]  文档零命中旧矛盾措辞「交 Issue」（SKILL.md + references/ + assets/ + .github/ 的 .md 与 Issue 表单）\n'
+            fi
+            [ "$bad" -eq 0 ] || return 1
+            return 0
+          }
+          # AUTHOR_DUTY_ASSERT:END
+
+          # ── 正向：真实仓库 ──
+          echo "== 正向：三处「谁建 Issue」表述 + 旧措辞零命中 =="
+          prc=0; duty_judge . || prc=$?
+          [ "$prc" -eq 0 ] || { echo "❌ 作者职责判据在真实仓库上失败：见上方 ::error::（文件 + 原文 + 修法）"; exit 1; }
+
+          # ── 反向样本（全部在临时副本里做，不动工作区）──
+          mk_duty_copy() { # $1 = 目标目录
+            rm -rf "$1"; mkdir -p "$1/.github/ISSUE_TEMPLATE"
+            cp SKILL.md "$1/"
+            cp -R references "$1/"
+            cp -R assets "$1/" 2>/dev/null || true
+            cp .github/*.md "$1/.github/" 2>/dev/null || true
+            cp .github/ISSUE_TEMPLATE/*.yml "$1/.github/ISSUE_TEMPLATE/" 2>/dev/null || true
+          }
+          echo
+          echo "== 反向样本（临时副本）=="
+
+          # A：删掉 identity.md 作者职责行里的「建 Issue」→ 判据**必须** FAIL
+          mk_duty_copy "$work/A"
+          LC_ALL=C awk 'BEGIN{s="拆片 + 建 Issue（**作者身份**）、"} {p=index($0,s); if (p>0) $0=substr($0,1,p-1) substr($0,p+length(s)); print}' \
+            "$work/A/references/identity.md" > "$work/A/references/identity.md.tmp" \
+            && mv "$work/A/references/identity.md.tmp" "$work/A/references/identity.md"
+          arc=0; duty_judge "$work/A" > "$work/A.log" 2>&1 || arc=$?
+          sed -n '1,6p' "$work/A.log" | sed 's/^/   /'
+          if [ "$arc" -ne 0 ] && grep -q 'identity.md::作者职责行缺' "$work/A.log"; then
+            printf '  [ OK ] 反向样本 A：删掉 identity.md 的「建 Issue」→ 判据按预期 FAIL\n'
+          else
+            printf '  [FAIL] 反向样本 A 未失败：删掉「建 Issue」后判据仍然通过 —— 断言形同虚设\n' >&2
+            exit 1
+          fi
+
+          # B：恢复（未改动的同一份副本）→ 判据**必须**通过
+          mk_duty_copy "$work/B"
+          brc=0; duty_judge "$work/B" > "$work/B.log" 2>&1 || brc=$?
+          if [ "$brc" -eq 0 ] && grep -q '零命中旧矛盾措辞' "$work/B.log"; then
+            printf '  [ OK ] 反向样本 B：恢复后判据通过（%s 条 [ OK ]）\n' "$(grep -c '\[ OK \]' "$work/B.log")"
+          else
+            printf '  [FAIL] 反向样本 B 未通过：恢复后判据仍失败\n' >&2
+            sed 's/^/   /' "$work/B.log" >&2
+            exit 1
+          fi
+
+          # C：把 #152 之前的旧原文塞回 flow.md → 「旧措辞零命中」断言**必须** FAIL（证明它非空）
+          mk_duty_copy "$work/C"
+          printf '| 1 | 人/PM | 交 Issue + 验收标准（DoR 五项） |\n' >> "$work/C/references/flow.md"
+          crc=0; duty_judge "$work/C" > "$work/C.log" 2>&1 || crc=$?
+          if [ "$crc" -ne 0 ] && grep -q '旧矛盾措辞' "$work/C.log"; then
+            printf '  [ OK ] 反向样本 C：塞回旧措辞「人/PM … 交 Issue + 验收标准」→ 判据按预期 FAIL\n'
+            grep -m1 '交 Issue + 验收标准' "$work/C.log" | sed 's/^/   /'
+          else
+            printf '  [FAIL] 反向样本 C 未失败：旧矛盾措辞没被抓到 —— 零命中断言形同虚设\n' >&2
+            sed 's/^/   /' "$work/C.log" >&2
+            exit 1
+          fi
+
+          echo
+          echo "✅ 作者职责判据：三处「谁建 Issue」表述一致（SKILL.md frontmatter/W0.5 = 权威）；旧措辞「交 Issue」零命中；"
+          echo "   反向样本 A（删「建 Issue」→ FAIL）／B（恢复 → 通过）／C（塞回旧措辞 → FAIL）全部按预期"
 
 
   linked-issue:
