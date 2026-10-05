@@ -4,7 +4,7 @@
 
 ## 前置约定
 
-- 命令一律在**仓库根目录**执行（`gh` 不带 `-R`）；占位符 `<n>` / `<pr#>` 只填**数字**（不带 `#`，脚本会拒绝）。
+- 命令一律在**目标仓库根目录**执行（`gh` 不带 `-R`）；下文 `scripts/` 指 skill 内脚本，项目内布局使用 `.agents/skills/pm4gh/scripts/` 前缀；占位符 `<n>` / `<pr#>` 只填**数字**（不带 `#`，脚本会拒绝）。
 - 与平台实际行为冲突时以**平台**为准；**必须**开 Issue 改文档，**禁止**按"更方便"执行。
 - `--dry-run`（`start.sh` / `deliver.sh` / `closeout.sh` / `abort.sh` 支持；其余脚本无）= 不建分支、不推送、不建 PR、不写 Issue、不删分支、不迁移状态；`closeout.sh --dry-run` 仍判五项，判不过退出码 `1`。**例外**：`deliver.sh --prepare --dry-run` 仍会写正文骨架文件（`cat >` 在 `--dry-run` 判断之前执行）。
 - **项目测试套件约定（唯一一套）**：项目在 `tests/run.sh` 声明**自己交付物**的测试套件，**`exit 0` = 通过**、非零 = 失败。`ci/test` 的「项目自身测试套件」step 会运行它，`preflight.sh` 第 3 段断言入口存在且可执行。`tests/` 不存在 = 本项目未声明测试套件 —— 两处都**明确打印**「已运行」/「未声明」，**不允许**静默跳过；有 `tests/` 却没有合法 `tests/run.sh`（缺失 / 无 `x` 位）则 CI 与预检都 `[FAIL]`。边界：**删掉 `tests/` 与「本项目确实没有测试」在门禁看来完全一样**（没有声明文件就无法区分），绕过这条等于承诺"本项目不声明测试"。
@@ -27,14 +27,14 @@
 
 ## W0 预检（每次接手都跑）— `scripts/preflight.sh`
 
-- **判据**：无参数；全 `[ OK ]` 且退出码 `0`；任一 `[FAIL]` → 退出码 `1`，**禁止**"先干着看"，把失败项**原文**贴 dispatcher。
+- **判据**：无参数；退出码 `0` 且无 `[FAIL]`（`[WARN]` 不阻断，未执行项不计入通过）；任一 `[FAIL]` → 退出码 `1`，**禁止**"先干着看"，把失败项**原文**贴 dispatcher。
 - 输出 `1/10`…`10/10` 十组：① 命令齐备 ② gh 登录 ③ 仓库形态与 cwd ④ 工作区与远端 ⑤ 三身份凭据 ⑥ 作者凭据 scope 与最小权限 ⑦ 工作流 job 名 == 必需 context ⑧ 线上规则集整份 diff + **CODEOWNERS 完整性**（每个 owner 是协作者且有 push / 评审身份是 `*` 的 owner / 合并身份是协作者 —— 防 `require_code_owner_review` 永久锁死；开关取值只认线上实测值）⑨ 机器消费 + **Issue 表单预置**标签存在（表单标签从 `.github/ISSUE_TEMPLATE/*.yml` 解析，不手抄）+ **表单完整性**（判据 `DOR_ASSERT`：**动态枚举**该目录下全部表单 → 每张都必须含 DoR 五项 label（逐字）；且**至少一张**含完整缺陷证据字段集；目录缺失 = `[FAIL]`）⑩ 工作区内无 `*.pat`。组③还含 **项目测试套件接线**（`tests/` 存在 → `tests/run.sh` 必须存在且可执行；判据用仓库根绝对路径，cwd 是子目录也准）与 **R1 单写者锁**（本 clone 若已被另一个**存活**写者占用 → `[FAIL]`；陈旧锁**自动接管并打印原因**；锁在**工作区之外**）。组④还含 **R2 分支归属**（当前分支必须归属 OPEN 且带 `status/in-progress` 或 `status/in-review` 的在途 Issue（实现、返修和交付后待评审均合法）；**基线分支上显式不适用**并打印「未执行」）与 **R3 在途切片数**。**并发模型**（1 clone = 1 写者 = 1 Issue；并行 = 各自独立 clone）见 [orchestration.md](orchestration.md) §7。
 - **判据**：只有 `[FAIL]` 计入失败，`[WARN]` 一律不阻断（退出码仍 `0`）。常见 `[WARN]`：工作区有未提交改动、本地 `main` 与 `origin/main` 不一致、无法 fetch、评审凭据缺失、作者权限异常、**超过一个 `in-progress`**（并行**允许** —— 前提是各自独立 clone；同一 clone 内仍一次只做一个切片）、默认锁目录不可写时回退到 `/tmp/pm4gh-locks-<uid>`、基线分支上 R2 未执行。组⑦⑧需要 `.github/workflows/*.yml` 存在 —— 在**没有**工作流的副本里跑必然 `[FAIL]`，这是环境事实，不是流程失败。
 - **新增的两条 `[FAIL]` 与修法**：① `本 clone 已被另一个写者占用` → **停下**：要并行就**另开独立 clone**并在新 clone 里用**自己的 Issue**（不要抢锁、不要切别人的分支）；确认原写者已退出后重跑（陈旧锁会被自动接管并打印原因）。② 当前分支不属任何 OPEN 且带 `status/in-progress` 或 `status/in-review` 的在途 Issue（含游离 HEAD / 非切片分支形态）→ 先确认本 clone 归属哪个 Issue，用 `scripts/start.sh <issue#> --as author` 建分支开工，或换到正确分支（**禁止**手工 `git checkout -b`）。两条都**不得**通过删判据 / 改门禁绕过。
 
 ## W1 领片（DoR）
 
-`gh issue list --state open --label status/ready --limit 20 --json number,title,labels` → 只读判定 `scripts/status.sh --check-transition backlog ready`（退出码 `0` = 合法）→ `scripts/status.sh <n> ready --as author`。
+用 `gh issue list --state open --label status/ready --limit 20 --json number,title,labels` 查看候选，不自动选择编号。`ready` 表示可开工，不表示已领取。确认目标 Issue 的 DoR 后，由 W2 绑定分支并指派作者；需要发布可领取状态时，才执行 `scripts/status.sh <n> ready --as author`。
 
 - **判据**（五项全齐才可 `backlog → ready`）：① 价值一句话 ② 可判定的验收标准 ③ 明确不改什么（边界）④ 依赖与契约 ⑤ 规模与执行者。
 - **建单不是 W1**：切片 Issue 由**作者身份**在拆片时建好（[SKILL.md](../SKILL.md)「切片拆分与分发」W0.5），建完停在 `backlog`；`ready` 只表示「DoR 齐备、可被领取」，**不是**建单的必经步骤（`backlog → in-progress` 是合法边）。

@@ -24,7 +24,7 @@ mkdir -p ~/.agents/skills && ln -s "$(git rev-parse --show-toplevel)" ~/.agents/
 mkdir -p ~/.claude/skills && ln -s "$(git rev-parse --show-toplevel)" ~/.claude/skills/pm4gh
 ```
 
-- skill 安装位置与凭据位置**解耦**：skill 是符号链接，凭据**默认**在 `$HOME/.config/pm4gh/*.pat`（可用 `DEVELOPER_PAT_FILE` / `REVIEWER_PAT_FILE` 覆盖，见下）。
+- skill 安装位置与凭据位置**解耦**：skill 可是项目内目录或用户级符号链接，凭据**默认**在 `$HOME/.config/pm4gh/*.pat`（可用 `DEVELOPER_PAT_FILE` / `REVIEWER_PAT_FILE` 覆盖，见下）。
 - 装成**克隆副本**也可以，**只要仓库根不在 `$HOME/.config/pm4gh` 之内** —— 凭据就仍在工作区之外。
 
 ## 开通凭据（由 PM / dispatcher 在**工作区之外**执行）

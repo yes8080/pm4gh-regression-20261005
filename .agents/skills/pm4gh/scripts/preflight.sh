@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # scripts/preflight.sh —— 开工前预检（任何接手者的第一步）
 #
-# 判定：全部 [ OK ] 才继续；任何 [FAIL] → 把原文报告 dispatcher，不要"先干着看"。
+# 判定：退出码 0 且无 [FAIL] 才继续；WARN 不阻断，未执行不计通过；任何 [FAIL] → 把原文报告 dispatcher，不要"先干着看"。
 # 检查项：命令齐备 / gh 登录 / cwd 与仓库形态 / 工作区 / 远端唯一 / 作者与合并身份互不相同 /
 #         作者凭据 scope 与最小权限 / **工作区内不得存在任何凭据文件**/
 #         评审凭据在**工作区之外**（不读其内容）/
@@ -33,6 +33,8 @@ DEVELOPER_PAT_FILE="${DEVELOPER_PAT_FILE:-${HOME}/.config/pm4gh/developer.pat}"
 # 作者不得读取其他身份的凭据内容（SKILL.md §5），评审身份由 W6 `review.sh` 用凭据自身判定。
 REVIEWER_PAT_FILE="${REVIEWER_PAT_FILE:-${HOME}/.config/pm4gh/reviewer.pat}"
 RULESET_FILE="${RULESET_FILE:-.github/rulesets/main-protection.json}"
+# Skill files follow the invoked script; repository governance follows the target cwd.
+SKILL_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 BASE_BRANCH="${BASE_BRANCH:-main}"
 
 # ── R1 单写者锁（#159；模型见 references/orchestration.md 的并发模型一节）────────────────
@@ -781,7 +783,7 @@ else
   CO_FILE=".github/CODEOWNERS"
   # 评审身份取自 references/identity.md 的三身份表：**不读评审凭据内容**（SKILL.md §5），
   # 那份表是无凭据条件下唯一能证明「W6 用的是哪个身份」的载体；解析不出 = 无法证明无死锁 → [FAIL]。
-  co_reviewer="$(grep -E '^\|[[:space:]]*评审[[:space:]]*\|' references/identity.md 2>/dev/null \
+  co_reviewer="$(grep -E '^\|[[:space:]]*评审[[:space:]]*\|' "$SKILL_ROOT/references/identity.md" 2>/dev/null \
     | head -1 | grep -oE '@[A-Za-z0-9-]+' | head -1 | sed -e 's/^@//' | tr '[:upper:]' '[:lower:]' || true)"
   co_collab="$(gh api "repos/${REPO}/collaborators?affiliation=all&per_page=100" --paginate \
     --jq '.[] | "\(.login | ascii_downcase) \(.permissions.push)"' 2>/dev/null || true)"

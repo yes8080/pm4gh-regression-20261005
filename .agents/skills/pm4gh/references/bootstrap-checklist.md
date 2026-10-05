@@ -9,9 +9,9 @@
 
 ## 0. 三步落地（顺序不能换）
 
-1. **复制**：目标仓库根目录放 `SKILL.md` + `references/**` + `.github/**` + `scripts/**`（clone 或复制）。
+1. **复制**：按 [portability.md](portability.md) §0，将 skill 放进目标项目 `.agents/skills/pm4gh/`，平台治理文件合并进根目录 `.github/`；不要把源仓库 clone 成业务项目。独立 skill 源仓库仍可用根目录布局。
 2. **替换**：按 §2 的 **11 条**逐一替换（细节与机器判据见 [portability.md](portability.md) §1）。
-3. **验收**：在目标仓库根目录跑 `scripts/preflight.sh`（无参数）：全 `[ OK ]` 才算装好；
+3. **验收**：在目标仓库根目录执行实际安装路径下的预检（无参数）：全 `[ OK ]` 才算装好；
    `[FAIL]` 会直接说出哪条链接 / 标签 / 凭据 / owner 没改 —— **不要靠记忆，靠预检**。
 
 ## 1. 平台陷阱（[traps.md](traps.md) **全量 22 条**）

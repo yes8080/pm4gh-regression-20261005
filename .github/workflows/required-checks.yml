@@ -108,8 +108,30 @@ jobs:
       REPO: ${{ github.repository }}
     steps:
       - uses: actions/checkout@v7
+      - name: 选择唯一 skill 入口与 CI 临时治理视图
+        run: |
+          set -euo pipefail
+          count=0
+          skill_root=""
+          for candidate in "$GITHUB_WORKSPACE" "$GITHUB_WORKSPACE/.agents/skills/pm4gh"; do
+            if [ -f "$candidate/SKILL.md" ]; then
+              count=$((count + 1)); skill_root="$candidate"
+            fi
+          done
+          [ "$count" -eq 1 ] || { echo "::error::需要且仅允许一个 pm4gh skill 入口，实际 $count"; exit 1; }
+          for script in preflight start status deliver review closeout abort; do
+            [ -x "$skill_root/scripts/$script.sh" ] || { echo "::error::缺少可执行 skill 脚本 $script"; exit 1; }
+          done
+          if [ "$skill_root" != "$GITHUB_WORKSPACE" ]; then
+            # CI-only view: no tracked governance copy inside the installed skill.
+            [ ! -e "$skill_root/.github" ] && [ ! -L "$skill_root/.github" ] || { echo "::error::skill 目录不能包含重复 .github 治理"; exit 1; }
+            ln -s "$GITHUB_WORKSPACE/.github" "$skill_root/.github"
+          fi
+          printf 'PM4GH_SKILL_ROOT=%s\n' "$skill_root" >> "$GITHUB_ENV"
+          printf 'Skill root: %s; project root: %s\n' "$skill_root" "$GITHUB_WORKSPACE"
       - name: 必需检查的 5 个 context 与工作流 job 名精确一致
         run: |
+          cd "$PM4GH_SKILL_ROOT"
           set -euo pipefail
           # 官方：必需检查的 context = job 的 name；改名 = 所有 PR 永久 pending。
           # 所以这里要求三方**集合相等**（不是子集）：工作流产出的检查名 == 规则集引用集 == 这 5 个字面量。
@@ -136,6 +158,7 @@ jobs:
           echo "✅ 5 个必需检查逐字一致：$(printf '%s' "$expected" | tr '\n' ' ')"
       - name: 规则集结构不变量
         run: |
+          cd "$PM4GH_SKILL_ROOT"
           set -euo pipefail
           f=.github/rulesets/main-protection.json
           pr() { jq -r ".rules[]|select(.type==\"pull_request\")|.parameters.$1" "$f"; }
@@ -169,6 +192,7 @@ jobs:
           echo "✅ 规则集结构不变量通过"
       - name: 规则集全量 diff 判据唯一 + 文件全量键齐备（与 preflight.sh 同一判据）
         run: |
+          cd "$PM4GH_SKILL_ROOT"
           set -euo pipefail
           sh=scripts/preflight.sh
           f=.github/rulesets/main-protection.json
@@ -222,6 +246,7 @@ jobs:
           echo "✅ 规则集判据唯一（与 preflight.sh 逐字一致）且文件全量键齐备"
       - name: 凭据隔离判据在 review.sh 与 preflight.sh 逐字一致（同一实现 + 反向样本）
         run: |
+          cd "$PM4GH_SKILL_ROOT"
           set -euo pipefail
           # **必须**逐字一致：隔离判据「凭据落在工作区内 → 拒绝」在 review.sh 与 preflight.sh 两处都成立，
           # 而脚本必须**自包含**（不引共享库）→ 两处文本只能逐字相同；只改一处 = 两套实现、口径分裂。
@@ -263,6 +288,7 @@ jobs:
           echo "✅ review.sh 与 preflight.sh 的凭据隔离判据逐字一致；功能样本通过；反向样本 A/B 按预期失败"
       - name: 脚本有可执行位且自包含（无共享库）
         run: |
+          cd "$PM4GH_SKILL_ROOT"
           set -euo pipefail
           fail=0
           for f in scripts/*.sh; do
@@ -276,7 +302,7 @@ jobs:
               fail=1
             fi
           done
-          if git grep -nE '(^|[^A-Za-z0-9_])lib\.sh' -- scripts >/dev/null 2>&1; then
+          if git -C "$GITHUB_WORKSPACE" grep -nE '(^|[^A-Za-z0-9_])lib\.sh' -- scripts >/dev/null 2>&1; then
             git grep -nE '(^|[^A-Za-z0-9_])lib\.sh' -- scripts
             echo "::error::scripts/ 引用了共享库 lib.sh —— 脚本必须自包含（见 SKILL.md）"
             fail=1
@@ -285,6 +311,7 @@ jobs:
           echo "✅ scripts/*.sh 语法通过、有可执行位、且不依赖共享库"
       - name: PR 模板六段齐备 + CODEOWNERS 至少两名 owner
         run: |
+          cd "$PM4GH_SKILL_ROOT"
           set -euo pipefail
           n="$(grep -cE '^## [1-6]\.' .github/PULL_REQUEST_TEMPLATE.md || true)"
           if [ "$n" -ne 6 ]; then
@@ -299,6 +326,7 @@ jobs:
           echo "✅ PR 模板六段齐备；CODEOWNERS 默认规则有 ${owners} 名 owner"
       - name: 开放 Issue 恰好 0 或 1 个合法状态标签
         run: |
+          cd "$PM4GH_SKILL_ROOT"
           set -euo pipefail
           allowed="status/ready status/in-progress status/in-review"
           gh issue list -R "$REPO" --state open --limit 200 --json number,labels \
@@ -322,6 +350,7 @@ jobs:
           echo "✅ 全部开放 Issue 恰好 0 或 1 个合法状态标签"
       - name: 机器消费的标签在平台上存在（与 preflight.sh 同一判据 + 反向样本）
         run: |
+          cd "$PM4GH_SKILL_ROOT"
           set -euo pipefail
           # 断言"机器消费 + Issue 表单预置的标签必须存在"，不新增必需检查：标签是仓库级对象，不在版本库里、没有清单；
           # status.sh 的 --add-label 遇到不存在的标签会直接失败，start.sh 靠 type/* 推导分支类型（缺标签就静默退化），
@@ -424,6 +453,7 @@ jobs:
           echo "✅ 机器消费 + 表单预置的标签全部存在；判据与 preflight.sh 逐字一致；反向样本（缺 type/hotfix、缺模板解析出的 role/dev）按预期失败"
       - name: Issue 表单完整性（DoR 五项 + 缺陷证据字段；动态枚举 + 与 preflight.sh 同一判据 + 反向样本）
         run: |
+          cd "$PM4GH_SKILL_ROOT"
           set -euo pipefail
           # ── #157：契约要求 `ready` 的 Issue「DoR 五项齐备」，但两个表单只满足一半 ——
           #   `slice.yml` 有 DoR 五项、**没有**复现/证据字段；`bug.yml` 有缺陷证据、**没有** DoR 五项。
@@ -588,6 +618,7 @@ jobs:
           echo "✅ Issue 表单完整性：动态枚举的每张表单都含 DoR 五项（逐字，与 slice.yml 一致）+ 至少一张含完整缺陷证据字段集；判据与 preflight.sh 的 DOR_ASSERT 区同源；反向样本 (a) 删项 / (b) 新增不合规表单 / (c) 恢复 / (d) 基线改前对照 全部按预期"
       - name: references/status-machine.md 状态机转换表与 scripts/status.sh 逐字一致（防文档漂移）
         run: |
+          cd "$PM4GH_SKILL_ROOT"
           set -euo pipefail
           # 转换表只有一处权威定义（status.sh）；references/status-machine.md 的表由本步断言逐字一致：
           # 状态集（VALID_STATES vs 转换表首列）与边集（TRANSITIONS vs 标记区每行的 to 列）都逐字比对。
@@ -654,6 +685,7 @@ jobs:
 
       - name: 状态迁移是 HTTP 层单请求：恰好 1 次标签写请求 + 载荷含全部非 status/* 标签（stub gh + 反向样本）
         run: |
+          cd "$PM4GH_SKILL_ROOT"
           set -euo pipefail
           # ── 状态迁移的判据：「HTTP 层单请求」（#115）──────────────────────────────────
           # 带标签→带标签的迁移**必须**是 REST `PUT …/labels` **整份替换**（HTTP 层 1 次请求）；
@@ -1035,14 +1067,16 @@ jobs:
           printf '✅ 非终态迁移恰好 1 次标签写请求 + 载荷含全部非 status/ 标签 + 读回校验不重试覆盖；反向样本 A/B 按预期失败；闭环回归 6 步每步 status/* 恰好 1 个；身份开关：缺 --as 拒绝、三个 --as 各用对应凭据、只读模式无需 --as\n'
       - name: 未提交任何凭据
         run: |
+          cd "$PM4GH_SKILL_ROOT"
           set -euo pipefail
-          if git grep -nE 'ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|gho_[A-Za-z0-9]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY-----' -- . ; then
+          if git -C "$GITHUB_WORKSPACE" grep -nE 'ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|gho_[A-Za-z0-9]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY-----' -- . ; then
             echo "::error::检测到疑似凭据被提交进仓库"
             exit 1
           fi
           echo "✅ 未发现凭据"
       - name: 关闭关键字判据对大正文不误报（双向反向样本 >40KB + 静态扫描零管道）
         run: |
+          cd "$PM4GH_SKILL_ROOT"
           set -euo pipefail
           # #131 回归靶子：`printf` 经管道接 `grep -q` 在 pipefail 下 —— grep -q 命中即退出 → printf 收到 EPIPE
           # → 整条管道被判失败 → `if !` 取反 → 误报「缺少关闭关键字」（正文 >32KB 才稳定触发）。
@@ -1103,6 +1137,7 @@ jobs:
           echo "✅ #131：判据与实现同一段（LINKED_ISSUE_ASSERT 标记区）；大正文双向反向样本通过；工作流零「管道接 grep -q」"
       - name: 收尾恢复锚点及查询失败回归（真实 closeout + Git fixture；失败保全）
         run: |
+          cd "$PM4GH_SKILL_ROOT"
           python3 - scripts/closeout.sh <<'PY_CLOSEOUT_TEST'
           import json
           import os
@@ -1236,7 +1271,9 @@ jobs:
 
       - name: 项目自身测试套件 tests/run.sh（约定：exit 0 = 通过）
         run: |
+          cd "$PM4GH_SKILL_ROOT"
           set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
           # D6：门禁必须跑**项目自己的**交付物测试，否则 5 个必需检查在采用者仓库里
           # 只自检了工作流/规则集/标签/状态机，会给出「测试被验证过」的假印象。
           # 约定（**唯一一套**，不发明第二套）：tests/run.sh 存在且可执行 = 项目声明了测试套件，
@@ -1277,6 +1314,7 @@ jobs:
           printf '✅ 项目测试套件 tests/run.sh 通过（退出码 0）—— 本次交付物的测试由门禁真实执行过\n'
       - name: references/ 与 SKILL.md 路由双向一致（(a) 无孤儿 .md / (b) 无悬空链接 + 反向样本）
         run: |
+          cd "$PM4GH_SKILL_ROOT"
           set -euo pipefail
           # D5 回归靶子：#126 重构把「异常处理」整节弄丢，而当时的 ci/test 只断言「标记区逐字一致」，
           # **没有**任何断言把 references/ 与 SKILL.md 的对应关系变成机器可判 → 整节丢失 / 孤儿文件 /
@@ -1381,6 +1419,7 @@ jobs:
           printf '✅ 路由判据：references/ 无孤儿 .md + SKILL.md 无悬空链接；反向样本 (a) 删引用 `%s` / (b) 新建未引用 `references/zzz.md` / (c) 删被引用 `%s` 三例均按预期 FAIL\n' "$target" "$dtarget"
       - name: 文档命令可执行性 + 启动清单全量覆盖（与脚本参数解析/权威清单逐条对齐 + 反向样本）
         run: |
+          cd "$PM4GH_SKILL_ROOT"
           set -euo pipefail
           # ── C3②｜文档命令可执行性：文档里的 scripts/*.sh 命令形态 vs 脚本的**真实参数解析** ──
           # 抽取范围：SKILL.md + references/*.md 里「看起来是命令行」的片段（行内 code span / fenced 代码块）。
@@ -1681,6 +1720,7 @@ jobs:
           echo "   反向样本 A（删 --as → FAIL）／B（恢复 → 通过）／C（非法身份 → FAIL）／D（脚本不存在 → FAIL）／E（显式标记 → 跳过并打印）／F（清单漏条 → FAIL）全部按预期"
       - name: 替换点清单的符号锚点（零 path:line + 锚点逐字存在 + 行号必须带锚点；反向样本）
         run: |
+          cd "$PM4GH_SKILL_ROOT"
           set -euo pipefail
           # ── #160（C1）：需要长期准确的引用改用**符号锚点**，消灭 `file:line` 的静默漂移 ──
           # 背景：#154 向 SKILL.md / references/flow.md 插入行后，references/portability.md 的替换点清单里
@@ -1944,6 +1984,7 @@ jobs:
           echo "   反向样本 A（锚点漂移 → FAIL）／B（清单塞回 path:line → FAIL）／C（其它文档不带锚点 → FAIL）／D（替换点缺锚点 → FAIL）／F（锚点不在行号那一行 → FAIL）／E（恢复 → 通过）全部按预期"
       - name: W0 分支归属文档与真实 R2 实现一致（两个合法状态 + 四个反向样本）
         run: |
+          cd "$PM4GH_SKILL_ROOT"
           python3 - references/flow.md scripts/preflight.sh <<'PY_FLOW_ELIGIBILITY'
           from pathlib import Path
           import sys
@@ -1987,6 +2028,7 @@ jobs:
 
       - name: 作者职责与「谁建 Issue」三处单一说法（SKILL.md 权威；旧措辞零命中 + 反向样本）
         run: |
+          cd "$PM4GH_SKILL_ROOT"
           set -euo pipefail
           # ── #156：把「谁建 Issue」从"点"变成"类"的机器判据 ──
           # 背景：#152 把「拆片 + 建 Issue：作者身份」写进 SKILL.md「切片拆分与分发」W0.5 与
@@ -2142,6 +2184,7 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
+          cd "$PM4GH_SKILL_ROOT"
           set -euo pipefail
           # ── #161 C7 证据可追溯：把「照搬别处证据」从不可判定变成机器可判 ──────────────
           # 病根（回归第 2 轮 D9）：PR #154 第 4 节的 preflight 输出块**是从 PR #153 照搬的**，
