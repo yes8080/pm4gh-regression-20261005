@@ -1531,6 +1531,218 @@ jobs:
           echo "✅ 作者职责判据：三处「谁建 Issue」表述一致（SKILL.md frontmatter/W0.5 = 权威）；旧措辞「交 Issue」零命中；"
           echo "   反向样本 A（删「建 Issue」→ FAIL）／B（恢复 → 通过）／C（塞回旧措辞 → FAIL）全部按预期"
 
+      - name: PR 正文证据块的 SHA 标注 == 本 PR head SHA（C7 可追溯；三态 + 反向样本）
+        env:
+          # 只带**短**上下文：PR 编号 + head SHA。正文**不**经 env 传递 ——
+          #   env 会被 runner 逐字回显进 CI 日志（正文可能是几十 KB），且正文长度不受本步骤控制；
+          #   正文改为在步骤内用 gh pr view **实时**读（见下）。
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          # ── #161 C7 证据可追溯：把「照搬别处证据」从不可判定变成机器可判 ──────────────
+          # 病根（回归第 2 轮 D9）：PR #154 第 4 节的 preflight 输出块**是从 PR #153 照搬的**，
+          #   不是该 SHA 上的运行 —— 结论实质成立，但**取证过程不成立**；而产物上区分不出
+          #   「实测」与「转述」，因为「这块证据来自哪个 SHA」没有任何载体。
+          # 本步骤只判一件可判的事：正文里**每个**证据块标记声明的 SHA 必须 == 本 PR 的 head SHA。
+          # 正文来源 = **实时** `gh pr view --json body`（不用事件载荷：返修路径先推送后 PATCH 正文，
+          # 载荷会是旧正文 ⇒ 假 FAIL 且该 SHA 的结论不可逆；也不经 step env 传递 —— env 会被
+          # runner 逐字回显进日志、且正文长度不受本步骤控制）。另见下方正向段注释。
+          # 边界（**不得**过度宣称，见 references/exceptions.md §6）：验的是**标注一致性**，
+          #   **不是内容真伪** —— 无法判定证据是否真来自那次运行，只能判定它**声称**来自哪个 SHA。
+          # 标记形态（唯一、稳定可解析）：`<!-- evidence sha=<7-40 位小写 hex> -->`，一行一个，
+          #   且必须在**围栏（``` / ~~~）之外** —— 围栏内是证据正文（粘进来的输出可能**包含标记样例**），
+          #   不参与判定、也不被注入改写（否则会把「证据原文」改掉，正好违反 C7 的可追溯初衷）。
+          #   围栏判定按 CommonMark 口径：**同字符且不短于**开围栏的那一行才关闭 ⇒ 嵌套围栏（外 4 内 3）不漏内容。
+          #   判定 = head SHA 以标注值为**前缀**（40 位时即「相等」；7 位短 SHA 仍唯一指向同一提交）。
+          #   含 evidence 的 HTML 注释形态不合规（缺 sha= / 非 hex / 超长 / 占位符未替换）→ FAIL：
+          #   候选 = 「以 evidence 开头的单行 HTML 注释」（**不排除** `>`，否则 `sha=<head>` 这类
+          #   占位符会变成**看不见**的标记 —— 静默通过的唯一口子）；解析不出规范形就 FAIL 并给出原文。
+          # 三态（C2）：[ OK ] 全部一致 ／ [FAIL] 不一致或形态不合规（指出**哪一块**：块序号 + 正文行号 + 所在小节）
+          #   ／ 零标记 → [FAIL]「未声明证据块」（**不是** SKIP，理由见下）。
+          # 零标记为何判 FAIL（本片选择）：要求是「每个证据块必须带产生它的 SHA」，零标记 = 一个都没声明；
+          #   若判「不适用」而放行，**删掉标记**就是唯一逃逸口（判据整体失效）。
+          #   C2 的三态在此仍然成立：本步骤**从不**用通过措辞掩盖零标记，而是打印 [FAIL] 未声明证据块 + 修法。
+          # 反向样本 a–g 常驻（只跑正向样本的判据等于没有判据）：a 标记=别的 SHA→FAIL／b 全部==head→通过／
+          #   c 零标记→FAIL／d 形态不合规→FAIL／e 混合（一块对一块错）→FAIL／f 围栏内的样例→忽略（通过）／
+          #   g **嵌套**围栏（外 4 反引号 / 内 3 反引号）内的样例→忽略（通过，锁死围栏判定口径）。
+          # 判据本体**只有这一处**（下方函数）；正向与 a–g 反向样本都调用它，不在别处复写第二份实现。
+          # 标记形态规则同样出现在 scripts/deliver.sh 的注入段（它要知道改哪些行才能注入）——
+          #   那里**只**做注入与前置条件，**不做** head 比对；判据仍然是这里一处。
+          work="$(mktemp -d "${TMPDIR:-/tmp}/evidence-sha.XXXXXX")"
+          trap 'rm -rf "$work"' EXIT
+
+          evidence_sha_judge() { # $1 = PR 正文   $2 = head SHA；返回 0 = 通过
+            b="${1:-}"; head="${2:-}"
+            # 用 here-string（**禁止**「管道接 grep -q」：pipefail 下会 EPIPE，见 #131 与 traps.md）
+            if ! grep -qE '^[0-9a-f]{7,40}$' <<<"$head"; then
+              printf '::error::取不到本 PR 的 head SHA（实测值：[%s]）—— 判据不成立（fail-closed）\n' "$head" >&2
+              return 1
+            fi
+            # 候选 = 围栏外的证据块标记（围栏内的原样保留，不算标记、不参与判定）。
+            # 围栏判定按 CommonMark 口径：只有**同字符且不短于**开围栏的那一行才关闭 ——
+            # 于是「外 4 个反引号、内 3 个反引号」的嵌套围栏不会把内层内容漏到围栏外
+            # （反面样本 g 锁死这一点：我的 PR 正文里就会粘含三反引号的判据输出）。
+            cand="$(printf '%s\n' "$b" | awk '
+              BEGIN { fence = 0; fchar = ""; flen = 0 }
+              {
+                line = $0
+                if (line ~ /^[ \t]*(```|~~~)/) {
+                  tmp = line; sub(/^[ \t]*/, "", tmp); ch = substr(tmp, 1, 1); ln = 0
+                  while (substr(tmp, ln + 1, 1) == ch) ln++
+                  if (fence == 0) { fence = 1; fchar = ch; flen = ln; next }
+                  if (ch == fchar && ln >= flen) { fence = 0; fchar = ""; flen = 0 }
+                  next
+                }
+                if (fence) next
+                s = line
+                while (match(s, /<!--[ \t]*evidence.*-->/)) { printf "%d:%s\n", FNR, substr(s, RSTART, RLENGTH); s = substr(s, RSTART + RLENGTH) }
+              }
+            ' || true)"
+            if [ -z "$cand" ]; then
+              printf '[FAIL] 未声明证据块：PR 正文的围栏之外没有任何证据块 SHA 标记\n' >&2
+              printf '       后果：证据块来自哪个 SHA 无载体 —— 「照搬别处证据」无法被机器判出（C7）。\n' >&2
+              printf '       修法：在每个证据块处（**围栏外**）加一行（可直接粘贴）：<!-- evidence sha=%s -->\n' "$head" >&2
+              printf '       用 scripts/deliver.sh 写/更新正文时该值会被自动改写为推送后的 head SHA。\n' >&2
+              return 1
+            fi
+            n=0; nok=0; nbad=0
+            while IFS= read -r row; do
+              [ -n "$row" ] || continue
+              n=$((n + 1))
+              lineno="${row%%:*}"
+              raw="${row#*:}"
+              sha="$(printf '%s' "$raw" | sed -nE 's/^<!--[[:space:]]*evidence[[:space:]]+sha=([0-9a-fA-F]{7,40})[[:space:]]*-->$/\1/p' | tr 'A-F' 'a-f')"
+              where="$(printf '%s\n' "$b" | awk -v L="$lineno" 'NR<=L && /^#{1,6} /{h=$0; sub(/^#+[[:space:]]*/,"",h)} NR==L{print (h==""?"（标记在小节标题之前）":h)}')"
+              if [ -z "$sha" ]; then
+                printf '[FAIL] 证据块 #%s（正文第 %s 行，小节：%s）标记形态不合规：%.160s\n' "$n" "$lineno" "$where" "$raw" >&2
+                printf '       期望形态（逐字，一行一个，围栏外）：<!-- evidence sha=<7-40 位小写 hex> -->\n' >&2
+                printf '       可直接粘贴的规范标记：<!-- evidence sha=%s -->\n' "$head" >&2
+                nbad=$((nbad + 1)); continue
+              fi
+              case "$head" in
+                "$sha"*)
+                  nok=$((nok + 1))
+                  printf '[ OK ]  证据块 #%s（正文第 %s 行，小节：%s）标注 sha=%s（%s 位）是 head 的前缀\n' "$n" "$lineno" "$where" "$sha" "${#sha}"
+                  ;;
+                *)
+                  printf '[FAIL] 证据块 #%s（正文第 %s 行，小节：%s）标注 sha=%s ！= 本 PR head SHA %s\n' "$n" "$lineno" "$where" "$sha" "$head" >&2
+                  printf '       含义：这一块的证据**声称**来自 %s，而本 PR 的 head 是 %s —— 照搬别处 / 过期标记（C7）。\n' "$sha" "$head" >&2
+                  printf '       修法：在该 SHA 上重跑，再 scripts/deliver.sh <issue#> --as author 重新注入并更新正文；\n' >&2
+                  printf '             或把该块改成：<!-- evidence sha=%s -->\n' "$head" >&2
+                  nbad=$((nbad + 1))
+                  ;;
+              esac
+            done <<<"$cand"
+            printf '摘要：证据块标记 %s 个（围栏外）→ 与 head 一致 %s ／ 失败 %s（head=%s）\n' "$n" "$nok" "$nbad" "$head"
+            [ "$nbad" -eq 0 ] || return 1
+            printf '[ OK ]  全部 %s 个证据块标记的 sha == 本 PR head SHA %s\n' "$nok" "$head"
+            return 0
+          }
+
+          echo "本 PR head SHA（github.event.pull_request.head.sha，实测）：${HEAD_SHA:-（空）}"
+          echo
+          echo "== 正向：本 PR 正文（**实时**读，gh pr view）=="
+          # 判据读**实时正文**，不读事件载荷 github.event.pull_request.body：
+          #   ① 载荷里是**推送那一刻**的正文；返修路径 deliver.sh 是「先推送、再 REST PATCH 正文」
+          #      ⇒ 用载荷会得到「新 head + 旧标记」的**假 FAIL**，而该 SHA 上的失败结论不可逆
+          #      （只能再推一次提交，而那次又同样滞后）；
+          #   ② 本仓库另两个读正文的 job（policy/template、policy/linked-issue）也走 gh pr view ——
+          #      同一仓库只留一套口径。
+          # 读不到正文 → fail-closed（不静默跳过、也不退回载荷）。
+          body="$(gh pr view "${PR_NUMBER:?事件上下文里没有 PR 编号}" -R "${REPO:?缺少 REPO 环境变量}" \
+            --json body --jq .body 2>/dev/null)" \
+            || { echo "::error::读不到 PR 正文（gh pr view 失败）—— 判据不成立（fail-closed）"; exit 1; }
+          prc=0; evidence_sha_judge "${body:-}" "${HEAD_SHA:-}" || prc=$?
+          [ "$prc" -eq 0 ] || { echo "::error::PR 正文的证据块 SHA 标注与本 PR head SHA 不一致（见上方 [FAIL]）；边界：本判据验的是标注一致性，不是内容真伪（references/exceptions.md §6）"; exit 1; }
+
+          echo
+          echo "== 反向样本 a–g（同一判据函数，换输入）=="
+          head40='0123456789abcdef0123456789abcdef01234567'
+          other40='fedcba9876543210fedcba9876543210fedcba98'
+          fence='```'
+          fence4='````'
+          bad=0
+
+          # a) 标记 sha = 别的 SHA → 判据**必须** FAIL，且必须指出是证据块 #1
+          printf '## 4. 验收证据\n<!-- evidence sha=%s -->\n| 1 | preflight | OK |\n' "$other40" > "$work/a.md"
+          arc=0; evidence_sha_judge "$(cat "$work/a.md")" "$head40" > "$work/a.log" 2>&1 || arc=$?
+          if [ "$arc" -ne 0 ] && grep -q '证据块 #1' "$work/a.log" && grep -q "$other40" "$work/a.log"; then
+            printf '  [ OK ] 反向样本 a：标记 sha=%s（别的 SHA）→ 判据按预期 FAIL 并指出证据块 #1\n' "$other40"
+            grep -m2 -E '\[FAIL\]|摘要' "$work/a.log" | sed 's/^/     /'
+          else
+            printf '  [FAIL] 反向样本 a 未按预期失败（rc=%s）\n' "$arc" >&2; sed 's/^/     /' "$work/a.log" >&2; bad=1
+          fi
+
+          # b) 全部标记 == head → 判据**必须**通过
+          printf '## 4. 验收证据\n<!-- evidence sha=%s -->\n| 1 | preflight | OK |\n\n<!-- evidence sha=%s -->\n| 2 | ci | OK |\n' "$head40" "$head40" > "$work/b.md"
+          brc=0; evidence_sha_judge "$(cat "$work/b.md")" "$head40" > "$work/b.log" 2>&1 || brc=$?
+          if [ "$brc" -eq 0 ] && grep -q '全部 2 个证据块标记的 sha == 本 PR head SHA' "$work/b.log"; then
+            printf '  [ OK ] 反向样本 b：2 块标记全部 == head → 判据按预期通过\n'
+            grep -E '\[ OK \]' "$work/b.log" | sed 's/^/     /'
+          else
+            printf '  [FAIL] 反向样本 b 未通过（rc=%s）\n' "$brc" >&2; sed 's/^/     /' "$work/b.log" >&2; bad=1
+          fi
+
+          # c) 零标记 → 判据**必须** FAIL（fail-closed：零标记 = 未声明证据块，**不是** SKIP）
+          printf '## 4. 验收证据\n| 1 | preflight | OK |\n' > "$work/c.md"
+          crc=0; evidence_sha_judge "$(cat "$work/c.md")" "$head40" > "$work/c.log" 2>&1 || crc=$?
+          if [ "$crc" -ne 0 ] && grep -q '未声明证据块' "$work/c.log"; then
+            printf '  [ OK ] 反向样本 c：零标记 → 判据按预期 FAIL（[FAIL] 未声明证据块，不计入通过）\n'
+            grep -m2 -E '\[FAIL\]|可直接粘贴' "$work/c.log" | sed 's/^/     /'
+          else
+            printf '  [FAIL] 反向样本 c 未按预期失败（rc=%s）—— 零标记必须 FAIL\n' "$crc" >&2; sed 's/^/     /' "$work/c.log" >&2; bad=1
+          fi
+
+          # d) 形态不合规（sha 不是 hex / 缺 sha）→ 判据**必须** FAIL（不给「写坏标记」的逃逸口）
+          printf '## 4. 验收证据\n<!-- evidence sha=abc -->\n| 1 | preflight | OK |\n' > "$work/d.md"
+          drc=0; evidence_sha_judge "$(cat "$work/d.md")" "$head40" > "$work/d.log" 2>&1 || drc=$?
+          if [ "$drc" -ne 0 ] && grep -q '标记形态不合规' "$work/d.log"; then
+            printf '  [ OK ] 反向样本 d：<!-- evidence sha=abc -->（形态不合规）→ 判据按预期 FAIL\n'
+            grep -m1 '标记形态不合规' "$work/d.log" | sed 's/^/     /'
+          else
+            printf '  [FAIL] 反向样本 d 未按预期失败（rc=%s）\n' "$drc" >&2; sed 's/^/     /' "$work/d.log" >&2; bad=1
+          fi
+
+          # e) 混合：一块 == head、一块 = 别的 SHA → 判据**必须** FAIL（部分通过不算通过）
+          printf '## 4. 验收证据\n<!-- evidence sha=%s -->\n| 1 | preflight | OK |\n\n<!-- evidence sha=%s -->\n| 2 | ci | OK |\n' "$head40" "$other40" > "$work/e.md"
+          erc=0; evidence_sha_judge "$(cat "$work/e.md")" "$head40" > "$work/e.log" 2>&1 || erc=$?
+          if [ "$erc" -ne 0 ] && grep -q '一致 1 ／ 失败 1' "$work/e.log" && grep -q '证据块 #2' "$work/e.log"; then
+            printf '  [ OK ] 反向样本 e：一块对一块错 → 判据按预期 FAIL 并指出证据块 #2\n'
+            grep -E '摘要' "$work/e.log" | sed 's/^/     /'
+          else
+            printf '  [FAIL] 反向样本 e 未按预期失败（rc=%s）\n' "$erc" >&2; sed 's/^/     /' "$work/e.log" >&2; bad=1
+          fi
+
+          # f) 围栏内的标记样例（例如粘进来的本判据反向样本输出）**不算标记**：
+          #    围栏外一块 == head → 判据**必须**通过（否则「把输出粘进证据块」会自伤）；且只应数到 1 块。
+          printf '## 4. 验收证据\n<!-- evidence sha=%s -->\n%s\n[FAIL] 证据块 #1 标记形态不合规：<!-- evidence sha=abc -->\n<!-- evidence sha=%s -->\n%s\n| 1 | preflight | OK |\n' \
+            "$head40" "$fence" "$other40" "$fence" > "$work/f.md"
+          frc=0; evidence_sha_judge "$(cat "$work/f.md")" "$head40" > "$work/f.log" 2>&1 || frc=$?
+          if [ "$frc" -eq 0 ] && grep -q '全部 1 个证据块标记的 sha == 本 PR head SHA' "$work/f.log"; then
+            printf '  [ OK ] 反向样本 f：围栏内的样例（含别的 SHA 与坏形态）被忽略 → 判据按预期通过，且只数到围栏外的 1 块\n'
+            grep -E '摘要|全部 1 个' "$work/f.log" | sed 's/^/     /'
+          else
+            printf '  [FAIL] 反向样本 f 未按预期通过（rc=%s）—— 围栏内的样例不应参与判定\n' "$frc" >&2; sed 's/^/     /' "$work/f.log" >&2; bad=1
+          fi
+
+          # g) **嵌套**围栏：外层 4 个反引号包住内层 3 个反引号，内层里的标记样例不算标记；
+          #    围栏外一块 == head → 判据**必须**通过且只数到 1 块（锁死「同字符且不短于才关闭」的口径）。
+          printf '## 4. 验收证据\n<!-- evidence sha=%s -->\n%s\n<!-- evidence sha=%s -->\n%s\n<!-- evidence sha=abc -->\n%s\n%s\n\n| 1 | preflight | OK |\n' \
+            "$head40" "$fence4" "$other40" "$fence" "$fence" "$fence4" > "$work/g.md"
+          grc=0; evidence_sha_judge "$(cat "$work/g.md")" "$head40" > "$work/g.log" 2>&1 || grc=$?
+          if [ "$grc" -eq 0 ] && grep -q '全部 1 个证据块标记的 sha == 本 PR head SHA' "$work/g.log"; then
+            printf '  [ OK ] 反向样本 g：嵌套围栏（外 4 反引号 / 内 3 反引号）内的样例被忽略 → 判据按预期通过，且只数到围栏外的 1 块\n'
+            grep -E '摘要|全部 1 个' "$work/g.log" | sed 's/^/     /'
+          else
+            printf '  [FAIL] 反向样本 g 未按预期通过（rc=%s）—— 嵌套围栏的内层内容不应参与判定\n' "$grc" >&2; sed 's/^/     /' "$work/g.log" >&2; bad=1
+          fi
+
+          if [ "$bad" -ne 0 ]; then exit 1; fi
+          echo
+          echo "✅ C7：PR 正文围栏外所有证据块标记的 sha == 本 PR head SHA；反向样本 a（别的 SHA→FAIL）/ b（全部==head→通过）/"
+          echo "   c（零标记→[FAIL] 未声明证据块）/ d（形态不合规→FAIL）/ e（混合→FAIL）/ f（围栏内样例→忽略）/ g（嵌套围栏→忽略）全部按预期；"
+          echo "   边界：验的是**标注一致性**，不是**内容真伪**（references/exceptions.md §6）"
 
   linked-issue:
     name: policy/linked-issue

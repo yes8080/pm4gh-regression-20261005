@@ -9,7 +9,9 @@
 #   ③ 用当前身份推送分支（清掉本地 credential helper，否则会静默变成主身份推送）
 #   ④ 建 PR；若该分支已有 PR（返修）则用 **REST PATCH** 更新正文 —— `gh pr edit` 走 GraphQL，
 #      作者凭据没有 read:org，会报错且**静默不更新**（见 references/traps.md 陷阱 5）
-#   ⑤ 迁到 status/in-review
+#   ⑤ 证据块 SHA 注入（C7，#161；边界见 references/exceptions.md §6）：把正文**围栏外**每个标记
+#      改写为**推送后**的 origin/<branch> head 并回读校验；正文零标记 → 直接失败（门禁会判 FAIL）
+#   ⑥ 迁到 status/in-review
 #
 # 用法：
 #   scripts/deliver.sh <issue#> --prepare --as author    # 生成六段骨架
@@ -66,7 +68,7 @@ while [ $# -gt 0 ]; do
     --as)        AS="${2:?--as 需要取值}"; shift 2 ;;
     --parse-only) PARSE_ONLY=1; shift ;;
     --dry-run)   DRY=1; shift ;;
-    -h|--help)   sed -n '2,17p' "$0"; exit 0 ;;
+    -h|--help)   sed -n '2,19p' "$0"; exit 0 ;;
     -*)          die "未知参数 ${1:-}（本脚本不提供该开关；用法见 scripts/deliver.sh -h）" 2 ;;
     *) ISSUE="$1"; shift ;;
   esac
@@ -138,6 +140,9 @@ Closes #${ISSUE}
 
 <!-- 与 Issue 的验收标准逐条对应；给确切命令与输出，禁止"已测试通过"这类无证据断言。 -->
 
+<!-- C7：每个证据块必须带产生它的 SHA。保留下面这行标记（一块一行，**放在围栏外**），scripts/deliver.sh 会把 sha 自动改写为推送后的 head SHA。 -->
+<!-- evidence sha=<head> -->
+
 | 验收条目 | 证据（命令 / 检查名 / 输出 / 链接） | 结果 |
 |---|---|---|
 |  |  |  |
@@ -199,6 +204,43 @@ empty_sec="$(awk '
 [ -z "$empty_sec" ] || die "以下章节内容过少（需要真实填写）：${empty_sec}"
 ok "各章节均有实质内容"
 
+# ── C7（#161）证据块 SHA：前置条件 + 注入 + 自校验 ──────────────────────────────
+# 判据本体在 ci/test（**唯一一处**）：PR 正文**围栏外**所有 <!-- evidence sha=… --> 的值
+# 必须 == 本 PR 的 head SHA。本脚本**不**复写那份判据，只做三件事：
+#   ① 前置条件：正文里至少 1 个标记 —— 零标记在 ci/test 是 FAIL（fail-closed，见
+#      references/exceptions.md §6「零标记的语义」）；本地先失败 = 不把明知会红的状态推上去。
+#   ② 自动注入：把每个标记的 sha 改写成**推送后**的远端 head（减少手工错误）。
+#   ③ 自校验：注入后每个标记都必须是规范形，否则不建 / 不更新 PR。
+# 标记形态规则与 ci/test 的判据同形，**必须**在围栏（``` / ~~~）之外 —— 围栏内是证据正文
+# （粘进来的输出可能**包含标记样例**），既不参与判定、也不被注入改写（改了就不是证据原文了）。
+# 候选判据 = 「以 evidence 开头的单行 HTML 注释」：**不排除** `>`，这样 `sha=<head>` 这类占位符
+# 也会被认出来（占位符是**可见**的：未替换 → ci/test 判形态不合规；看不见 = 静默通过的口子）。
+# 围栏判定按 CommonMark 口径：只有**同字符且不短于**开围栏的那一行才关闭（嵌套围栏不漏内容）。
+evidence_markers() { # $1 = 文件 → 逐行列出围栏外的标记（行号:原文）
+  awk '
+    BEGIN { fence = 0; fchar = ""; flen = 0 }
+    {
+      line = $0
+      if (line ~ /^[ \t]*(```|~~~)/) {
+        tmp = line; sub(/^[ \t]*/, "", tmp); ch = substr(tmp, 1, 1); ln = 0
+        while (substr(tmp, ln + 1, 1) == ch) ln++
+        if (fence == 0) { fence = 1; fchar = ch; flen = ln; next }
+        if (ch == fchar && ln >= flen) { fence = 0; fchar = ""; flen = 0 }
+        next
+      }
+      if (fence) next
+      s = line
+      while (match(s, /<!--[ \t]*evidence.*-->/)) { printf "%d:%s\n", FNR, substr(s, RSTART, RLENGTH); s = substr(s, RSTART + RLENGTH) }
+    }
+  ' "$1" 2>/dev/null || true
+}
+evidence_count() { evidence_markers "$1" | grep -c . || true; }
+markers="$(evidence_count "$BODY_FILE")"
+if [ "${markers:-0}" -eq 0 ]; then
+  die "正文的围栏之外没有任何证据块 SHA 标记 —— ci/test 的 C7 判据会判 FAIL（零标记 = 未声明证据块，fail-closed）。在 ${BODY_FILE} 的每个证据块处加一行 <!-- evidence sha=<head> -->（sha 值随写，本脚本会改写为推送后的 head）；本次未推送、未建/更新 PR"
+fi
+ok "证据块标记 ${markers} 个（C7：每个证据块都必须带产生它的 SHA）；推送后本脚本会把它们改写为远端 head SHA"
+
 TITLE="$(gh issue view "$ISSUE" -R "$REPO" --json title --jq .title)"
 existing_pr="$(gh pr list -R "$REPO" --head "$BRANCH" --state open --json number --jq '.[0].number // ""' 2>/dev/null || true)"
 
@@ -211,6 +253,7 @@ if [ "$DRY" -eq 1 ]; then
     printf '  gh pr create --base %s --title "%s (#%s)" --body-file %s\n' "$BASE_BRANCH" "$TITLE" "$ISSUE" "$BODY_FILE"
   fi
   printf '  scripts/status.sh %s in-review --as %s\n' "$ISSUE" "$AS"
+  printf '  证据块 SHA 注入：%s 个标记 → sha=<推送后的 head>（本地 HEAD=%s）\n' "$markers" "$(git rev-parse HEAD)"
   exit 0
 fi
 
@@ -224,21 +267,57 @@ if ! push_out="$(git -c credential.helper= -c credential.helper='!gh auth git-cr
 fi
 printf '%s\n' "$push_out" | tail -2
 
+info "证据块 SHA 注入（C7）—— 标注的必须是**推送后**的远端 head"
+# 为什么用 origin/<branch> 而不是本地 HEAD：PR 的 head SHA 由**远端**决定；
+# 两者不等时标注本地 SHA 会得到一个「格式对、语义错」的标记（比没有标记更糟）。
+head_sha="$(git rev-parse HEAD)"
+remote_sha="$(git rev-parse "origin/${BRANCH}" 2>/dev/null || true)"
+[ -n "$remote_sha" ] || die "读不到 origin/${BRANCH} 的 SHA —— 无法证明将要标注的 SHA 就是本 PR 的 head（fail-closed）；本次未建/更新 PR"
+[ "$head_sha" = "$remote_sha" ] || die "本地 HEAD=${head_sha} 与 origin/${BRANCH}=${remote_sha} 不一致 —— 标记的 SHA 必须**就是**本 PR 的 head；先让两者一致再重跑；本次未建/更新 PR"
+STAMPED_BODY="${BODY_FILE%.md}.stamped.md"
+# 注入 = 把围栏外的每个标记**规范化并改写**为 <!-- evidence sha=<head> -->（同一形态，ci/test 的判据可逐字解析）；
+# 围栏内（证据正文）**一字不改** —— 否则注入会改掉「证据原文」，正好违反 C7 的可追溯初衷。
+awk -v sha="$head_sha" '
+  BEGIN { fence = 0; fchar = ""; flen = 0 }
+  {
+    line = $0
+    if (line ~ /^[ \t]*(```|~~~)/) {
+      tmp = line; sub(/^[ \t]*/, "", tmp); ch = substr(tmp, 1, 1); ln = 0
+      while (substr(tmp, ln + 1, 1) == ch) ln++
+      if (fence == 0) { fence = 1; fchar = ch; flen = ln; print; next }
+      if (ch == fchar && ln >= flen) { fence = 0; fchar = ""; flen = 0; print; next }
+      print; next
+    }
+    if (fence) { print; next }
+    while (match($0, /<!--[ \t]*evidence.*-->/)) { printf "%s<!-- evidence sha=%s -->", substr($0, 1, RSTART - 1), sha; $0 = substr($0, RSTART + RLENGTH) }
+    print
+  }
+' "$BODY_FILE" > "$STAMPED_BODY"
+leftover="$(evidence_markers "$STAMPED_BODY" | sed -E 's/^[0-9]+://' | grep -vxF "<!-- evidence sha=${head_sha} -->" || true)"
+[ -z "$leftover" ] || die "注入后仍有不合规的证据块标记：${leftover}（本次未建/更新 PR）"
+evidence_markers "$STAMPED_BODY" | sed 's/^/   /'
+ok "已注入 $(evidence_count "$STAMPED_BODY") 个证据块标记 → sha=${head_sha}（= origin/${BRANCH}）；注入稿：${STAMPED_BODY}（原正文文件未改）"
+want="$(cat "$STAMPED_BODY")"
+
 if [ -n "$existing_pr" ]; then
   info "该分支已有 PR #${existing_pr}（返修）—— 用 REST PATCH 更新正文"
-  want="$(cat "$BODY_FILE")"
-  if ! jq -Rs '{body:.}' "$BODY_FILE" | gh api -X PATCH "repos/${REPO}/pulls/${existing_pr}" --input - >/dev/null; then
+  if ! jq -Rs '{body:.}' "$STAMPED_BODY" | gh api -X PATCH "repos/${REPO}/pulls/${existing_pr}" --input - >/dev/null; then
     die "更新 PR #${existing_pr} 正文失败（作者凭据缺 read:org，**不要**改用 gh pr edit）"
   fi
   got="$(gh api "repos/${REPO}/pulls/${existing_pr}" --jq .body 2>/dev/null || true)"
   [ "$got" = "$want" ] || die "更新 PR #${existing_pr} 正文后回读不一致（疑似静默未更新）"
-  ok "已更新 PR #${existing_pr} 正文（REST PATCH，回读一致）"
+  ok "已更新 PR #${existing_pr} 正文（REST PATCH，回读一致；标记 sha=${head_sha}）"
   PR_NUM="$existing_pr"
 else
   info "创建 PR"
-  url="$(gh pr create -R "$REPO" --base "$BASE_BRANCH" --title "${TITLE} (#${ISSUE})" --body-file "$BODY_FILE")"
+  url="$(gh pr create -R "$REPO" --base "$BASE_BRANCH" --title "${TITLE} (#${ISSUE})" --body-file "$STAMPED_BODY")"
   PR_NUM="${url##*/}"
   ok "PR 已创建：${url}"
+  # 注入要**到达产物**才算成立：建 PR 也回读一次（与 PATCH 路径同一口径）——
+  # 否则「本地注入成功、PR 正文里没有标记」是静默的，而 ci/test 会因此 FAIL。
+  got_create="$(gh api "repos/${REPO}/pulls/${PR_NUM}" --jq .body 2>/dev/null || true)"
+  [ "$got_create" = "$want" ] || die "PR #${PR_NUM} 正文回读与注入后的正文不一致（证据块标记可能没写进产物）；**不要**改用 gh pr edit —— 它走 GraphQL，作者凭据会静默失败"
+  ok "PR #${PR_NUM} 正文含注入后的证据块标记（回读一致；sha=${head_sha}）"
 fi
 ok "PR 作者：@$(gh pr view "$PR_NUM" -R "$REPO" --json author --jq .author.login)"
 
