@@ -26,7 +26,7 @@ metadata:
 
 - **谁拆**：接手该目标的 agent（作者身份）。人 / dispatcher 只在**目标本身有歧义**时介入（[references/exceptions.md](references/exceptions.md) 第 5 条），**不**代为拆片。
 - **粒度**：一条切片 = **恰好一个可合并的改动** = 一个 Issue = 一个分支 = 一个 PR = 一次可独立回滚（1~3 个工作日）。三条判据同时成立才算够格：① 一个 PR 的六段能写清；② 能独立回滚，不依赖其他**未合并**切片；③ 验收标准逐条可判定。
-- **拆 / 并的判据**：两条切片要改**同一文件的同一区域**、或**必须一起合并**才能验收 → 合成一条；一条切片里出现**两个互不依赖**的可合并改动 → 拆成两条。同文件但区域不相交 → 保持两条，用 **blocked by** 串行（`gh issue create --blocked-by <n>`），不合并、不并发。
+- **拆 / 并的判据**：两条切片要改**同一文件的同一区域**、或**必须一起合并**才能验收 → 合成一条；一条切片里出现**两个互不依赖**的可合并改动 → 拆成两条。同文件但区域不相交 → 保持两条，用 **blocked by** 串行（`gh issue create --blocked-by <n>`），不合并。**并发模型**（#159）：**一个 clone = 一个写者 = 一个 Issue**，同一 clone 内**一次只做一个切片**；两条切片要**并行**就必须**各自独立 clone + 各自 Issue**（**不是**同一 git 目录上的多个 worktree）—— 模型与判据见 [references/orchestration.md](references/orchestration.md) §7（`preflight` 第 3 组的单写者锁 + 第 4 组的分支归属）。
 - **谁建 Issue**：**作者身份** —— `GH_TOKEN="$(cat "$HOME/.config/pm4gh/developer.pat")" gh issue create …`；非交互必须 `--body-file` + 显式 `--label`（[references/traps.md](references/traps.md) 陷阱 16）。**禁止**用本机 `gh` 登录态（dispatcher）建切片 Issue —— 审计归属 = 做事的人。
 - **每条 Issue 的最低内容**：DoR 五项（① 价值一句话 ② 可判定的验收标准 ③ 明确不改什么 ④ 依赖与契约 ⑤ 规模与执行者，逐字见 [.github/ISSUE_TEMPLATE/slice.yml](.github/ISSUE_TEMPLATE/slice.yml)）；标签 `type/*` + `role/dev`（`area/*` / `prio/*` 按需，它们是人类元数据）；依赖用 `--blocked-by` 建立。
 - **状态起点**：建单后停在 **`backlog`**（OPEN 且无 `status/*`）。`ready` **不是**建单的必经步骤 —— `backlog → in-progress` 是合法边，`scripts/start.sh` 从 `backlog` 也能直接开工（[references/status-machine.md](references/status-machine.md)）。
@@ -34,7 +34,7 @@ metadata:
 
 ## 工作流程
 
-1. **预检**（每次接手第一步）：`scripts/preflight.sh` → 全 `[ OK ]` 且退出码 `0`；任一 `[FAIL]` → 贴原文报 dispatcher，**禁止**继续。
+1. **预检**（每次接手第一步）：`scripts/preflight.sh` → 全 `[ OK ]` 且退出码 `0`；任一 `[FAIL]` → 贴原文报 dispatcher，**禁止**继续。**新增的两条 `[FAIL]`**（#159，第 3/4 组）：① 本 clone 已被另一个**存活**写者占用（单写者锁）→ 要并行请**另开独立 clone**；② 当前分支不属于任何 `status/in-progress` Issue（防「在别人的分支上工作」）。陈旧锁会被**自动接管并打印原因**，基线分支上分支归属判据**显式不适用**（打印「未执行」）。
 2. **开工**：DoR 五项齐备才 `scripts/status.sh <n> ready --as author`；再 `scripts/start.sh <n> --as author`（线上故障加 `--type hotfix`）。
 3. **交付**：提交用 `-F <文件>` + 作者 git 身份；`scripts/deliver.sh <n> --prepare --as author` 生成六段 → 填写 → `scripts/deliver.sh <n> --as author`。
 4. **检查**：`gh pr checks <pr#> --required` —— 5 个必需检查在**最新 SHA** 上全 `pass` 才进下一步。
@@ -51,7 +51,7 @@ metadata:
 
 [references/dod.md](references/dod.md) 六项全过（验收标准逐条有证据；必需检查最新 SHA 全绿 + 非作者 code owner 批准；未越界；`closeout.sh` 五项全过）。
 
-**必要约束（不回退）**：15 边 / 6 状态｜状态迁移 = REST `PUT …/labels` **单请求**｜5 个必需检查 job `name:` 一字不改｜凭据必须在**工作区之外**｜一个切片 = 一个 Issue = 一个分支 = 一个 PR｜项目测试套件约定 = `tests/run.sh`（`exit 0` = 通过），由 `ci/test` 运行、`preflight.sh` 断言接线；无 `tests/` = 未声明（两处都明确打印，不静默跳过）｜每个断言区分 **通过／失败／未执行**（未执行必须打印且不计入通过，见 [references/exceptions.md](references/exceptions.md) §4）｜文档里的 `scripts/*.sh` 命令形态由 `ci/test` 与脚本**真实参数解析**逐条对齐（脚本提供 `--parse-only` 零副作用解析路径，**不得删除**）。
+**必要约束（不回退）**：15 边 / 6 状态｜状态迁移 = REST `PUT …/labels` **单请求**｜5 个必需检查 job `name:` 一字不改｜凭据必须在**工作区之外**｜一个切片 = 一个 Issue = 一个分支 = 一个 PR｜**一个 clone = 一个写者 = 一个 Issue**（并行 = 各自独立 clone，**不是**多个 worktree；单写者锁/分支归属由 `preflight` 第 3/4 组判定，模型见 [references/orchestration.md](references/orchestration.md) §7）｜项目测试套件约定 = `tests/run.sh`（`exit 0` = 通过），由 `ci/test` 运行、`preflight.sh` 断言接线；无 `tests/` = 未声明（两处都明确打印，不静默跳过）｜每个断言区分 **通过／失败／未执行**（未执行必须打印且不计入通过，见 [references/exceptions.md](references/exceptions.md) §4）｜文档里的 `scripts/*.sh` 命令形态由 `ci/test` 与脚本**真实参数解析**逐条对齐（脚本提供 `--parse-only` 零副作用解析路径，**不得删除**）。
 
 ## 支持资料
 
@@ -76,4 +76,4 @@ metadata:
 
 **里程碑（Milestones）同样不做 —— 这是决定，不是缺口**：① 它不是状态源，本 skill **零消费**（`grep -rn -i milestone SKILL.md references/ scripts/ .github/` = 0 命中；`preflight.sh` 的 10 组与 `ci/test` 都没有里程碑不变量）；② 交付单元是「一个切片 = 一个 Issue = 一个分支 = 一个 PR」，里程碑只在「多切片归一个目标」时有意义 —— 那是组合 / 排期，与上面已排除的 Projects、度量报表同类；③ 原生行为不满足「全关即完成」（实测 2/2 关闭后 `state` 仍为 `open`，必须再发一次 `PUT/PATCH …/milestones/<n>` 手动关闭）→ 引入它 = 引入一条**无判据、需人工收尾**的路径；④ `gh` 没有 `milestone` 子命令（`gh milestone --help` → `unknown command "milestone"`），CRUD 只能走 REST，而本 skill 只有 7 个**不新增**的自包含脚本，没有自然挂载点。多切片归组改用**父子 Issue**（`gh issue create --parent <n>` / `gh issue edit <n> --add-sub-issue <n>`，已实测可用）与 [references/status-machine.md](references/status-machine.md) 的非切片 `backlog → done` 路径承载。采用者自用里程碑**不受阻断** —— 本 skill 只是不规定、不消费它。
 
-**不做编排脚本 —— 这是决定，不是缺口**：无人工流水线的入口 = [references/orchestration.md](references/orchestration.md)（把实测的固定序列 S1..S9 写成文档 + 每步「成功判据 / 失败时做什么」），**不新增** `orchestrate.sh`。理由三类：① **组件性质不同** —— `scripts/` 的 7 个脚本都是**确定性、单步、有副作用**的操作（`preflight` / `start` / `status` / `deliver` / `review` / `closeout` / `abort`）；编排器是**另一类组件**（重试、轮询、并发、跨身份状态），把它塞进脚本层等于把不确定性搬进唯一的不变量边界。② **官方默认纯指令，必要时才加脚本** —— 本仓库已有「文档命令可执行性」判据：文档里的命令形态被**逐条**喂给脚本的**真实参数解析**（`--parse-only` 零副作用路径），所以**文档化 = 可执行化 = 可校验化**，再加一个脚本只会成为同一事实的第二载体。③ **边界更大** —— 编排要同时持有三身份（评审凭据**只让脚本用、不得读内容**）、要处理「同一工作区不能并发两个 agent」（#159 未闭合），这些不是 7 个单步脚本的自然延伸。因此上面那条「**不得新增脚本**」**保持不变**，与这条决定不矛盾：**要「顺序」改文档（orchestration.md），要「一步操作」才改脚本**。
+**不做编排脚本 —— 这是决定，不是缺口**：无人工流水线的入口 = [references/orchestration.md](references/orchestration.md)（把实测的固定序列 S1..S9 写成文档 + 每步「成功判据 / 失败时做什么」），**不新增** `orchestrate.sh`。理由三类：① **组件性质不同** —— `scripts/` 的 7 个脚本都是**确定性、单步、有副作用**的操作（`preflight` / `start` / `status` / `deliver` / `review` / `closeout` / `abort`）；编排器是**另一类组件**（重试、轮询、并发、跨身份状态），把它塞进脚本层等于把不确定性搬进唯一的不变量边界。② **官方默认纯指令，必要时才加脚本** —— 本仓库已有「文档命令可执行性」判据：文档里的命令形态被**逐条**喂给脚本的**真实参数解析**（`--parse-only` 零副作用路径），所以**文档化 = 可执行化 = 可校验化**，再加一个脚本只会成为同一事实的第二载体。③ **边界更大** —— 编排要同时持有三身份（评审凭据**只让脚本用、不得读内容**）、要处理「同一工作区不能并发两个 agent」（#159 已闭合：并发模型见 [references/orchestration.md](references/orchestration.md) §7，判据落在 `preflight` 第 3/4 组，**仍不进脚本层**），这些不是 7 个单步脚本的自然延伸。因此上面那条「**不得新增脚本**」**保持不变**，与这条决定不矛盾：**要「顺序」改文档（orchestration.md），要「一步操作」才改脚本**。

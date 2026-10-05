@@ -19,11 +19,11 @@
 scripts/preflight.sh
 ```
 
-- **成功判据**：全 `[ OK ]` 且退出码 `0`；其中必须覆盖：三身份互不相同（第 5、8 组）、作者与评审凭据都在**工作区之外**且权限 `600`（第 5 组）、工作区内没有任何 `*.pat`（第 5、10 组）。
+- **成功判据**：全 `[ OK ]` 且退出码 `0`；其中必须覆盖：三身份互不相同（第 5、8 组）、作者与评审凭据都在**工作区之外**且权限 `600`（第 5 组）、工作区内没有任何 `*.pat`（第 5、10 组）、**本 clone 的单写者锁已获取或已接管陈旧锁**（第 3 组；R1）、**当前分支归属一个 `status/in-progress` 的 Issue**（第 4 组；R2；在基线分支上显式不适用）。
 - **失败时做什么**：任一 `[FAIL]` → **如实把原文贴给 dispatcher，禁止继续**（禁止"先干着看"）；缺凭据 / 权限不对 → 按 [identity.md](identity.md) 在**工作区之外**开通，不得为了省事把凭据挪进仓库。
 - **边界（不得违反）**：编排者**不得读取评审凭据的内容**（`cat` / `echo` / 打印 / 复制都不行），只让 `scripts/review.sh` 拿它执行；建切片 Issue **不得**用本机 `gh` 登录态（那是 dispatcher 身份 —— 审计归属 = 做事的人）。
 
-## 2. 序列总表（S1..S9；串行，不并发）
+## 2. 序列总表（S1..S9；**同一 clone 内**串行）
 
 | # | 动作 | 命令（形态） | 成功判据（摘要） |
 |---|---|---|---|
@@ -37,7 +37,7 @@ scripts/preflight.sh
 | S8 | 合并 | `gh pr merge <pr#> --squash --delete-branch` | `MERGED`；关联 Issue 自动关闭 |
 | S9 | 收尾 | `scripts/closeout.sh <pr#>` | 五项全过，退出码 `0` |
 
-> **串行，不并发**：同文件不相交区域的两条切片用 `--blocked-by` 串行（blocker 未合并就不开下一条）；**不要并发**两条 —— 工作树是进程级共享，两个 agent 在同一工作区会互相踩（实测，见 §4 卡点 2）。
+> **同一 clone 内串行**：同文件不相交区域的两条切片用 `--blocked-by` 串行（blocker 未合并就不开下一条）；**同一个 clone 里不要并发**两条 —— 工作树是进程级共享，两个写者在一个 clone 里会互相踩（实测，见 §5 与 §7）。**并行 = 各自独立 clone + 各自 Issue**（模型见 §7）：不要在同一个 git 目录上开多个 worktree（它们共享分支/HEAD 状态）。
 
 ## 3. 逐步：命令 + 成功判据 + 失败时做什么
 
@@ -143,7 +143,7 @@ gh pr merge <pr#> --squash --delete-branch
 scripts/closeout.sh <pr#>
 ```
 
-- **成功判据**：退出码 `0`，五项全过：① PR 已 `MERGED` ② 关联 Issue 已关 ③ 远端无头分支 ④ 本地头分支已清理**且已留可恢复锚点** ⑤ 无残留 `status/*` 标签。
+- **成功判据**：退出码 `0`，五项全过：① PR 已 `MERGED` ② 关联 Issue 已关 ③ 远端无头分支 ④ 本地头分支已清理**且已留可恢复锚点** ⑤ 无残留 `status/*` 标签。五项全过时**同时释放本 clone 的单写者锁**（R4，见 §7；`--dry-run` 不释放）。
 - **失败时做什么**：任一项不过 → 退出码 `1`，**逐条贴原文**；本地分支删除走 `-D` 而不是 `-d`（squash 后 `-d` 必然拒绝，[traps.md](traps.md) 陷阱 9，脚本已封装）；残留状态标签由脚本自己用 `scripts/status.sh <n> done --as dispatcher` 处理（**仅对已关闭的 Issue**，OPEN 的绝不代关）。
 
 ## 4. 必须人判断的点（不许假装全自动）
@@ -188,7 +188,7 @@ $ scripts/closeout.sh 153
 **卡点（如实）**：
 
 1. **没有编排入口**：`scripts/` 的 7 个脚本里**没有建单入口**（`references/traps.md`（锚点：`本仓库脚本不建 Issue`）明写这一点），S1 / S2 / S6 只能编排者现场手敲 —— 这正是本文件存在的理由；「顺序不进脚本层」的决定见 `SKILL.md`（锚点：`不做编排脚本`）。
-2. **同一工作区不能并发两个 agent**：C 轴当时主工作区被另一个 agent 占用（Issue #147），编排者**另开一个独立 clone**（如 `/tmp/pm4gh-c`）才跑通；`preflight` 对「超过一个 `in-progress`」只给 `[WARN]`，而第 3 组又断言「worktree 数量 = 1」→ 并发模型缺口记在 **#159**（未闭合）。
+2. ~~**同一工作区不能并发两个 agent**~~ **→ 已从「卡点」升级为有模型的规定（#159，见 §7）**：C 轴当时主工作区被另一个 agent 占用（Issue #147），编排者**另开一个独立 clone**（如 `/tmp/pm4gh-c`）才跑通；当时 `preflight` 对「超过一个 `in-progress`」只给 `[WARN]`，而第 3 组又断言「worktree 数量 = 1」→ 并发模型缺口。**#159 的处置**：把「1 clone = 1 写者 = 1 Issue；并行 = 各自独立 clone」写成 §7，并在 `preflight` 第 3/4 组落地 R1（单写者锁）/ R2（分支归属）/ R3（在途数 > 1 仍是 `[WARN]`）；worktree = 1 的断言保留（多个 worktree 共享分支/HEAD 状态，**不是**合法并行形态）。
 3. **轮询是必需的**：两次都是轮询 2 轮后 5 项全 `pass`（CI 有延迟），不能只跑一次就进 S7。
 4. **证据纪律的一次真实违规（不美化）**：PR #154 第 4 节的 `scripts/preflight.sh` 输出块**不是**在该 PR 的 SHA 上跑的，是从 #153 **照搬**的 —— 事后在 `main = 6499c39` 的新 clone 上补验（结论实质成立，但**该 PR 的取证过程不成立**）。此后 PR 正文的每个证据块必须带 `<!-- evidence sha=… -->` 且断言 == 本 PR head SHA（#161）。
 
@@ -197,3 +197,31 @@ $ scripts/closeout.sh 153
 - 逐步的**规则正文**（参数取值域、退出码、陷阱）只在 [flow.md](flow.md) / [status-machine.md](status-machine.md) / [traps.md](traps.md)；本文件是它们的**顺序视图 + 每步判据**，不新增规则。
 - 本文件里的 `scripts/*.sh` 命令形态由 `ci/test` 的「文档命令可执行性」判据**逐条**喂给脚本的真实参数解析（`--parse-only` 零副作用路径）—— 形态漂移会当场 `[FAIL]`。因此**文档化 = 可执行化 = 可校验化**：不需要 `orchestrate.sh` 来保证文档与脚本一致。
 - 顺序变化时：**改本文件**；若那一步属于 W0..W8 的既有步骤，同步 [flow.md](flow.md) 的时序表与 [../SKILL.md](../SKILL.md) 的工作流程。
+
+## 7. 并发模型（#159 定案：1 clone = 1 写者 = 1 Issue）
+
+**核心命题**：**一个 clone（工作树）= 一个写者 = 一个 Issue**。同一 clone 内**一次只做一个切片**；**并行 = 各自独立 clone + 各自 Issue**（**不是**同一个 git 目录上的多个 worktree —— 那些共享分支/HEAD 状态）。
+
+| 维度 | 规定 | 判据（`scripts/preflight.sh`） |
+|---|---|---|
+| 同一 clone | 只允许一个写者；一次只做一个切片 | **R1** 单写者锁（第 3 组）+ **R2** 分支归属（第 4 组） |
+| 并行 | **允许**，前提 = 各自独立 clone、各自 Issue | **R3**：在途 `in-progress` > 1 是 `[WARN]`（不阻断；它不是「同一 clone 被两个写者占用」的证据） |
+| 同一 Issue | 一个分支 = 一个 PR；返修在**同一分支** | `policy/branch-name` / `policy/linked-issue`（必需检查） |
+
+### 7.1 R1 单写者锁：位置、内容、生命周期
+
+- **位置（必须在工作区之外）**：`$PM4GH_LOCK_DIR`；默认 `$HOME/.config/pm4gh/locks`（与凭据同目录，见 [identity.md](identity.md)）。默认目录**不可写**时回退到 `/tmp/pm4gh-locks-<uid>`，并在输出里**打印回退原因**（受限环境不因此变成永久假红）；显式指定的 `PM4GH_LOCK_DIR` 不可写 = 配置错（`[FAIL]`，不静默替换）；两个候选都不可写 → `[FAIL]`（fail-closed）。
+  - **为什么不能在仓库里**：锁文件会被 `git add`、被「工作区干净」的 `[WARN]` 计数、被凭据/未提交扫描当成未提交改动 —— 判据会污染判据自己。
+- **键 = clone 的物理根路径**（`git rev-parse --show-toplevel` 再 `pwd -P`）：锁文件 = `<锁目录>/<clone-id>.lock`。**不按 slug 建锁**：按 slug 会让另一个 clone 的**合法并行写者**被判成「占用」，与「并行 = 各自 clone」直接矛盾。
+- **内容**（一行一个 `key=value`）：`pid`（获取锁的进程）/ `branch` / `slug` / `clone` / `time`（epoch 秒）/ `time_iso` / `cmd`（活进程身份核对的依据）。`PM4GH_LOCK_STALE_MINUTES`（默认 `120`）是锁龄阈值。
+- **三态显式**（[exceptions.md](exceptions.md) §4）：
+  1. **无锁** → 获取并继续（`[ OK ]`）。
+  2. **陈旧锁** → **自动接管**并**打印接管原因**（不静默）：`pid` 不存在，**或** `pid` 存活但**不可核**（锁里的 `cmd` 与活进程命令行不符 = 疑 pid 复用）**且**锁龄 > `PM4GH_LOCK_STALE_MINUTES`。锁里的 `branch` / `clone` 与当前不符时另行 `[WARN]` 打印（「本 clone 的分支被切过？」）。
+  3. **`pid` 存活且是本流程写者** → `[FAIL]`：报文含 pid / branch / 时间 / 锁路径，并给出「要并行请另开独立 clone」的修法。
+- **生命周期**：W0 `scripts/preflight.sh` **获取 / 接管**；期间每次 W0 重跑都会「接管自己上一次留下的陈旧锁」（锁记的是**进程**，`preflight` 退出即死 ⇒ **不会把自己锁死**）；**正常结束** `scripts/closeout.sh`（五项全过时）与**异常结束** `scripts/abort.sh`（闭环时）**释放本 clone 的锁**（**R4**）。释放只动**本 clone**的锁：`clone` 字段指向别处、或 `pid` 仍存活 → **不删**、只提示（不代他人释放）。
+- **边界（如实，不得过度宣称）**：① 存活判定用 `kill -0`（bash 内建；受策略限制的环境里 `ps` 可能不可用，此时 `cmd` 记空 = **不可核**），对其他用户的进程会因 EPERM 判成「不存在」；② 只覆盖**跑 W0 的写者** —— 不跑 `preflight` 就动手的写者不在判据内（这是纪律，不是机制）；③ **不**阻止 `deliver.sh` / `status.sh` 等单步脚本被并发调用（它们不查锁）；④ 若另一个写者把你切到了**它自己的** `in-progress` 分支，**R2 不报**（该分支确实合规）—— 那种形态只有在双方都跑 W0 时由 R1 兜住。
+
+### 7.2 R2 分支归属 与 R3 在途数
+
+- **R2**：当前分支若是切片分支形态 `<type>/<issue#>-<slug>`（`type ∈ {slice,fix,hotfix,spike,chore}`），其 Issue 必须 **OPEN 且带 `status/in-progress`**；否则 `[FAIL]`（读不到该 Issue = fail-closed）。**基线分支上显式不适用**（W0 允许在开工前跑，开工后 `scripts/start.sh` 必然切到切片分支）—— 打印 `[WARN]` 说明「本判据**未执行**」，不计入通过；游离 HEAD / 非切片分支形态 = `[FAIL]`（无法证明归属，fail-closed）。
+- **R3**：在途 `in-progress` > 1 **仍是 `[WARN]`**，**不升为 `[FAIL]`**。理由：在途数**不是**「同一 clone 被两个写者占用」的证据 —— 两个 `in-progress` 可能落在两个独立 clone 上（正是本模型允许的并行形态）；升为 FAIL 既禁止了合法并行，又把判据压在**错误的观测量**上。同一 clone 的互踩由 R1/R2 判定。`scripts/status.sh --check` 的小结打印**同一说法**。

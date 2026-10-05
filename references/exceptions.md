@@ -15,6 +15,7 @@
 | 5 | **发现需求歧义** | **问** Issue 作者 / dispatcher，拿到答复再动；**禁止**自行扩大范围 |
 | 6 | PR 正文 **>32KB** | `policy/linked-issue` 历史上会**误报**「缺少关闭关键字」（32KB 处 EPIPE，已修）→ 正文尽量精简；长正文以**最新 SHA** 的门禁结论为准 |
 | 7 | 分支名不合规且需**终止**分支 | 走 `scripts/abort.sh <issue#>`（先 `--dry-run`）；**可见性边界**见 [traps.md](traps.md) |
+| 8 | `preflight` 报「本 clone 已被另一个写者占用」（单写者锁）或「当前分支不是任何 `status/in-progress` Issue 的分支」 | **停下**：本 clone 已有写者 / 归属不明 → 要并行就**另开独立 clone + 自己的 Issue**（[orchestration.md](orchestration.md) §7），**不要**抢占别人的 clone、不要切到别人的分支；确认原写者已退出后重跑（陈旧锁会**自动接管并打印原因**）。**禁止**把在途数判据升级/降级、删锁或改门禁来绕过 |
 
 ## 2. 处置纪律
 
@@ -47,6 +48,7 @@
 |---|---|---|---|---|
 | `scripts/preflight.sh` 十段（`ok` / `bad` / `warn`） | `[ OK ]` | `[FAIL]`（计入退出码） | `[WARN]`（含原因与修法，如评审凭据缺失时不判隔离） | **已区分**（`[WARN]` 打印且**不计入通过**、不改退出码） |
 | `scripts/preflight.sh` 段③ slug / 段⑧ CODEOWNERS 取值 | —— | `[FAIL]`（取不到值也是失败） | 不适用 | **已区分**（fail-closed，见 [traps.md](traps.md) 陷阱 19） |
+| `scripts/preflight.sh` R1 单写者锁 + R2 分支归属（#159 新增，第 3/4 组） | `[ OK ]` 获取锁 / **自动接管陈旧锁并打印原因**；分支 → `in-progress` Issue | `[FAIL]` 锁被**存活**写者占用（含 pid/branch/时间/锁路径）；分支不属任何 `in-progress` Issue / 游离 HEAD / 非切片分支（fail-closed） | **基线分支上 R2 显式未执行**（打印原因，不计入通过）；锁目录不可写 → 先**回退**到 `/tmp/pm4gh-locks-<uid>` 并打印原因，两个候选都不可写才 `[FAIL]` | **已区分**（三态齐全；反向样本 a–e 见 PR 证据） |
 | `scripts/closeout.sh` 五项 | `[ OK ]` | `[WARN]` + `problems` 计数 + 退出 `1` | 无跳过分支 | **已区分**（无"未执行"态；失败项逐条打印） |
 | `ci/test`「开放 Issue 恰好 0 或 1 个合法状态标签」 | `✅ …` | `::error::`（多标签 / 未定义标签） | **无**：列表为空（成功但 0 条）时与"全部合规"不可分 | **未完全区分**：空列表 = 空断言风险；建议改为「读不到 / 0 条」→ 显式打印并单独计数 |
 | `ci/test`「项目自身测试套件 `tests/run.sh`」 | `[ OK ]` | `::error file=tests/run.sh::` | 无 `tests/` → 打印「本项目未声明测试套件…**本步骤未运行任何项目测试**」后 `exit 0` | **部分区分**：未执行**已打印**，但同一行仍以 `[ OK ]` 收束（"通过"与"未运行"两种语义并存）；建议拆出 `跳过` 计数 |

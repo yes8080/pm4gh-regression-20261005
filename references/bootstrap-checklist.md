@@ -56,8 +56,8 @@
 |---|---|---|
 | ☐ | 1 | 基础命令齐备（`git` / `gh` / `jq` / `awk` / `grep` / `sed` / `curl` / `diff`），bash 3.2 可跑 |
 | ☐ | 2 | `gh` 已登录（合并身份 = dispatcher），且登录身份 ≠ 作者身份 |
-| ☐ | 3 | 在仓库根目录、非 worktree、仅一个 worktree、无 `index.lock`；`gh repo view` 能解析出 slug |
-| ☐ | 4 | 远端只有 `origin`；本地与 `origin` 的默认分支一致（不一致只是 `[WARN]`） |
+| ☐ | 3 | 在仓库根目录、非 worktree、仅一个 worktree、无 `index.lock`；`gh repo view` 能解析出 slug；**本 clone 的单写者锁**已获取或已接管陈旧锁（锁在**工作区之外**，默认 `$HOME/.config/pm4gh/locks`，不可写时回退并打印原因） |
+| ☐ | 4 | 远端只有 `origin`；本地与 `origin` 的默认分支一致（不一致只是 `[WARN]`）；**R2** 当前分支归属一个 `status/in-progress` Issue（基线分支上显式未执行）；**R3** 在途 `in-progress` > 1 只是 `[WARN]`（并行 = 各自独立 clone） |
 | ☐ | 5 | 作者凭据在**工作区之外**、权限 `600`、未入库；工作区内**没有任何** `*.pat` |
 | ☐ | 6 | 作者凭据 scope 含 `repo` + `workflow`，且作者对本仓库有 push、无 admin |
 | ☐ | 7 | 工作流产出的检查名与 5 个必需 context **精确一致**（改名 = 所有 PR 永久 pending） |

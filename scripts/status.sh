@@ -351,7 +351,7 @@ ${rows}
 EOF
   info "小结：开放 Issue ${total} 个；backlog ${backlog} 个；in-progress ${inprog} 个"
   if [ "$inprog" -gt 1 ]; then
-    warn "有 ${inprog} 个 in-progress —— 规则是「一次只做一个切片」（见 SKILL.md §4）"
+    warn "有 ${inprog} 个 in-progress —— **并行是允许的**：前提是每个写者**各自独立 clone**（一个 clone = 一个写者 = 一个 Issue）；**同一 clone 内**的规则仍是「一次只做一个切片」（模型与判据见 references/orchestration.md §7 与 preflight 第 3/4 组）"
   fi
   if [ "$bad" -eq 0 ]; then
     ok "全部开放 Issue 恰好 0 或 1 个合法 status/* 标签"

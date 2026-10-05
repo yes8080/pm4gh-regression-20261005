@@ -39,6 +39,44 @@ ok()   { printf '[ OK ] %s\n' "$*"; }
 warn() { printf '[WARN] %s\n' "$*" >&2; }
 info() { printf '\n== %s ==\n' "$*"; }
 
+# ── R4 释放本 clone 的单写者锁（#159；创建规则见 scripts/preflight.sh 的 WRITER_LOCK_ASSERT 标记区）──
+# 锁在**工作区之外**（`$PM4GH_LOCK_DIR`、默认 `$HOME/.config/pm4gh/locks`；preflight 在默认目录不可写
+#   时会回退到 `/tmp/pm4gh-locks-<uid>`，两个候选都查）。键 = clone 的物理根路径。
+# 只释放**本 clone**的锁；pid 仍存活 = 可能另有写者 → **只提示、不删**（不代他人释放）。
+# WRITER_LOCK_RELEASE:BEGIN
+release_writer_lock() {
+  rw_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+  [ -n "$rw_root" ] || return 0
+  rw_root="$(cd "$rw_root" && pwd -P)"
+  rw_id="$(printf '%s' "$rw_root" | sed -E 's#^/##; s#[^A-Za-z0-9]+#-#g')"
+  rw_found=0
+  for rw_dir in "${PM4GH_LOCK_DIR:-${HOME}/.config/pm4gh/locks}" "/tmp/pm4gh-locks-$(id -u)"; do
+    rw_file="${rw_dir}/${rw_id}.lock"
+    [ -e "$rw_file" ] || continue
+    rw_found=1
+    rw_owner="$(grep -m1 '^clone=' "$rw_file" 2>/dev/null | sed -E 's/^clone=//' || true)"
+    if [ -n "$rw_owner" ] && [ "$rw_owner" != "$rw_root" ]; then
+      printf '  [WARN] 锁 %s 属于另一个 clone（clone=%s）—— 不释放\n' "$rw_file" "$rw_owner"
+      continue
+    fi
+    rw_pid="$(grep -m1 '^pid=' "$rw_file" 2>/dev/null | sed -E 's/^pid=//' || true)"
+    case "$rw_pid" in
+      ''|*[!0-9]*) : ;;
+      *) if kill -0 "$rw_pid" 2>/dev/null; then
+           printf '  [WARN] 锁 %s 的 pid=%s **仍存活** —— 不代他人释放（确认该写者已退出后手工 rm）\n' "$rw_file" "$rw_pid"
+           continue
+         fi ;;
+    esac
+    if rm -f "$rw_file"; then
+      printf '[ OK ] 已释放本 clone 的单写者锁：%s\n' "$rw_file"
+    else
+      printf '  [WARN] 锁 %s 释放失败（权限？）—— 下次 preflight 会按陈旧锁自动接管\n' "$rw_file"
+    fi
+  done
+  [ "$rw_found" = "1" ] || printf '  本 clone 无单写者锁可释放（%s/%s.lock 不存在）\n' "${PM4GH_LOCK_DIR:-${HOME}/.config/pm4gh/locks}" "$rw_id"
+}
+# WRITER_LOCK_RELEASE:END
+
 ACTOR=""
 # --as 的取值域（**参数级**校验：不读凭据 / 不读网络）。判据只有这一处定义 ——
 # 「参数级校验段（--parse-only 走它）」与 `use_identity` 都调用它。
@@ -323,6 +361,8 @@ fi
 # ── 4. 幂等：已 canceled 且无分支 → 不写任何东西 ──────────────────────
 if [ -z "$BRANCHES" ] && [ "$cur_state" = "canceled" ]; then
   ok "Issue #${ISSUE} 已是 canceled 且无任何关联分支 —— 无需操作（幂等，零写入）"
+  # R4：异常路径已闭环（幂等无操作）→ 释放本 clone 的单写者锁
+  release_writer_lock
   exit 0
 fi
 
@@ -423,3 +463,5 @@ done < "$rows"
 
 echo
 ok "异常路径已闭环：分支（本地+远端）已清理、状态 canceled、锚点已留"
+# R4：异常结束（已闭环）→ 释放本 clone 的单写者锁
+release_writer_lock

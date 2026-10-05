@@ -56,6 +56,45 @@ problems=0
 check_ok()   { ok "$1"; }
 check_fail() { warn "$1"; problems=$((problems + 1)); }
 
+# ── R4 释放本 clone 的单写者锁（#159；创建规则见 scripts/preflight.sh 的 WRITER_LOCK_ASSERT 标记区）──
+# 锁在**工作区之外**（`$PM4GH_LOCK_DIR`、默认 `$HOME/.config/pm4gh/locks`；preflight 在默认目录不可写
+#   时会回退到 `/tmp/pm4gh-locks-<uid>`，两个候选都查）。键 = clone 的物理根路径。
+# 只释放**本 clone**的锁；pid 仍存活 = 可能另有写者 → **只提示、不删**（不代他人释放）。
+# 这是「正常结束」的释放动作，**不计入收尾五项**（五项的含义不变）。
+# WRITER_LOCK_RELEASE:BEGIN
+release_writer_lock() {
+  rw_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+  [ -n "$rw_root" ] || return 0
+  rw_root="$(cd "$rw_root" && pwd -P)"
+  rw_id="$(printf '%s' "$rw_root" | sed -E 's#^/##; s#[^A-Za-z0-9]+#-#g')"
+  rw_found=0
+  for rw_dir in "${PM4GH_LOCK_DIR:-${HOME}/.config/pm4gh/locks}" "/tmp/pm4gh-locks-$(id -u)"; do
+    rw_file="${rw_dir}/${rw_id}.lock"
+    [ -e "$rw_file" ] || continue
+    rw_found=1
+    rw_owner="$(grep -m1 '^clone=' "$rw_file" 2>/dev/null | sed -E 's/^clone=//' || true)"
+    if [ -n "$rw_owner" ] && [ "$rw_owner" != "$rw_root" ]; then
+      printf '  [WARN] 锁 %s 属于另一个 clone（clone=%s）—— 不释放\n' "$rw_file" "$rw_owner"
+      continue
+    fi
+    rw_pid="$(grep -m1 '^pid=' "$rw_file" 2>/dev/null | sed -E 's/^pid=//' || true)"
+    case "$rw_pid" in
+      ''|*[!0-9]*) : ;;
+      *) if kill -0 "$rw_pid" 2>/dev/null; then
+           printf '  [WARN] 锁 %s 的 pid=%s **仍存活** —— 不代他人释放（确认该写者已退出后手工 rm）\n' "$rw_file" "$rw_pid"
+           continue
+         fi ;;
+    esac
+    if rm -f "$rw_file"; then
+      printf '[ OK ] 已释放本 clone 的单写者锁：%s\n' "$rw_file"
+    else
+      printf '  [WARN] 锁 %s 释放失败（权限？）—— 下次 preflight 会按陈旧锁自动接管\n' "$rw_file"
+    fi
+  done
+  [ "$rw_found" = "1" ] || printf '  本 clone 无单写者锁可释放（%s/%s.lock 不存在）\n' "${PM4GH_LOCK_DIR:-${HOME}/.config/pm4gh/locks}" "$rw_id"
+}
+# WRITER_LOCK_RELEASE:END
+
 state="$(gh pr view "$PR" -R "$REPO" --json state --jq .state 2>/dev/null || true)"
 [ -n "$state" ] || die "PR #${PR} 不存在或无法访问"
 branch="$(gh pr view "$PR" -R "$REPO" --json headRefName --jq .headRefName 2>/dev/null || true)"
@@ -202,6 +241,12 @@ fi
 echo
 if [ "$problems" -eq 0 ]; then
   ok "收尾五项全过：① 已合并 ② Issue 已关 ③ 远端无头分支 ④ 本地无头分支+已留锚点 ⑤ 无残留状态标签"
+  if [ "$DRY" -eq 0 ]; then
+    # R4：正常结束 → 释放本 clone 的单写者锁（--dry-run 零写入，不释放）
+    release_writer_lock
+  else
+    printf '  [dry-run] 不释放单写者锁（本脚本零写入）\n'
+  fi
   exit 0
 fi
 warn "收尾存在 ${problems} 项未通过 —— 逐条修复后重跑本脚本"

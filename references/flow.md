@@ -28,8 +28,9 @@
 ## W0 预检（每次接手都跑）— `scripts/preflight.sh`
 
 - **判据**：无参数；全 `[ OK ]` 且退出码 `0`；任一 `[FAIL]` → 退出码 `1`，**禁止**"先干着看"，把失败项**原文**贴 dispatcher。
-- 输出 `1/10`…`10/10` 十组：① 命令齐备 ② gh 登录 ③ 仓库形态与 cwd ④ 工作区与远端 ⑤ 三身份凭据 ⑥ 作者凭据 scope 与最小权限 ⑦ 工作流 job 名 == 必需 context ⑧ 线上规则集整份 diff + **CODEOWNERS 完整性**（每个 owner 是协作者且有 push / 评审身份是 `*` 的 owner / 合并身份是协作者 —— 防 `require_code_owner_review` 永久锁死；开关取值只认线上实测值）⑨ 机器消费 + **Issue 表单预置**标签存在（表单标签从 `.github/ISSUE_TEMPLATE/*.yml` 解析，不手抄）⑩ 工作区内无 `*.pat`。组③还含 **项目测试套件接线**：`tests/` 存在 → `tests/run.sh` 必须存在且可执行（判据用仓库根绝对路径，cwd 是子目录也准）。
-- **判据**：只有 `[FAIL]` 计入失败，`[WARN]` 一律不阻断（退出码仍 `0`）。常见 `[WARN]`：工作区有未提交改动、本地 `main` 与 `origin/main` 不一致、无法 fetch、评审凭据缺失、作者权限异常、超过一个 `in-progress`。组⑦⑧需要 `.github/workflows/*.yml` 存在 —— 在**没有**工作流的副本里跑必然 `[FAIL]`，这是环境事实，不是流程失败。
+- 输出 `1/10`…`10/10` 十组：① 命令齐备 ② gh 登录 ③ 仓库形态与 cwd ④ 工作区与远端 ⑤ 三身份凭据 ⑥ 作者凭据 scope 与最小权限 ⑦ 工作流 job 名 == 必需 context ⑧ 线上规则集整份 diff + **CODEOWNERS 完整性**（每个 owner 是协作者且有 push / 评审身份是 `*` 的 owner / 合并身份是协作者 —— 防 `require_code_owner_review` 永久锁死；开关取值只认线上实测值）⑨ 机器消费 + **Issue 表单预置**标签存在（表单标签从 `.github/ISSUE_TEMPLATE/*.yml` 解析，不手抄）⑩ 工作区内无 `*.pat`。组③还含 **项目测试套件接线**（`tests/` 存在 → `tests/run.sh` 必须存在且可执行；判据用仓库根绝对路径，cwd 是子目录也准）与 **R1 单写者锁**（本 clone 若已被另一个**存活**写者占用 → `[FAIL]`；陈旧锁**自动接管并打印原因**；锁在**工作区之外**）。组④还含 **R2 分支归属**（当前分支必须是某个 `status/in-progress` Issue 的分支；**基线分支上显式不适用**并打印「未执行」）与 **R3 在途切片数**。**并发模型**（1 clone = 1 写者 = 1 Issue；并行 = 各自独立 clone）见 [orchestration.md](orchestration.md) §7。
+- **判据**：只有 `[FAIL]` 计入失败，`[WARN]` 一律不阻断（退出码仍 `0`）。常见 `[WARN]`：工作区有未提交改动、本地 `main` 与 `origin/main` 不一致、无法 fetch、评审凭据缺失、作者权限异常、**超过一个 `in-progress`**（并行**允许** —— 前提是各自独立 clone；同一 clone 内仍一次只做一个切片）、默认锁目录不可写时回退到 `/tmp/pm4gh-locks-<uid>`、基线分支上 R2 未执行。组⑦⑧需要 `.github/workflows/*.yml` 存在 —— 在**没有**工作流的副本里跑必然 `[FAIL]`，这是环境事实，不是流程失败。
+- **新增的两条 `[FAIL]` 与修法**：① `本 clone 已被另一个写者占用` → **停下**：要并行就**另开独立 clone**并在新 clone 里用**自己的 Issue**（不要抢锁、不要切别人的分支）；确认原写者已退出后重跑（陈旧锁会被自动接管并打印原因）。② 当前分支不是任何 `status/in-progress` Issue 的分支（含游离 HEAD / 非切片分支形态）→ 先确认本 clone 归属哪个 Issue，用 `scripts/start.sh <issue#> --as author` 建分支开工，或换到正确分支（**禁止**手工 `git checkout -b`）。两条都**不得**通过删判据 / 改门禁绕过。
 
 ## W1 领片（DoR）
 
@@ -86,7 +87,7 @@ git -c user.name="yes8080-dev-bot" -c user.email="317173623+yes8080-dev-bot@user
 
 `gh pr merge <pr#> --squash --delete-branch` → `scripts/closeout.sh <pr#>`。
 
-- **判据**：`closeout.sh` 五项全过且退出码 `0`（用法 / 编号错 → `2`）：① PR 已 MERGED ② 关联 Issue 已关 ③ 远端无头分支 ④ 本地头分支已清理 ⑤ 无残留 `status/*` 标签。任一不过 → 退出码 `1`，逐条贴原文报告。
+- **判据**：`closeout.sh` 五项全过且退出码 `0`（用法 / 编号错 → `2`）：① PR 已 MERGED ② 关联 Issue 已关 ③ 远端无头分支 ④ 本地头分支已清理 ⑤ 无残留 `status/*` 标签。任一不过 → 退出码 `1`，逐条贴原文报告。五项全过时**同时释放本 clone 的单写者锁**（R4，见 [orchestration.md](orchestration.md) §7；`--dry-run` 不释放）。
 - **禁止**：作者代跑合并；`gh pr merge --admin` 或任何绕过门禁的手段 —— 只有 `@yes8080` 用本机登录态合并。
 - 第 ⑤ 项由 `closeout.sh` 自己跑 `scripts/status.sh <n> done --as dispatcher`（**仅对已关闭的 Issue**，OPEN 的绝不代关）；第 ④ 项**先**把「分支名 + 本地 tip SHA + PR head SHA + squash 提交」写进 Issue 作可恢复锚点，**再** `git branch -D`（[traps.md](traps.md) 陷阱 9）。
 
@@ -97,4 +98,4 @@ git -c user.name="yes8080-dev-bot" -c user.email="317173623+yes8080-dev-bot@user
 - **必须**：`--reason` / `--evidence` 不带 tab / 换行 / `|`（脚本会替换成空格后写进锚点）；清理**本地 + 远端**分支；状态 → `canceled`（**只走 `scripts/status.sh`**）；在 Issue 留可恢复锚点（分支 tip SHA / 原因 / 时间 / 判据）。
 - **判据**（全部成立才终止）：① 不再计划完成 ② 删除分支**不会丢内容**。删除判据（fail-closed）三条任一成立才删：① 分支 tip（本地与远端都算）是 `origin/main` 的**祖先** ② 该分支有**已合并**的 PR ③ 显式 `--evidence "<说明>"`。
 - **违反后果**：三条都不成立（存在独有未合并提交）→ **一个分支都不删、状态也不迁移**，打印分支 tip、独有提交与处置选项后退出 `1`；锚点写不进去同样不删。
-- **判据**：退出码 `0` 已清理 / 幂等无操作；`1` 拒绝删除或迁移失败；`2` 用法错。**幂等**：连跑两次，第二次零写操作。`done` 是终态且属合并收尾 → `abort.sh` **拒绝**处理，走 `closeout.sh`；确需取消先 `gh issue reopen`。
+- **判据**：退出码 `0` 已清理 / 幂等无操作；`1` 拒绝删除或迁移失败；`2` 用法错。**幂等**：连跑两次，第二次零写操作。`done` 是终态且属合并收尾 → `abort.sh` **拒绝**处理，走 `closeout.sh`；确需取消先 `gh issue reopen`。异常路径闭环（含幂等无操作）时**同时释放本 clone 的单写者锁**（R4，见 [orchestration.md](orchestration.md) §7；`--dry-run` 不释放）。
