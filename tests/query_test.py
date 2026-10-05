@@ -18,5 +18,3 @@ except ValueError:
 else:
     raise AssertionError("unknown status accepted")
 print("PASS: pending filter, accepted filter, input unchanged, empty result, unknown rejection")
-
-raise AssertionError("intentional CI failure probe")
