@@ -3,11 +3,11 @@
 blank_issues_enabled: false
 contact_links:
   - name: 工作流 / SKILL
-    url: https://github.com/yes8080/pm4gh/blob/main/SKILL.md
+    url: https://github.com/yes8080/pm4gh-regression-20261005/blob/main/SKILL.md
     about: 输入、工作流程、输出、完成标准与支持资料（唯一入口）
   - name: 流程细节 / flow.md
-    url: https://github.com/yes8080/pm4gh/blob/main/references/flow.md
+    url: https://github.com/yes8080/pm4gh-regression-20261005/blob/main/references/flow.md
     about: 每个步骤的确切命令与判定条件（人机双读）
   - name: 状态机 / status-machine.md
-    url: https://github.com/yes8080/pm4gh/blob/main/references/status-machine.md
+    url: https://github.com/yes8080/pm4gh-regression-20261005/blob/main/references/status-machine.md
     about: 6 状态 / 15 条边的唯一表权威与迁移命令
