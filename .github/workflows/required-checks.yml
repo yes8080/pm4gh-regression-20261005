@@ -323,24 +323,67 @@ jobs:
       - name: 机器消费的标签在平台上存在（与 preflight.sh 同一判据 + 反向样本）
         run: |
           set -euo pipefail
-          # 断言"机器消费的标签必须存在"，不新增必需检查：标签是仓库级对象，不在版本库里、没有清单；
-          # status.sh 的 --add-label 遇到不存在的标签会直接失败，start.sh 靠 type/* 推导分支类型
-          # （缺标签就静默退化）。
+          # 断言"机器消费 + Issue 表单预置的标签必须存在"，不新增必需检查：标签是仓库级对象，不在版本库里、没有清单；
+          # status.sh 的 --add-label 遇到不存在的标签会直接失败，start.sh 靠 type/* 推导分支类型（缺标签就静默退化），
+          # Issue 表单的 labels: 指向不存在的标签时用该表单建单直接失败（D2 假绿）。
           # 判据只有一套：权威副本是下面的 heredoc，scripts/preflight.sh 的副本必须逐字一致；
-          # 反向样本（抽掉 type/hotfix）证明判据本身不是空断言。
+          # 判据从 .github/ISSUE_TEMPLATE/*.yml 解析预置标签（不手抄）；
+          # 反向样本（抽掉 type/hotfix = 手写项、抽掉 role/dev = 模板解析项）证明判据本身不是空断言。
           cat > /tmp/label-assert.sh <<'EOS'
+          #   ① 机器消费（手写清单 MACHINE_LABELS）：status/* ×3（status.sh 迁移）+ type/* ×4（start.sh 推导）；
+          #   ② Issue 表单预置（**从模板解析，不手抄**）：.github/ISSUE_TEMPLATE/*.yml 里每个 `labels:` 的值。
+          # fail-closed：模板解析不出任何标签 → 判据报错；**不许**"解析不到就算通过"。
           MACHINE_LABELS="status/ready status/in-progress status/in-review type/bug type/hotfix type/spike type/chore"
+          TEMPLATE_GLOB=".github/ISSUE_TEMPLATE/*.yml"
+          
+          # 从模板解析全部 `labels:` 值：flow 形式（labels: ["a", "b"]）与块序列（labels: 换行 "- a"）都支持。
+          # 解析不出任何标签（模板缺失 / 没有顶层 labels: 键 / 值认不出）→ 非零退出 + 原因写 stderr。
+          template_labels() {
+            awk '
+              BEGIN { sq = sprintf("%c", 39); inblk = 0; keys = 0; got = 0; keygot = 0; bad = 0 }
+              function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
+              function err(m) { printf "标签判据：%s\n", m > "/dev/stderr"; bad++ }
+              function emit(v,   n, i, a, t, c) {
+                gsub(/[]["]/, "", v); gsub(sq, "", v)
+                n = split(v, a, ","); c = 0
+                for (i = 1; i <= n; i++) { t = trim(a[i]); if (t != "") { print t; got++; c++ } }
+                keygot += c
+                if (c == 0) err("labels: 键的值解析不出标签")
+              }
+              function close_key() { if (inblk && keygot == 0) err("块序列形式的 labels: 键解析不出标签"); inblk = 0 }
+              {
+                if (inblk) {
+                  if ($0 ~ /^[ \t]+-[ \t]/) { v = $0; sub(/^[ \t]+-[ \t]+/, "", v); sub(/[ \t]+#.*$/, "", v); emit(v); next }
+                  close_key()
+                }
+                if ($0 ~ /^labels[ \t]*:/) {
+                  close_key(); keys++; keygot = 0
+                  v = $0; sub(/^labels[ \t]*:[ \t]*/, "", v); sub(/[ \t]+#.*$/, "", v)
+                  if (trim(v) != "") emit(v); else inblk = 1
+                }
+              }
+              END {
+                close_key()
+                if (keys == 0) err("模板里没有顶层的 labels: 键（Issue 表单格式不对？）")
+                if (got == 0) err("未从模板解析出任何标签")
+                if (bad > 0) exit 4
+              }
+            ' $TEMPLATE_GLOB
+          }
+          
           assert_machine_labels() {
+            tpl="$(template_labels 2>&1)" || { printf '[FAIL] 表单预置标签的解析判据失败：\n%s\n' "$tpl" >&2; return 1; }
+            required="$(printf '%s\n%s\n' "$MACHINE_LABELS" "$tpl" | tr ' ' '\n' | grep -v '^$' | sort -u | tr '\n' ' ' | sed -E 's/[[:space:]]+$//')"
             missing=""
-            for l in $MACHINE_LABELS; do
+            for l in $required; do
               grep -qxF "$l" <<<"${1:-}" || missing="${missing} ${l}"
             done
             if [ -n "$missing" ]; then
-              printf '[FAIL] 机器消费的标签在平台上不存在：%s\n' "$missing" >&2
-              printf '       后果：status.sh 迁移直接失败 / start.sh 静默退化。标签是仓库级对象 —— 报告 dispatcher，不要自行删改线上标签\n' >&2
+              printf '[FAIL] 标签在平台上不存在：%s\n' "$missing" >&2
+              printf '       后果：status.sh 迁移直接失败 / start.sh 静默退化 / 用 Issue 表单建单直接失败。标签是仓库级对象 —— 缺就建：gh label create "<name>" -R <slug>，不要靠删断言绕过\n' >&2
               return 1
             fi
-            printf '[ OK ] 机器消费的标签全部存在（%s）\n' "$MACHINE_LABELS"
+            printf '[ OK ] 机器消费与表单预置的标签全部存在（%s）\n' "$required"
             return 0
           }
           EOS
@@ -366,13 +409,19 @@ jobs:
           elif ! assert_machine_labels "$live"; then
             bad=1
           fi
-          # ③ 反向样本：抽掉 type/hotfix 后断言**必须失败**（退化成空断言会被这一步抓住）
+          # ③ 反向样本：抽掉 type/hotfix（手写清单项）后断言**必须失败**（退化成空断言会被这一步抓住）
           if [ -n "$live" ] && assert_machine_labels "$(printf '%s\n' "$live" | grep -vxF 'type/hotfix')"; then
             echo "::error::反向样本未失败：缺 type/hotfix 时断言仍然通过 —— 判据形同虚设"
             bad=1
           fi
+          # ④ 反向样本（D2）：抽掉**模板解析出来的** role/dev 后断言必须失败 ——
+          #    这一项证明「从 .github/ISSUE_TEMPLATE/*.yml 解析」真的接进了判据，而不是手抄清单碰巧覆盖。
+          if [ -n "$live" ] && assert_machine_labels "$(printf '%s\n' "$live" | grep -vxF 'role/dev')"; then
+            echo "::error::反向样本未失败：缺表单预置标签 role/dev 时断言仍然通过 —— 模板解析没接进判据"
+            bad=1
+          fi
           if [ "$bad" -ne 0 ]; then exit 1; fi
-          echo "✅ 机器消费的标签全部存在；判据与 preflight.sh 逐字一致；反向样本（缺 type/hotfix）按预期失败"
+          echo "✅ 机器消费 + 表单预置的标签全部存在；判据与 preflight.sh 逐字一致；反向样本（缺 type/hotfix、缺模板解析出的 role/dev）按预期失败"
       - name: references/status-machine.md 状态机转换表与 scripts/status.sh 逐字一致（防文档漂移）
         run: |
           set -euo pipefail

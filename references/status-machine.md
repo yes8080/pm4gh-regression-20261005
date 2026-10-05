@@ -89,5 +89,5 @@
 | `prio/*`、`risk/*`、`role/*`、`area/*`、GitHub 默认标签 | **人类元数据（机器不读）**：只供人筛选 |
 | `src/*`、`size/*` | **不存在**。**禁止**引用或重建；`status/rework` 同样**禁止**引用 |
 
-- **判据**：机器消费的标签由 `preflight.sh`（W0）与 `ci/test`（每次 PR）用**同一段判据**（`LABEL_ASSERT`）断言存在，并带反向样本。
-- **必须**：新增机器消费标签时同步三处 —— `preflight.sh` 的 `MACHINE_LABELS`、`ci/test` 的同一段副本、线上标签本身（由 dispatcher 加）。
+- **判据**：机器消费的标签 + **Issue 表单预置的标签**（`.github/ISSUE_TEMPLATE/*.yml` 的 `labels:`）由 `preflight.sh`（W0）与 `ci/test`（每次 PR）用**同一段判据**（`LABEL_ASSERT`）断言存在，并带反向样本（手写项 `type/hotfix` 与模板解析项 `role/dev` 各一）。
+- **必须**：新增**机器消费**标签（`status/*` / `type/*`）时同步三处 —— `preflight.sh` 的 `MACHINE_LABELS`、`ci/test` 的同一段副本、线上标签本身（由 dispatcher 加）；**Issue 表单预置标签**由判据**从模板解析**（不需要改判据文本），但线上仍必须先有该标签，否则用该表单建单直接失败。

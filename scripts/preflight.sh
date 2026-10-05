@@ -6,7 +6,9 @@
 #         作者凭据 scope 与最小权限 / **工作区内不得存在任何凭据文件**/
 #         评审凭据在**工作区之外**（不读其内容）/
 #         线上规则集 == 仓库内定义 / 每个必需 context 都有工作流 job /
-#         机器消费的标签存在（判据 LABEL_ASSERT，与 ci/test 同一段文本）。
+#         **CODEOWNERS 完整性**（每个 owner 是协作者且有 push、评审身份是 `*` 的 owner、
+#         合并身份是协作者 —— 防 require_code_owner_review 永久锁死；开关取值以**线上实测**为准）/
+#         机器消费与 **Issue 表单预置**的标签存在（判据 LABEL_ASSERT，与 ci/test 同一段文本）。
 #
 # 退出码：0 全部通过；1 存在未通过项（每项都给出可行动的修复提示）
 
@@ -37,26 +39,69 @@ REQUIRED_EXPECTED="ci/lint ci/test policy/linked-issue policy/branch-name policy
 RULESET_CANON_JQ='def canon: with_entries(select(.key|startswith("_comment")|not)) | del(.id,.node_id,.source_type,.source,.created_at,.updated_at,.current_user_can_bypass,._links) | .conditions.ref_name.include = ((.conditions.ref_name.include // [])|sort) | .conditions.ref_name.exclude = ((.conditions.ref_name.exclude // [])|sort) | .bypass_actors = ((.bypass_actors // [])|sort_by(.actor_id|tostring)) | .rules = ((.rules // []) | map(if (.type == "required_status_checks" and .parameters) then .parameters.required_status_checks = ((.parameters.required_status_checks // [])|sort_by(.context)) else . end) | sort_by(.type)); canon'
 # RULESET_CANON_JQ:END
 
-# ── 机器消费的标签存在性判据（本仓库**唯一**的一份实现）──────────────────────
-# **必须**断言机器消费的标签存在：标签是**仓库级对象**，仓库里没有清单也没有断言。而 `status.sh`
+# ── 标签存在性判据：机器消费 + Issue 表单预置（本仓库**唯一**的一份实现）────────
+# **必须**断言这些标签存在：标签是**仓库级对象**，仓库里没有清单也没有断言。而 `status.sh`
 # 的 --add-label 遇到不存在的标签会**直接失败**（把 Issue 留在「零 status/* 标签」的中间态）；
-# `start.sh` 靠 `type/*` 推导分支类型，缺标签会**静默**退化。本判据只断言存在性，
+# `start.sh` 靠 `type/*` 推导分支类型，缺标签会**静默**退化；Issue 表单的 `labels:` 指向不存在的
+# 标签时，**用该表单建单直接失败**（D2 的假绿：预检全绿而表单不可用）。本判据只断言存在性，
 # 不新增任何必需检查、不改线上标签。
 # 同一段文本也出现在 .github/workflows/required-checks.yml 的 ci/test 步骤里，由 ci/test 断言
-# 两处**逐字一致**（并带一个反向样本，证明判据本身不是空断言）—— 判据只有这一套。
+# 两处**逐字一致**（并带反向样本，证明判据本身不是空断言）—— 判据只有这一套。
 # LABEL_ASSERT:BEGIN
+#   ① 机器消费（手写清单 MACHINE_LABELS）：status/* ×3（status.sh 迁移）+ type/* ×4（start.sh 推导）；
+#   ② Issue 表单预置（**从模板解析，不手抄**）：.github/ISSUE_TEMPLATE/*.yml 里每个 `labels:` 的值。
+# fail-closed：模板解析不出任何标签 → 判据报错；**不许**"解析不到就算通过"。
 MACHINE_LABELS="status/ready status/in-progress status/in-review type/bug type/hotfix type/spike type/chore"
+TEMPLATE_GLOB=".github/ISSUE_TEMPLATE/*.yml"
+
+# 从模板解析全部 `labels:` 值：flow 形式（labels: ["a", "b"]）与块序列（labels: 换行 "- a"）都支持。
+# 解析不出任何标签（模板缺失 / 没有顶层 labels: 键 / 值认不出）→ 非零退出 + 原因写 stderr。
+template_labels() {
+  awk '
+    BEGIN { sq = sprintf("%c", 39); inblk = 0; keys = 0; got = 0; keygot = 0; bad = 0 }
+    function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
+    function err(m) { printf "标签判据：%s\n", m > "/dev/stderr"; bad++ }
+    function emit(v,   n, i, a, t, c) {
+      gsub(/[]["]/, "", v); gsub(sq, "", v)
+      n = split(v, a, ","); c = 0
+      for (i = 1; i <= n; i++) { t = trim(a[i]); if (t != "") { print t; got++; c++ } }
+      keygot += c
+      if (c == 0) err("labels: 键的值解析不出标签")
+    }
+    function close_key() { if (inblk && keygot == 0) err("块序列形式的 labels: 键解析不出标签"); inblk = 0 }
+    {
+      if (inblk) {
+        if ($0 ~ /^[ \t]+-[ \t]/) { v = $0; sub(/^[ \t]+-[ \t]+/, "", v); sub(/[ \t]+#.*$/, "", v); emit(v); next }
+        close_key()
+      }
+      if ($0 ~ /^labels[ \t]*:/) {
+        close_key(); keys++; keygot = 0
+        v = $0; sub(/^labels[ \t]*:[ \t]*/, "", v); sub(/[ \t]+#.*$/, "", v)
+        if (trim(v) != "") emit(v); else inblk = 1
+      }
+    }
+    END {
+      close_key()
+      if (keys == 0) err("模板里没有顶层的 labels: 键（Issue 表单格式不对？）")
+      if (got == 0) err("未从模板解析出任何标签")
+      if (bad > 0) exit 4
+    }
+  ' $TEMPLATE_GLOB
+}
+
 assert_machine_labels() {
+  tpl="$(template_labels 2>&1)" || { printf '[FAIL] 表单预置标签的解析判据失败：\n%s\n' "$tpl" >&2; return 1; }
+  required="$(printf '%s\n%s\n' "$MACHINE_LABELS" "$tpl" | tr ' ' '\n' | grep -v '^$' | sort -u | tr '\n' ' ' | sed -E 's/[[:space:]]+$//')"
   missing=""
-  for l in $MACHINE_LABELS; do
+  for l in $required; do
     grep -qxF "$l" <<<"${1:-}" || missing="${missing} ${l}"
   done
   if [ -n "$missing" ]; then
-    printf '[FAIL] 机器消费的标签在平台上不存在：%s\n' "$missing" >&2
-    printf '       后果：status.sh 迁移直接失败 / start.sh 静默退化。标签是仓库级对象 —— 报告 dispatcher，不要自行删改线上标签\n' >&2
+    printf '[FAIL] 标签在平台上不存在：%s\n' "$missing" >&2
+    printf '       后果：status.sh 迁移直接失败 / start.sh 静默退化 / 用 Issue 表单建单直接失败。标签是仓库级对象 —— 缺就建：gh label create "<name>" -R <slug>，不要靠删断言绕过\n' >&2
     return 1
   fi
-  printf '[ OK ] 机器消费的标签全部存在（%s）\n' "$MACHINE_LABELS"
+  printf '[ OK ] 机器消费与表单预置的标签全部存在（%s）\n' "$required"
   return 0
 }
 # LABEL_ASSERT:END
@@ -303,9 +348,9 @@ else
   warn "  实际：$(printf '%s' "$wf_actual" | tr '\n' ' ')"
 fi
 
-info "8/10 线上规则集 vs 仓库内定义（整份 diff，全量键）"
+info "8/10 线上规则集 vs 仓库内定义（整份 diff，全量键）+ CODEOWNERS 完整性（防永久锁死）"
 if [ -z "$REPO" ]; then
-  bad "仓库 slug 未知，跳过线上规则集比对"
+  bad "仓库 slug 未知，跳过线上规则集比对与 CODEOWNERS 完整性断言"
 else
   rid="$(gh api "repos/${REPO}/rulesets" --jq '.[]|select(.name=="main-protection")|.id' 2>/dev/null | head -1 || true)"
   if [ -z "$rid" ]; then
@@ -330,9 +375,98 @@ else
       fi
     fi
   fi
+
+  # ── CODEOWNERS 完整性（P3：本次回归里唯一**不可逆**的缺陷）───────────────────
+  # 死锁机理：require_code_owner_review=true 时，GitHub 要求改动由**该路径的 CODEOWNERS owner** 批准；
+  #   而 CODEOWNERS **取自目标分支**（在 PR 里改它无法为这个 PR 解锁）+ 平台禁止自我批准。
+  #   故以下任一成立 = 这些路径**永久无法合并**：
+  #     ① 任一 owner 不是本仓库协作者（或没有 push）→ 没人能满足 owner 条件；
+  #     ② 评审身份不是 `*` 规则的 owner → 评审的批准不算 code owner 批准；
+  #     ③ 合并身份（dispatcher）不是协作者 → 没有合并入口。
+  # 判据只**读**线上（collaborators / rulesets），不改任何线上配置；`require_code_owner_review`
+  # 的取值**只认线上实测值**（仓库内 JSON 是声明，不是真值）：开关未开启时 ② 降级为提示，不误报。
+  printf '\n  ── CODEOWNERS 完整性（防 require_code_owner_review 永久锁死）\n'
+  CO_FILE=".github/CODEOWNERS"
+  # 评审身份取自 references/identity.md 的三身份表：**不读评审凭据内容**（SKILL.md §5），
+  # 那份表是无凭据条件下唯一能证明「W6 用的是哪个身份」的载体；解析不出 = 无法证明无死锁 → [FAIL]。
+  co_reviewer="$(grep -E '^\|[[:space:]]*评审[[:space:]]*\|' references/identity.md 2>/dev/null \
+    | head -1 | grep -oE '@[A-Za-z0-9-]+' | head -1 | sed -e 's/^@//' | tr '[:upper:]' '[:lower:]' || true)"
+  co_collab="$(gh api "repos/${REPO}/collaborators?affiliation=all&per_page=100" --paginate \
+    --jq '.[] | "\(.login | ascii_downcase) \(.permissions.push)"' 2>/dev/null || true)"
+  if [ ! -f "$CO_FILE" ]; then
+    bad "缺少 ${CO_FILE} —— require_code_owner_review 下所有 PR 永久无法合并（CODEOWNERS 取自目标分支）；恢复该文件后重跑"
+  elif [ -z "$co_collab" ]; then
+    bad "读不到协作者清单（repos/${REPO}/collaborators）—— 无法证明 owner 有 push；用对仓库有 push 权限的凭据重跑（合并身份 gh 登录态即可）"
+  else
+    co_owners="$(awk '!/^[[:space:]]*#/ && NF > 1 { for (i = 2; i <= NF; i++) if ($i ~ /^@/) { o = $i; sub(/^@/, "", o); print o } }' "$CO_FILE" \
+      | tr '[:upper:]' '[:lower:]' | sort -u)"
+    co_star="$(awk '$1 == "*" { for (i = 2; i <= NF; i++) if ($i ~ /^@/) { o = $i; sub(/^@/, "", o); print o } }' "$CO_FILE" \
+      | tr '[:upper:]' '[:lower:]' | sort -u)"
+    if [ -z "$co_owners" ]; then
+      bad "${CO_FILE} 里解析不出任何 @owner（规则行形如 \`<pattern> @user\`）—— 判据无法成立，修复后重跑"
+    else
+      # ① 每个 owner 必须是协作者且有 push（团队 owner 用团队-仓库权限判据）
+      co_bad=""
+      for o in $co_owners; do
+        case "$o" in
+          */*)
+            tp="$(gh api "orgs/${o%%/*}/teams/${o##*/}/repos/${REPO}" --jq '.permissions.push' 2>/dev/null || true)"
+            [ "$tp" = "true" ] || co_bad="${co_bad} ${o}（团队不可读或无 push）"
+            ;;
+          *)
+            grep -qxF "${o} true" <<<"$co_collab" || co_bad="${co_bad} ${o}"
+            ;;
+        esac
+      done
+      if [ -n "$co_bad" ]; then
+        bad "CODEOWNERS 的 owner 不是协作者（或没有 push）：${co_bad}"
+        printf '       后果：require_code_owner_review=true 时这些路径**永久无法合并**（PR 内改 CODEOWNERS 无效：它取自目标分支）\n' >&2
+        printf '       修法：① 作者改 %s 的 owner（换成有 push 的协作者）；② dispatcher：gh api -X PUT repos/%s/collaborators/<login> -f permission=push\n' "$CO_FILE" "$REPO" >&2
+      else
+        ok "CODEOWNERS 的 owner 全部是协作者且有 push（$(printf '%s' "$co_owners" | tr '\n' ' ')）"
+      fi
+
+      # ② 评审身份必须是 `*` 规则的 owner（开关从**线上实测值**读；未开启时降级为提示）
+      co_switch=""
+      if [ -n "${rid:-}" ]; then
+        co_switch="$(gh api "repos/${REPO}/rulesets/${rid}" \
+          --jq '[.rules[]|select(.type=="pull_request")|.parameters.require_code_owner_review][0]' 2>/dev/null || true)"
+      fi
+      co_dev="$(printf '%s' "${dev_login:-}" | tr '[:upper:]' '[:lower:]')"
+      if [ -z "$co_reviewer" ]; then
+        bad "无法从 references/identity.md 的三身份表解析出评审身份 —— 无法证明评审是 \`*\` 的 owner（fail-closed）；修好该表后重跑"
+      elif [ -z "$co_star" ]; then
+        bad "${CO_FILE} 里没有 \`*\` 规则（或该规则没有 @owner）—— require_code_owner_review 下没有路径 owner，PR 永久无法合并"
+      elif [ -z "$co_switch" ]; then
+        bad "读不到线上 require_code_owner_review 的实测值（ruleset ${rid:-未知}）—— 无法判定评审身份是否必须是 \`*\` 的 owner；报告 dispatcher"
+      elif [ "$co_switch" = "true" ] && ! grep -qxF "$co_reviewer" <<<"$co_star"; then
+        bad "评审身份 ${co_reviewer} 不是 \`*\` 规则的 owner，而线上 require_code_owner_review=true —— 评审的批准不算 code owner 批准，PR **永久无法合并**"
+        printf '       修法（作者）：在 %s 的 `*` 规则里加上 @%s（当前 owner：%s）\n' "$CO_FILE" "$co_reviewer" "$(printf '%s' "$co_star" | tr '\n' ' ')" >&2
+        printf '       注意：本轮 PR 内改 CODEOWNERS **不能**解锁本 PR —— 它取自目标分支\n' >&2
+      elif [ "$co_switch" = "true" ]; then
+        ok "评审身份 ${co_reviewer} 是 \`*\` 规则的 owner（require_code_owner_review=true，线上实测 id=${rid}）"
+      else
+        ok "线上 require_code_owner_review=${co_switch}（未开启）→ 评审身份 ${co_reviewer} 是否 \`*\` 的 owner 仅作提示，不阻断：$(grep -qxF "$co_reviewer" <<<"$co_star" && printf '是 owner' || printf '不是 owner')"
+      fi
+      # 评审 == 作者时，即便评审是 owner 也必然锁死（平台禁止自我批准）—— 第 ② 条须同时排除该退化
+      if [ -n "$co_reviewer" ] && [ -n "$co_dev" ] && [ "$co_reviewer" = "$co_dev" ]; then
+        bad "评审身份 ${co_reviewer} == 作者身份 —— 平台禁止自我批准，require_code_owner_review 下必然永久锁死"
+      fi
+
+      # ③ 合并身份（dispatcher = 本机 gh 登录态）必须是协作者且有 push（合并本身就需要 push）
+      if [ -z "${main_login:-}" ]; then
+        bad "读不到 gh 登录身份（合并身份）—— 无法证明合并入口可用"
+      elif grep -qxF "$(printf '%s' "$main_login" | tr '[:upper:]' '[:lower:]') true" <<<"$co_collab"; then
+        ok "合并身份 ${main_login} 是协作者且有 push"
+      else
+        bad "合并身份 ${main_login} 不是协作者（或没有 push）—— 无人能合并，所有 PR 永久卡住"
+        printf '       修法（dispatcher）：gh api -X PUT repos/%s/collaborators/%s -f permission=push\n' "$REPO" "$main_login" >&2
+      fi
+    fi
+  fi
 fi
 
-info "9/10 机器消费的标签存在性（status/* ×3 + start.sh 消费的 type/* ×4）"
+info "9/10 机器消费与 Issue 表单预置的标签存在性（status/* ×3 + type/* ×4 + 模板 labels:）"
 if [ -z "$REPO" ]; then
   bad "仓库 slug 未知，跳过标签存在性断言"
 else

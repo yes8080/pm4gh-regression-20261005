@@ -24,6 +24,7 @@
 - 触发：某路径 owner 只有作者本人，而 `require_code_owner_review=true`。
 - 后果：该路径改动**永久无法合并**（GitHub 禁止自我批准）。
 - **禁止**：在 PR 里改 CODEOWNERS 为**该 PR 自己**解锁 —— CODEOWNERS 取自**目标分支**。
+- **判据**：`preflight.sh` 第 ⑧ 组的 CODEOWNERS 完整性断言 —— 每个 owner 是协作者**且有 push**／评审身份是 `*` 规则的 owner／合并身份是协作者；`require_code_owner_review` 的**开关取值只读线上实测值**（仓库内 JSON 是声明，不是真值），开关未开启时该条降级为提示、不误报；解析不出评审身份 → 失败（fail-closed）。反向样本（R1 删掉 `*` 规则里的评审身份／R2 加入非协作者 owner）**必须失败**。
 
 **5. 作者的 classic PAT 只有 `repo` + `workflow`，没有 `read:org`**
 - 触发：用 `gh pr edit` 改 PR 正文 → 报 scope 错且**静默不更新**。
@@ -65,7 +66,7 @@
 - 触发：`bug.yml` 的「轨道」下拉选「线上故障」—— 它**不会**打 `type/hotfix`，而 `start.sh` 靠 `type/*` 推导分支类型。
 - **必须**：线上故障用 `scripts/start.sh <issue#> --type hotfix --as author`，或先手动加 `type/hotfix` 标签。
 - 后果：热修**静默**退化成 `fix/`。
-- **判据**：机器消费的标签由 `preflight.sh` 与 `ci/test` 用同一判据（`LABEL_ASSERT` 标记区）断言存在，并带反向样本（删掉 `type/hotfix` → 断言必须失败）。
+- **判据**：`preflight.sh` 与 `ci/test` 用同一判据（`LABEL_ASSERT` 标记区）断言存在；必需集合 = **手写机器清单**（`MACHINE_LABELS`：`status/*`×3 + `type/*`×4）∪ **Issue 表单预置项**（从 `.github/ISSUE_TEMPLATE/*.yml` 的 `labels:` 解析，不手抄，解析不出 → 失败）；反向样本覆盖两类（R3 缺模板预置项、R3b 缺手写项与真模板项）→ 断言**必须失败**。
 
 **13. 凭据隔离的能力边界：文件隔离只是提高门槛，不是防线本身**
 - **禁止**：宣称"作者取不到评审凭据"或任何等价说法；完整边界见 [identity.md](identity.md)「隔离的能力边界」。

@@ -27,7 +27,7 @@
 ## W0 预检（每次接手都跑）— `scripts/preflight.sh`
 
 - **判据**：无参数；全 `[ OK ]` 且退出码 `0`；任一 `[FAIL]` → 退出码 `1`，**禁止**"先干着看"，把失败项**原文**贴 dispatcher。
-- 输出 `1/10`…`10/10` 十组：① 命令齐备 ② gh 登录 ③ 仓库形态与 cwd ④ 工作区与远端 ⑤ 三身份凭据 ⑥ 作者凭据 scope 与最小权限 ⑦ 工作流 job 名 == 必需 context ⑧ 线上规则集整份 diff ⑨ 机器消费标签存在 ⑩ 工作区内无 `*.pat`。
+- 输出 `1/10`…`10/10` 十组：① 命令齐备 ② gh 登录 ③ 仓库形态与 cwd ④ 工作区与远端 ⑤ 三身份凭据 ⑥ 作者凭据 scope 与最小权限 ⑦ 工作流 job 名 == 必需 context ⑧ 线上规则集整份 diff + **CODEOWNERS 完整性**（每个 owner 是协作者且有 push / 评审身份是 `*` 的 owner / 合并身份是协作者 —— 防 `require_code_owner_review` 永久锁死；开关取值只认线上实测值）⑨ 机器消费 + **Issue 表单预置**标签存在（表单标签从 `.github/ISSUE_TEMPLATE/*.yml` 解析，不手抄）⑩ 工作区内无 `*.pat`。
 - **判据**：只有 `[FAIL]` 计入失败，`[WARN]` 一律不阻断（退出码仍 `0`）。常见 `[WARN]`：工作区有未提交改动、本地 `main` 与 `origin/main` 不一致、无法 fetch、评审凭据缺失、作者权限异常、超过一个 `in-progress`。组⑦⑧需要 `.github/workflows/*.yml` 存在 —— 在**没有**工作流的副本里跑必然 `[FAIL]`，这是环境事实，不是流程失败。
 
 ## W1 领片（DoR）
