@@ -1269,6 +1269,27 @@ jobs:
           print('PASS: 13 closeout regression scenarios')
           PY_CLOSEOUT_TEST
 
+      - name: 开工与交付提示随真实 skill 路径生成
+        run: |
+          cd "$PM4GH_SKILL_ROOT"
+          python3 - <<'PY_HINT_PATH'
+          import os
+          import shlex
+          from pathlib import Path
+          import subprocess
+          for name, leaves in [('start', ['/*.sh', '/status.sh', '/deliver.sh']), ('deliver', ['/deliver.sh', '/status.sh', '/review.sh', '/closeout.sh'])]:
+              source = Path('scripts/'+name+'.sh').read_text()
+              fragments = [line for line in source.splitlines() if 'printf ' in line and '"$SCRIPT_DIR"' in line]
+              assert len(fragments) == (2 if name == 'start' else 4), (name, 'hint coverage lost')
+              for prefix in ['scripts', '.agents/skills/pm4gh/scripts', '/tmp/skill with spaces/scripts']:
+                  env = dict(os.environ, SCRIPT_DIR=prefix, ISSUE='17', PR_NUM='42', AS='author')
+                  output = subprocess.check_output(['bash', '-c', '\n'.join(fragments)], env=env, text=True)
+                  for leaf in leaves:
+                      assert prefix+leaf in "\n".join(shlex.split(output)), (name, prefix, leaf, output)
+                  assert 'scripts/scripts/' not in output
+                  print('PASS: '+name+' next-step hints resolve under '+prefix)
+          print('PASS: 6 real hint-fragment executions cover root, installed and spaced paths')
+          PY_HINT_PATH
       - name: 项目自身测试套件 tests/run.sh（约定：exit 0 = 通过）
         run: |
           cd "$PM4GH_SKILL_ROOT"
