@@ -894,6 +894,110 @@ jobs:
             exit 1
           fi
           printf '✅ 项目测试套件 tests/run.sh 通过（退出码 0）—— 本次交付物的测试由门禁真实执行过\n'
+      - name: references/ 与 SKILL.md 路由双向一致（(a) 无孤儿 .md / (b) 无悬空链接 + 反向样本）
+        run: |
+          set -euo pipefail
+          # D5 回归靶子：#126 重构把「异常处理」整节弄丢，而当时的 ci/test 只断言「标记区逐字一致」，
+          # **没有**任何断言把 references/ 与 SKILL.md 的对应关系变成机器可判 → 整节丢失 / 孤儿文件 /
+          # 悬空链接都能静默过关。本步骤补上这条**结构判据**：
+          #   (a) references/ 下每个 .md 都必须被 SKILL.md 引用（防孤儿文件）
+          #   (b) SKILL.md 里每个 references/xxx.md 链接都必须存在（防悬空链接）
+          # 判据只有一处（下面的三个函数），**禁止**在别处复写第二份；任何一侧解析不出集合 → FAIL
+          # （fail-closed：不允许"解析不到就算通过"）。
+          skill=SKILL.md
+          refs_dir=references
+          links_of() { grep -oE 'references/[A-Za-z0-9._/-]+\.md' "$1" 2>/dev/null | sort -u; }
+          files_of() { ( cd "$1" 2>/dev/null && find . -type f -name '*.md' | sed -E 's#^\./##; s#^#references/#' ) | sort -u; }
+          orphans_of() {   # $1=SKILL.md  $2=references 目录 → 未被 $1 引用的 .md
+            l="$(links_of "$1")"
+            while IFS= read -r f; do
+              [ -n "$f" ] || continue
+              grep -qxF "$f" <<<"$l" || printf '%s\n' "$f"
+            done <<<"$(files_of "$2")"
+          }
+          dangling_of() {  # $1=SKILL.md  $2=仓库根 → 指向不存在文件的链接
+            while IFS= read -r l; do
+              [ -n "$l" ] || continue
+              [ -e "$2/$l" ] || printf '%s\n' "$l"
+            done <<<"$(links_of "$1")"
+          }
+          bad=0
+          links="$(links_of "$skill")"
+          files="$(files_of "$refs_dir")"
+          if [ -z "$links" ]; then
+            echo "::error file=$skill::解析不出任何 references/xxx.md 链接 —— 判据不成立（fail-closed）"
+            bad=1
+          fi
+          if [ -z "$files" ]; then
+            echo "::error file=$refs_dir::解析不出任何 .md 文件 —— 判据不成立（fail-closed）"
+            bad=1
+          fi
+          if [ "$bad" -ne 0 ]; then exit 1; fi
+          printf 'SKILL.md 解析出 %s 个链接：%s\n' "$(printf '%s\n' "$links" | grep -c .)" "$(printf '%s' "$links" | tr '\n' ' ')"
+          printf 'references/ 实际 %s 个 .md：%s\n' "$(printf '%s\n' "$files" | grep -c .)" "$(printf '%s' "$files" | tr '\n' ' ')"
+          # ① 正向：真实仓库上两条断言都必须通过
+          o="$(orphans_of "$skill" "$refs_dir")"
+          d="$(dangling_of "$skill" ".")"
+          if [ -n "$o" ]; then
+            printf '  [FAIL] (a) references/ 下存在未被 SKILL.md 引用的孤儿文件：\n%s\n' "$o" >&2
+            bad=1
+          else
+            printf '  [ OK ] (a) 无孤儿：references/ 下 %s 个 .md 全部被 SKILL.md 引用\n' "$(printf '%s\n' "$files" | grep -c .)"
+          fi
+          if [ -n "$d" ]; then
+            printf '  [FAIL] (b) SKILL.md 里存在指向不存在文件的悬空链接：\n%s\n' "$d" >&2
+            bad=1
+          else
+            printf '  [ OK ] (b) 无悬空：SKILL.md 里 %s 个 references/xxx.md 链接全部存在\n' "$(printf '%s\n' "$links" | grep -c .)"
+          fi
+          if [ "$bad" -ne 0 ]; then exit 1; fi
+          # ② 反向样本：在**临时副本**里做（不动工作区），两条断言各自都必须**能失败**。
+          #    样本目标从真实链接里取（first / last），**不写死文档名** —— 采用者改了文件名依然有效。
+          target=""; dtarget=""
+          while IFS= read -r l; do
+            [ -n "$l" ] || continue
+            [ -n "$target" ] || target="$l"
+            dtarget="$l"
+          done <<<"$links"
+          T="$(mktemp -d "${TMPDIR:-/tmp}/doc-routes.XXXXXX")"
+          trap 'rm -rf "$T"' EXIT
+          reset_copy() {
+            rm -rf "$T/references"; mkdir -p "$T/references"
+            cp "$skill" "$T/SKILL.md"
+            cp "$refs_dir"/*.md "$T/references/"
+          }
+          # (a) 删掉一处引用（含该链接的整行）→ 该文件变孤儿 → 断言 (a) 必须 FAIL
+          reset_copy
+          grep -vF "$target" "$T/SKILL.md" > "$T/SKILL.md.tmp"; mv "$T/SKILL.md.tmp" "$T/SKILL.md"
+          rs="$(orphans_of "$T/SKILL.md" "$T/references")"
+          if grep -qxF "$target" <<<"$rs"; then
+            printf '  [ OK ] 反向样本 (a) 删掉 `%s` 的引用 → 断言 (a) 按预期 FAIL（孤儿：%s）\n' "$target" "$(printf '%s' "$rs" | tr '\n' ' ')"
+          else
+            printf '  [FAIL] 反向样本 (a) 未按预期失败：删掉 `%s` 的引用后未报孤儿（实际 [%s]）\n' "$target" "$(printf '%s' "$rs" | tr '\n' ' ')" >&2
+            bad=1
+          fi
+          # (b) 新建一个未被引用的 references/zzz.md → 断言 (a) 必须 FAIL
+          reset_copy
+          printf '# zzz\n\n反向样本：本文件故意不被 SKILL.md 引用。\n' > "$T/references/zzz.md"
+          rs="$(orphans_of "$T/SKILL.md" "$T/references")"
+          if [ "$rs" = "references/zzz.md" ]; then
+            printf '  [ OK ] 反向样本 (b) 新建未被引用的 `references/zzz.md` → 断言 (a) 按预期 FAIL（孤儿：%s）\n' "$rs"
+          else
+            printf '  [FAIL] 反向样本 (b) 未按预期失败：期望孤儿 references/zzz.md，实际 [%s]\n' "$(printf '%s' "$rs" | tr '\n' ' ')" >&2
+            bad=1
+          fi
+          # (c) 删掉一处被引用的文件（链接仍在）→ 断言 (b) 必须 FAIL
+          reset_copy
+          rm -f "$T/$dtarget"
+          rs="$(dangling_of "$T/SKILL.md" "$T")"
+          if [ "$rs" = "$dtarget" ]; then
+            printf '  [ OK ] 反向样本 (c) 删掉被引用文件 `%s`（链接仍在）→ 断言 (b) 按预期 FAIL（悬空：%s）\n' "$dtarget" "$rs"
+          else
+            printf '  [FAIL] 反向样本 (c) 未按预期失败：期望悬空 %s，实际 [%s]\n' "$dtarget" "$(printf '%s' "$rs" | tr '\n' ' ')" >&2
+            bad=1
+          fi
+          if [ "$bad" -ne 0 ]; then exit 1; fi
+          printf '✅ 路由判据：references/ 无孤儿 .md + SKILL.md 无悬空链接；反向样本 (a) 删引用 `%s` / (b) 新建未引用 `references/zzz.md` / (c) 删被引用 `%s` 三例均按预期 FAIL\n' "$target" "$dtarget"
 
   linked-issue:
     name: policy/linked-issue

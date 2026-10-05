@@ -51,6 +51,7 @@ metadata:
 | 任何一次状态迁移之前 | [references/status-machine.md](references/status-machine.md)（15 边 / 6 状态的唯一表权威） |
 | 首次开通身份凭据，或身份 / 凭据报错 | [references/identity.md](references/identity.md) |
 | 现象对得上某条坑（检查永久 pending、推送变了身份…） | [references/traps.md](references/traps.md) |
+| 预检有 `[FAIL]`、必需检查永久 pending、需要终止分支 | [references/exceptions.md](references/exceptions.md)（异常处理：触发 → 动作；**发现流程缺陷开 Bug Issue**） |
 | 写 PR 第 5 节 DoD 自查，或合并前核验 | [references/dod.md](references/dod.md) |
 | 填 PR 六段 / 建 Issue 表单 | [assets/README.md](assets/README.md) → `.github/` 里的平台强制模板 |
 | 确定性、多步、有副作用的 GitHub 操作 | [scripts/](scripts/)（7 个脚本，自包含；**不得新增脚本**） |
